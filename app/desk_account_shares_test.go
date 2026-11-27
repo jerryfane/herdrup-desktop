@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -803,13 +804,12 @@ func acceptWithAckUnsaved(t *testing.T, w *syncWorker, relay *fakeherdr.GuestRel
 }
 
 // A share write the service took, whose acknowledgement couldn't be saved,
-// is settled by that acknowledgement, never written afresh: owed in memory
-// until a save holds it, it says the account holds the share, and once the
-// share is left elsewhere while another account was signed in, the share
-// stays left when its account is back, and its grant goes. That holds with
-// the share's tombstone pruned meanwhile too, where the account's history
-// alone can't tell the write (a create, on base 0) from one that never
-// landed.
+// stays journaled as sent, and is settled by the account's history, never
+// written afresh: once the share is left elsewhere while another account
+// was signed in, the share stays left when its account is back, and its
+// grant goes. That holds with the share's tombstone pruned meanwhile too:
+// the pull of the account back is a full one, which can't rule out that
+// the create landed.
 func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -825,10 +825,7 @@ func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 			relay, base := shareRelay(t, true)
 			d := shareDevice(t, srv)
 			ctx := context.Background()
-			access, id := acceptWithAckUnsaved(t, w, relay, base, d)
-			if access.AccountShare != shareConfirmed {
-				t.Errorf("the service took the write: the accept says %q, want confirmed", access.AccountShare)
-			}
+			_, id := acceptWithAckUnsaved(t, w, relay, base, d)
 			signInAs(t, w, d, "")
 			if err := d.SyncMachines(ctx); err != nil {
 				t.Fatal(err)
@@ -853,52 +850,219 @@ func TestAShareWriteWhoseSettlingFailedIsNotWrittenAfresh(t *testing.T) {
 	}
 }
 
-// A share write's acknowledgement whose save failed is written by the next
-// save of the sync state, with no restart in between: a local change's (a
-// prompt deleted here), or an account switch's, which saves it first, even
-// when the switch's own sync then fails. The saved state holds the share
-// as the account's, its write no longer owed, so a restart, which loses
-// what was owed in memory, still knows the write landed.
-func TestAShareAckWhoseSaveFailedIsSavedByTheNextSave(t *testing.T) {
+// restartDevice is d's app run again from its folder, signed in to the
+// worker's first account ("acct"): nothing of d's memory carries over.
+func restartDevice(t *testing.T, d *Desk, srv *httptest.Server) *Desk {
+	t.Helper()
+	d.Disconnect()
+	restarted := newDesk(d.dir)
+	signInTo(restarted, srv, "acct")
+	restarted.accountStore = account.NewSecretsStore(noSecrets{}, errors.New("not found"))
+	restarted.statements = account.NewStatementCache(restarted.account)
+	t.Cleanup(restarted.Disconnect)
+	return restarted
+}
+
+// A sent create whose acknowledgement no save holds, read back after a
+// restart by a full pull (another account's state in between, or a 410
+// once the share's tombstone was pruned), is settled as left elsewhere:
+// the full pull can't rule out that it landed and was deleted. No POST
+// writes it again, and its grant goes.
+func TestASentCreateAFullPullCantRuleOutIsNotWrittenAfresh(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		save func(t *testing.T, w *syncWorker, d *Desk)
+		// away signs another account in after the accept; awayFails makes
+		// its sync save nothing (its pull fails).
+		away, awayFails bool
 	}{
-		{"a prompt deleted here", func(t *testing.T, _ *syncWorker, d *Desk) {
-			if _, err := d.DeletePrompt("prompt-1"); err != nil {
-				t.Fatal(err)
-			}
-			if saved := savedSyncState(t, d); !slices.Contains(saved.PromptDeletes, "prompt-1") {
-				t.Fatalf("the save lost its own change: %+v", saved.PromptDeletes)
-			}
-		}},
-		{"another account signed in, its sync failed", func(t *testing.T, w *syncWorker, d *Desk) {
-			signInAs(t, w, d, "")
-			w.mu.Lock()
-			w.failPull = true
-			w.mu.Unlock()
-			if err := d.SyncMachines(context.Background()); err == nil {
-				t.Fatal("a sync whose pull failed reported success")
-			}
-		}},
+		{"the same account, its pull told to start over (410)", false, false},
+		{"another account signed in, its sync failed", true, true},
+		{"another account signed in and synced", true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			quietSync(t)
 			quietShares(t)
 			w, srv := newWorker(t, "")
-			w.seedPrompt("prompt-1", `{"text":"held"}`)
+			w.seedPrompt("prompt-1", `{"text":"held"}`) // pulls past 0 are incremental
 			relay, base := shareRelay(t, true)
 			d := shareDevice(t, srv)
+			ctx := context.Background()
 			_, id := acceptWithAckUnsaved(t, w, relay, base, d)
-			if grants, err := d.SharedConnections(); err != nil || len(grants) != 1 || grants[0].AccountShare != shareConfirmed {
-				t.Errorf("before the next save: %+v, %v; want the share confirmed", grants, err)
+			if c.away {
+				signInAs(t, w, d, "")
+				// Failing, the other account's sync saves nothing: neither
+				// the sync state (a folder where its temporary file goes)
+				// nor anything past its pull.
+				blocker := filepath.Join(d.dir, "account-sync.json.tmp")
+				if c.awayFails {
+					if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				w.mu.Lock()
+				w.failPull = c.awayFails
+				w.mu.Unlock()
+				if err := d.SyncMachines(ctx); (err != nil) != c.awayFails {
+					t.Fatalf("the other account's sync: %v", err)
+				}
+				if err := os.RemoveAll(blocker); err != nil {
+					t.Fatal(err)
+				}
 			}
-			c.save(t, w, d)
-			saved := savedSyncState(t, d)
-			if slices.ContainsFunc(saved.ShareWrites, func(op shareOp) bool { return op.ID == id }) || !slices.Contains(saved.SharesHeld["acct"], id) {
-				t.Fatalf("the next save: writes %+v, held %v; want the share held, its write not owed", saved.ShareWrites, saved.SharesHeld)
+			// Another device leaves the share, and its tombstone is pruned.
+			w.mu.Lock()
+			w.tombstone(id)
+			w.prune(id)
+			posts := w.posts
+			w.mu.Unlock()
+			restarted := restartDevice(t, d, srv)
+			if err := restarted.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			sent := w.posts - posts
+			w.mu.Unlock()
+			if _, live := w.live()[id]; live || sent != 0 {
+				t.Fatalf("the left share was written to the account again (%d pushes)", sent)
+			}
+			if grants, _ := restarted.SharedConnections(); len(grants) != 0 {
+				t.Fatalf("the left share's grant is still held: %+v", grants)
+			}
+			if shares := sharesOf(t, restarted); len(shares) != 0 {
+				t.Fatalf("the left share is still listed: %+v", shares)
 			}
 		})
+	}
+}
+
+// A sent create the account's history proves never landed is sent again,
+// once: its push answered 503, the pull after it incremental, or a full
+// one with nothing written since; or its push refused (provably nothing
+// written), whatever pull comes after, another account's in between and
+// a full one of this account back included.
+func TestASentCreateThatNeverLandedIsSentAgainOnce(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// seed is a prompt on the account first, so its pulls past it are
+		// incremental; refused fills the account instead of failing the
+		// push, and the account moves on (another prompt) before the next
+		// sync; away signs another account in and syncs it first.
+		seed, refused, away bool
+	}{
+		{"its pull after incremental", true, false, false},
+		{"a full pull, the account unwritten since", false, false, false},
+		{"a full pull after another account, the account unwritten since", true, false, true},
+		{"refused, a full pull after another account, the account written since", true, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			if c.seed {
+				w.seedPrompt("prompt-1", `{"text":"held"}`)
+			}
+			w.mu.Lock()
+			if c.refused {
+				w.maxItems = 1 // full
+			} else {
+				w.failPush = true
+			}
+			w.mu.Unlock()
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+			access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+			if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+				t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+			}
+			id := relay.HostID() + "/" + access.GuestID
+			w.mu.Lock()
+			w.failPush, w.maxItems = false, 0
+			w.mu.Unlock()
+			if c.away {
+				signInAs(t, w, d, "")
+				if err := d.SyncMachines(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if c.refused {
+					w.seedPrompt("prompt-2", `{"text":"meanwhile"}`) // the account moves on
+				}
+				signInAs(t, w, d, "acct")
+			}
+			w.mu.Lock()
+			posts := w.posts
+			w.mu.Unlock()
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			sent := w.posts - posts
+			w.mu.Unlock()
+			if _, live := w.live()[id]; !live || sent != 1 {
+				t.Fatalf("the share on the account: %v, in %d pushes; want it, in 1", live, sent)
+			}
+			if grants, err := d.SharedConnections(); err != nil || len(grants) != 1 || grants[0].AccountShare != shareConfirmed {
+				t.Fatalf("after the sync: %+v, %v; want the share confirmed", grants, err)
+			}
+		})
+	}
+}
+
+// A create whose dispatch had no answer may still land late, after the
+// next pull proved it hadn't: if it lands, is left on another device and
+// its tombstone pruned before a full readback, the readback is what
+// can't rule it out. Its re-send that round was refused (rate limited,
+// so it wrote nothing) and owes it as the late one did. The write is let
+// go with its grant, not written afresh at the next sync.
+func TestASentCreateThatLandedLateBeforeAFullReadbackIsLetGo(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	wait := acceptShareWait
+	acceptShareWait = 300 * time.Millisecond
+	t.Cleanup(func() { acceptShareWait = wait })
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`)
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	w.holdNextPush()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+		t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	// A full first push of prompts, so the share's re-send goes second.
+	for i := range account.MaxPushChanges {
+		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 0
+	w.afterPush = func() {
+		w.landHeldLocked()
+		w.tombstone(id)
+		w.prune(id)
+	}
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a sync whose second push was rate limited: no error")
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	posts := w.posts
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if _, live := w.live()[id]; live || sent != 0 {
+		t.Fatalf("the left share on the account: %v, in %d pushes; want it gone, in none", live, sent)
+	}
+	if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
+		t.Fatalf("connections: %+v, %v; want the left share's grant gone", grants, err)
 	}
 }
 

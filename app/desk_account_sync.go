@@ -100,14 +100,13 @@ type syncState struct {
 	ShareRefusals map[string]string `json:"shareRefusals,omitempty"`
 	// SharesHeld are, by account, the shares that account was last seen
 	// to hold: its synced shares, those this device's writes put there
-	// (settled as the service took them, settleShareWrites, or owed in
-	// memory until a save holds them, shareAck), and those a readback saw
-	// deleted. Unlike the rest of this state it is kept for every account,
-	// not started over when another signs in, so a share left while
-	// another account was signed in still reads as left when its account
-	// comes back, by its tombstone or, once that is pruned, its absence
-	// (mergeShares' gone), and its grant here goes. Hosts and prompts start
-	// over on a switch as before.
+	// (settled as the service took them, settleShareWrites), and those a
+	// readback saw deleted. Unlike the rest of this state it is kept for
+	// every account, not started over when another signs in, so a share
+	// left while another account was signed in still reads as left when
+	// its account comes back, by its tombstone or, once that is pruned, its
+	// absence (mergeShares' gone), and its grant here goes. Hosts and
+	// prompts start over on a switch as before.
 	SharesHeld map[string][]string `json:"sharesHeld,omitempty"`
 	// PushFrom is the write ("collection/id") the next round's pushes
 	// start from: a round the service's rate limit stopped leaves it at the
@@ -130,10 +129,6 @@ type syncState struct {
 	// LastSync is the newest sync of AccountID that finished well: when,
 	// and the items the account held then.
 	LastSync *AccountSyncStatus `json:"lastSync,omitempty"`
-	// acksFolded is the newest share acknowledgement owed in memory
-	// (shareAck) that loading this state folded in (foldShareAcks): a save
-	// of this state lets go of it and every older one. Never saved.
-	acksFolded uint64
 }
 
 // promptAttempt is the journal's entry for the unanswered sends of one
@@ -322,17 +317,14 @@ func (d *Desk) syncStatePath() string { return filepath.Join(d.dir, "account-syn
 
 // loadSyncState reads account-sync.json; none yet is an empty state, and an
 // unreadable or damaged one is an error (never a silent restart, which
-// would drop pending deletes). The share acknowledgements owed in memory
-// are folded in (foldShareAcks). d.storeMu must be held.
+// would drop pending deletes). d.storeMu must be held.
 func (d *Desk) loadSyncState() (syncState, error) {
 	if err := d.replayCommit(); err != nil {
 		return syncState{}, err
 	}
 	raw, err := os.ReadFile(d.syncStatePath())
 	if errors.Is(err, os.ErrNotExist) {
-		var s syncState
-		d.foldShareAcks(&s)
-		return s, nil
+		return syncState{}, nil
 	}
 	if err != nil {
 		return syncState{}, err
@@ -372,13 +364,11 @@ func (d *Desk) loadSyncState() (syncState, error) {
 	for _, id := range file.Sending {
 		attempted(id, nil)
 	}
-	d.foldShareAcks(&s)
 	return s, nil
 }
 
 // storeSyncState writes account-sync.json alone (atomically), after any
-// commit a failure left; once written, the share acknowledgements s holds
-// are no longer owed in memory. d.storeMu must be held.
+// commit a failure left. d.storeMu must be held.
 func (d *Desk) storeSyncState(s syncState) error {
 	if err := d.replayCommit(); err != nil {
 		return err
@@ -391,11 +381,7 @@ func (d *Desk) storeSyncState(s syncState) error {
 	if write == nil {
 		write = writeFileAtomic
 	}
-	if err := write(d.syncStatePath(), raw); err != nil {
-		return err
-	}
-	d.dropShareAcks(s.acksFolded)
-	return nil
+	return write(d.syncStatePath(), raw)
 }
 
 // syncCommit is sync-commit.json: one merge's new machines.json and
@@ -417,9 +403,8 @@ func (d *Desk) commitPath() string { return filepath.Join(d.dir, "sync-commit.js
 // then each file and the board cache, then the record goes. A failure
 // after the record leaves it, and the next load finishes it
 // (replayCommit). recorded is whether the record is in place: from then
-// on the commit holds what it applied (the owed answers a merge paid, the
-// share acknowledgements s holds), even when err says a file failed.
-// d.storeMu must be held.
+// on the commit holds what it applied (the owed answers a merge paid),
+// even when err says a file failed. d.storeMu must be held.
 func (d *Desk) commitMerge(machines []byte, ps *promptStore, renamed map[string]string, s syncState) (recorded bool, err error) {
 	c := syncCommit{Machines: machines, Renamed: renamed}
 	if ps != nil {
@@ -438,7 +423,6 @@ func (d *Desk) commitMerge(machines []byte, ps *promptStore, renamed map[string]
 	if err := writeFileAtomic(d.commitPath(), raw); err != nil {
 		return false, err
 	}
-	d.dropShareAcks(s.acksFolded)
 	if err := d.applyCommit(c); err != nil {
 		return true, err
 	}
@@ -574,14 +558,6 @@ type accountSync struct {
 	// them, so turn is their lock too.
 	owed   []owedAnswer
 	resets map[string]int64
-	// acks are the share writes the service took that no saved sync state
-	// holds yet (shareAck), oldest first, and lastAck the newest's number.
-	// Every state loaded holds them, and a save of one lets go of those it
-	// holds. acksMu is their lock: a load (under d.storeMu) reads them
-	// while a round notes one before it waits for d.storeMu.
-	acksMu  sync.Mutex
-	acks    []shareAck
-	lastAck uint64
 	// writeState writes account-sync.json for storeSyncState; nil is
 	// writeFileAtomic. Tests make it fail. Set before any sync.
 	writeState func(path string, raw []byte) error
@@ -764,17 +740,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return ctx.Err()
 	}
 	state, err := d.loadSyncState()
-	switched := err == nil && state.AccountID != acct
-	if switched && state.acksFolded != 0 {
-		// A switch first tries to save the share writes the last account
-		// took that are owed in memory (shareAck); failed, they stay owed,
-		// and held all the same.
-		_ = d.storeSyncState(state)
-	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return err
 	}
+	switched := state.AccountID != acct
 	if switched {
 		// Another account (or the first sync): pull everything first and
 		// adopt its ids before this device pushes anything.
@@ -941,7 +911,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent, revs)
 	promptsChanged := !slices.Equal(prompts, ps.Prompts)
 	changes = append(changes, promptChanges...)
-	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs)
+	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs, pull.Full, pull.Rev)
 	changes = append(changes, shareChanges...)
 	// The writes that may still land: those the pull is past, or past
 	// their deadline (promptAttempt), are settled.
@@ -994,7 +964,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
 		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes, ShareRefusals: noteShareRefusals(latest.ShareRefusals, shareWrites, nil, nil),
 		SharesHeld: sharesHeldBy(latest.SharesHeld, acct, mirror.Shares), Removed: removed, PushFrom: pushFrom, LastSync: lastSync,
-		History: latest.History, ResetsSeen: latest.ResetsSeen, acksFolded: latest.acksFolded}
+		History: latest.History, ResetsSeen: latest.ResetsSeen}
 	if switched {
 		// Another account's state starts its own count: its first pull
 		// was a whole one, so every 410 it saw is behind it.
@@ -1072,6 +1042,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	send := func(planned []account.Change) ([]account.Change, error) {
 		var part []account.Change
 		var sent map[string]sentAttempt
+		var marks map[string]shareMark
 		res, err := d.account.Push(ctx, round, func(notAfter int64) ([]account.Change, error) {
 			var held []string
 			var err error
@@ -1085,15 +1056,20 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			if err == nil {
 				// A share write is journaled as sent before it goes; one
 				// that can't be goes nowhere (journalShareWrites).
-				err = d.journalShareWrites(ctx, acct, part)
+				marks, err = d.journalShareWrites(ctx, acct, part)
 			}
 			return part, err
 		}, func() error {
 			// The dispatch provably wrote nothing (refused, told by its
 			// status line before its body, or never connected): its sends
-			// are settled now, before any refresh and replay.
+			// are settled now, before any refresh and replay, and its
+			// share writes' journal taken back (unsendShareWrites).
 			err := d.settleSend(ctx, acct, history, sent, nil)
 			sent = nil
+			if unsentErr := d.unsendShareWrites(ctx, acct, marks); err == nil {
+				err = unsentErr
+			}
+			marks = nil
 			return err
 		})
 		if err != nil {
@@ -1296,7 +1272,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// Deletes from other devices the readback passed: the local copies
 		// go next time, unless edited, instead of being uploaded again.
 		// After a restore, what the mirror held and the restored account
-		// doesn't is gone as well, except what this round just wrote.
+		// doesn't is gone as well: a host or prompt except what this round
+		// just wrote (it goes up again), a share as below.
 		var goneHosts, gonePrompts, goneShares []string
 		for id := range readGone.Hosts {
 			if !pushed["hosts/"+id] {
@@ -1340,6 +1317,17 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 					goneShares = append(goneShares, id)
 				}
 			}
+			// So is a create sent whose landing the history since can't
+			// rule out (unprovenCreate): it goes as superseded, never
+			// written afresh, and its grant with it.
+			for _, op := range state.ShareWrites {
+				if key := "shares/" + op.ID; op.Account == acct && unprovenCreate(op, readBack.Rev) && !present[key] && !slices.Contains(goneShares, op.ID) {
+					goneShares = append(goneShares, op.ID)
+				}
+			}
+			state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool {
+				return op.Account == acct && slices.Contains(goneShares, op.ID)
+			})
 		}
 		state.HostsGone, state.PromptsGone, state.SharesGone = goneHosts, gonePrompts, goneShares
 	}

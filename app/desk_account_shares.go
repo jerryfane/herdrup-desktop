@@ -48,16 +48,32 @@ var publishSyncedShares = func(s []SyncedShare) { SyncedSharesChanged.Broadcast(
 // this device owes the account the grant is bound to (Account): the
 // account signed in at its redemption, which need not be the one a sync
 // state holds yet, so a state of another account keeps it until that one
-// syncs. Sent, on a write, is the base_rev a request carried it on, saved
-// before the request goes (journalShareWrites): from then on it may have
-// landed, however its answer went, and mergeShares settles it by what the
-// account holds rather than writing it afresh (as the web's journal of
-// writes sent, src/web/shares.ts SharesRecord sent).
+// syncs. Sent, on a write, is the base_rev a request carried it on, and
+// SentAt the account revision this device had pulled to then (the
+// mirror's), saved before the request goes (journalShareWrites): from
+// then on it may have landed, however its answer went, and mergeShares
+// settles it by what the account holds rather than writing it afresh (as
+// the web's journal of writes sent, src/web/shares.ts SharesRecord sent).
+// A dispatch that provably wrote nothing puts both back as they were
+// before it (unsendShareWrites).
 type shareOp struct {
 	ID      string             `json:"id"`
 	Account string             `json:"account"`
 	Body    *account.ShareBody `json:"body,omitempty"`
 	Sent    *int64             `json:"sent,omitempty"`
+	SentAt  int64              `json:"sentAt,omitempty"`
+}
+
+// unprovenCreate is whether op is a create (base 0) sent whose landing a
+// full pull of its account at revision rev can't rule out. Any landing of
+// it, and any tombstone of that landing, has a revision past SentAt. An
+// incremental pull from at or below SentAt can't miss either: it lists
+// the row or its tombstone, or the service refuses it (410) once that
+// tombstone was pruned (sync_floor, AccountService DESIGN.md §5.5). A full
+// pull lists no pruned tombstone, so its lacking the item proves nothing,
+// unless the account has written nothing since (rev at or below SentAt).
+func unprovenCreate(op shareOp, rev int64) bool {
+	return op.Sent != nil && *op.Sent == 0 && rev > op.SentAt
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -206,13 +222,14 @@ func (d *Desk) confirmShare() {
 }
 
 // journalShareWrites saves, before a push goes, that each share write it
-// carries (part, account acct's) was sent on its base_rev (shareOp.Sent):
-// from then on its outcome may be unknown, an answer lost, or an answer
-// whose settling was lost (shareAck: the app ended before a save held it),
-// and the merge settles it by what the account holds instead of writing
-// it afresh (mergeShares). If the journal can't be saved, the push doesn't
-// go.
-func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []account.Change) error {
+// carries (part, account acct's) was sent on its base_rev (shareOp.Sent),
+// with the revision the mirror was pulled to (SentAt): from then on its
+// outcome may be unknown, an answer lost, or an answer whose settling
+// couldn't be saved, and the merge settles it by what the account holds
+// instead of writing it afresh (mergeShares). If the journal can't be
+// saved, the push doesn't go. It returns what it marked, for
+// unsendShareWrites.
+func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []account.Change) (map[string]shareMark, error) {
 	sent := map[string]int64{}
 	for _, c := range part {
 		if c.Collection == "shares" && !c.Deleted {
@@ -220,9 +237,48 @@ func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []accou
 		}
 	}
 	if len(sent) == 0 {
-		return nil
+		return nil, nil
 	}
 	if !d.storeMu.LockCtx(ctx) {
+		return nil, ctx.Err()
+	}
+	defer d.storeMu.Unlock()
+	state, err := d.loadSyncState()
+	if err != nil {
+		return nil, err
+	}
+	marks := map[string]shareMark{}
+	for i, op := range state.ShareWrites {
+		if base, ok := sent[op.ID]; ok && op.Account == acct {
+			marks[op.ID] = shareMark{base: base, at: state.Mirror.Rev, was: op.Sent, wasAt: op.SentAt}
+			state.ShareWrites[i].Sent, state.ShareWrites[i].SentAt = &base, state.Mirror.Rev
+		}
+	}
+	if err := d.storeSyncState(state); err != nil {
+		return nil, err
+	}
+	return marks, nil
+}
+
+// shareMark is a share write's journal as one dispatch set it (base, at:
+// shareOp.Sent and SentAt) and as it was before (was, wasAt).
+type shareMark struct {
+	base, at int64
+	was      *int64
+	wasAt    int64
+}
+
+// unsendShareWrites takes back what a dispatch's journal marked (marks,
+// journalShareWrites) once the dispatch provably wrote nothing (the
+// service refused it, or it never connected): each write's journal is
+// again what it was, never sent (so no later pull, a full one included,
+// makes this dispatch ambiguous, unprovenCreate), or an earlier dispatch
+// that may still have landed. A journal changed since is left alone.
+func (d *Desk) unsendShareWrites(ctx context.Context, acct string, marks map[string]shareMark) error {
+	if len(marks) == 0 {
+		return nil
+	}
+	if !d.storeMu.LockBestEffort(ctx) {
 		return ctx.Err()
 	}
 	defer d.storeMu.Unlock()
@@ -230,25 +286,26 @@ func (d *Desk) journalShareWrites(ctx context.Context, acct string, part []accou
 	if err != nil {
 		return err
 	}
+	changed := false
 	for i, op := range state.ShareWrites {
-		if base, ok := sent[op.ID]; ok && op.Account == acct {
-			state.ShareWrites[i].Sent = &base
+		if m, ok := marks[op.ID]; ok && op.Account == acct && op.Sent != nil && *op.Sent == m.base && op.SentAt == m.at {
+			state.ShareWrites[i].Sent, state.ShareWrites[i].SentAt = m.was, m.wasAt
+			changed = true
 		}
+	}
+	if !changed {
+		return nil
 	}
 	return d.storeSyncState(state)
 }
 
 // settleShareWrites settles the share writes of applied (a push's answer
-// for account acct, its entries checked, joinOutcomes) the service took:
-// none is owed any more, so none goes again (on a tombstone it would bring
-// the share back), and acct is known to hold each (SharesHeld), before the
-// round's readback, which may fail, and whichever account signs in next.
-// The settling is owed in memory first (shareAck), and let go only once a
-// saved sync state holds it: a wait for the store the round gave up, or a
-// save that failed, leaves it owed. Every state loaded meanwhile holds it
-// (foldShareAcks), so a write the service took is settled as held, never
-// written afresh, and the next save of the state, whatever makes it (an
-// account switch tries one first, syncPass), writes it down.
+// for account acct) the service took: none is owed any more, so none goes
+// again (on a tombstone it would bring the share back), and acct is known
+// to hold each (SharesHeld), before the round's readback, which may fail,
+// and whichever account signs in next. If that can't be saved, the writes
+// stay journaled as sent, and the merge settles them by the account's
+// history (mergeShares).
 func (d *Desk) settleShareWrites(ctx context.Context, acct string, applied []appliedChange) error {
 	var took []string
 	for _, a := range applied {
@@ -259,59 +316,17 @@ func (d *Desk) settleShareWrites(ctx context.Context, acct string, applied []app
 	if len(took) == 0 {
 		return nil
 	}
-	d.accountSync.acksMu.Lock()
-	d.accountSync.lastAck++
-	d.accountSync.acks = append(d.accountSync.acks, shareAck{seq: d.accountSync.lastAck, acct: acct, ids: took})
-	d.accountSync.acksMu.Unlock()
 	if !d.storeMu.LockBestEffort(ctx) {
 		return ctx.Err()
 	}
 	defer d.storeMu.Unlock()
 	state, err := d.loadSyncState()
-	if err != nil {
+	if err != nil || state.AccountID != acct {
 		return err
 	}
+	state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool { return op.Account == acct && slices.Contains(took, op.ID) })
+	state.SharesHeld = sharesHeldBy(state.SharesHeld, acct, nil, state.SharesHeld[acct], took)
 	return d.storeSyncState(state)
-}
-
-// shareAck is share writes the service took for account acct (ids, their
-// items' ids), owed in memory until a saved sync state holds them
-// (settleShareWrites); seq numbers it among them. Kept in memory only, it
-// is lost if the app ends before such a save: the writes are still
-// journaled as sent (shareOp.Sent), and the merge settles them by what the
-// account holds, which can't tell one that landed on no item (base 0),
-// was deleted, and had its tombstone pruned before the next pull from one
-// that never landed (mergeShares): that write goes again. Of a failed
-// save, that is all that remains.
-type shareAck struct {
-	seq  uint64
-	acct string
-	ids  []string
-}
-
-// foldShareAcks applies the share acknowledgements owed in memory to state
-// (a sync state just loaded, whichever account's), as settleShareWrites
-// saves them, and notes the newest it holds (acksFolded). d.storeMu must
-// be held.
-func (d *Desk) foldShareAcks(state *syncState) {
-	d.accountSync.acksMu.Lock()
-	defer d.accountSync.acksMu.Unlock()
-	for _, a := range d.accountSync.acks {
-		state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool { return op.Account == a.acct && slices.Contains(a.ids, op.ID) })
-		state.SharesHeld = sharesHeldBy(state.SharesHeld, a.acct, nil, state.SharesHeld[a.acct], a.ids)
-		state.acksFolded = a.seq
-	}
-}
-
-// dropShareAcks lets go of the share acknowledgements owed in memory up to
-// seq: a saved sync state holds them.
-func (d *Desk) dropShareAcks(seq uint64) {
-	if seq == 0 {
-		return
-	}
-	d.accountSync.acksMu.Lock()
-	defer d.accountSync.acksMu.Unlock()
-	d.accountSync.acks = slices.DeleteFunc(d.accountSync.acks, func(a shareAck) bool { return a.seq <= seq })
 }
 
 // sharesHeldBy is held (SharesHeld) with account acct's set made the ids
@@ -423,34 +438,35 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 }
 
 // mergeShares plans account acct's shares changes from the mirror after a
-// pull (mirror), the ids the account is known to have held (known, as
-// syncPass builds it for hosts and prompts), the writes and deletes owed
-// (as shareOp, other accounts' kept as they are) and the base revisions
-// (revs, as baseRevs):
+// pull (mirror; full, at revision rev: the pull that brought it), the ids
+// the account is known to have held (known, as syncPass builds it for
+// hosts and prompts), the writes and deletes owed (as shareOp, other
+// accounts' kept as they are) and the base revisions (revs, as baseRevs):
 //   - an owed write the account holds has landed (this device's, or a copy
 //     of the grant from another): it goes;
 //   - one whose item the account held and no longer does was left
 //     elsewhere: it goes, and so does the grant (gone);
 //   - one a request already carried (Sent) is settled, never written
-//     afresh: its item where it was sent (the same base revision: a
-//     tombstone not passed, or none) means it never landed, and it goes
-//     again on that base; its item anywhere else (a tombstone or another
-//     write past that base, and not held) means someone else's change
-//     superseded it: it goes, and so does the grant (gone). A write the
-//     service was seen to take is no longer owed here: its acknowledgement
-//     (SharesHeld, or owed in memory, shareAck) makes its item known, so
-//     its absence is a leave. The one case this can't tell (as the web's):
-//     a write whose acknowledgement was lost (the app ended before any
-//     save held it), that landed on no item (base 0), then deleted, its
-//     tombstone pruned (90 days, or 2,000 deletes past it) before this
-//     pull, reads as never landed, and goes again;
+//     afresh: it goes again, on that base, only once the account's
+//     history proves it never landed: its item where it was sent (the same
+//     base revision: a tombstone not passed, or none), read by pulls that
+//     each would have shown a landing since (unprovenCreate: an absent
+//     item after a full pull proves nothing for a create, unless the
+//     account wrote nothing since). Otherwise someone else's change
+//     superseded it (a tombstone or another write past that base, and not
+//     held), or may have (a create a full pull can't rule out, deleted
+//     elsewhere, its tombstone pruned): it goes, and so does the grant
+//     (gone), as a leave elsewhere would have it. A create that never
+//     landed is lost so only past a dispatch with no answer (or an answer
+//     whose settling couldn't be saved) and a full pull after it; the
+//     invitation can be accepted again;
 //   - any other is written, on the revision last seen of its item;
 //   - an owed delete of an item the account holds is sent, on its
 //     revision; one of an item it doesn't hold is done.
 //
 // gone are the known items the account no longer holds, and the items of
 // superseded writes: this device's bound grants for them go.
-func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
+func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
 	held := map[string]int64{}
 	for _, s := range mirror {
 		held[s.ID] = s.Rev
@@ -470,7 +486,7 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 			continue
 		}
 		base := revs["shares/"+op.ID]
-		if op.Sent != nil && *op.Sent != base {
+		if op.Sent != nil && (*op.Sent != base || full && unprovenCreate(op, rev)) {
 			gone[op.ID] = true
 			continue
 		}
