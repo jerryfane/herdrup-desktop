@@ -21222,6 +21222,11 @@
               "description": "Whether this server supports explicit client-shell surface interest.",
               "type": "boolean"
             },
+            "transcript_agy": {
+              "default": false,
+              "description": "`agent.transcript` also serves Antigravity CLI (`agy`) agents by reading\ntheir SQLite conversation database. Clients offer Chat for `agy` only\nwhen this is true.",
+              "type": "boolean"
+            },
             "transcript_max_bytes": {
               "default": false,
               "description": "`agent.transcript` honours `max_bytes`: a newest or `before` page keeps\nonly its newest entries whose JSON fits. Older servers ignore the param\nand page by turns alone.",
@@ -21898,6 +21903,13 @@
         },
         "TranscriptModel": {
           "properties": {
+            "harness": {
+              "description": "The agent harness running this session (`\"omp\"`, `\"agy\"`, etc.).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -21909,7 +21921,7 @@
               "type": "boolean"
             },
             "thinking_level": {
-              "description": "The effort omp runs the model at: minimal, low, medium, high, xhigh or\nmax. Absent when thinking is off or the level is unknown.",
+              "description": "The effort the agent runs the model at: minimal, low, medium, high,\nxhigh or max. Absent when thinking is off or the level is unknown.",
               "type": [
                 "string",
                 "null"
