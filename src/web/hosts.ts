@@ -75,7 +75,9 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   if (at !== accountVersion) return;
   header.showAccount(state, providers === null || providers.length > 0);
   header.title("Welcome back", state?.signedIn && state.displayHint ? `Signed in · ${state.displayHint}` : "Signed in");
-  signedIn = state?.signedIn === true;
+  const nextSignedIn = state?.signedIn === true;
+  signedIn = nextSignedIn;
+  if (signedIn && !container.hidden && !approvalStarted) { approvalStarted = true; begin(); }
   void refreshShared();
  };
  // SHARED WITH YOU (sharedWithYou.ts), as on the desktop's host home: the grant this browser
@@ -96,6 +98,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
 
  // The notice's account row (the notice as it was: signing out there, or in Settings, ends the
  // session).
+ let approvalStarted = false;
  const account = new HerdrUpAccountPanel(() => { if (phase.kind === "unsupported") draw(); });
  followSession(ownerAccess.account, {
   // The session's work goes at once, its record (OwnerWork) saying what ran: the approval in
@@ -110,7 +113,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
    if (probing !== null) { void probing(); probing = null; }
    if (wasOpening) draw();
   },
-  startOver: () => startOver(),
+  startOver: () => { if (approvalStarted || !container.hidden) startOver(); },
   // The same account read back after a refused sign-out: what the end stopped starts again under
   // the new session; the screen stays as it was (an approval that had ended stays as it ended).
   restored: () => {
@@ -225,8 +228,14 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   draw();
  }
 
- new MutationObserver(probe).observe(container, { attributes: true, attributeFilter: ["hidden"] });
- begin();
+ new MutationObserver(() => {
+  if (!container.hidden) {
+   if (!signedIn && ownerAccess.account.current === null) { startOver(true); return; }
+   if (!approvalStarted) { approvalStarted = true; begin(); }
+  }
+  probe();
+ }).observe(container, { attributes: true, attributeFilter: ["hidden"] });
+ if (!container.hidden && ownerAccess.account.current !== null) { approvalStarted = true; begin(); }
  void account.refresh(true);
 
  return {

@@ -20,10 +20,13 @@ test("the desktop keeps every desktop-only part; the browser has none", () => {
  expect(shellParts(true)).toEqual({ sessionPills: false, appUpdates: false, starAsk: false, usageCount: false, federation: false });
 });
 
-test("a guest connection is a share on the desktop, never in the browser's owner shell", () => {
+test("a guest share shows the guest home on desktop and browser; a browser owner link stays in the owner shell", () => {
  expect(shareShown(owner(), false)).toBe(true);
+ expect(shareShown(owner(), true)).toBe(true);
  expect(shareShown({}, false)).toBe(false);
+ expect(shareShown({}, true)).toBe(false);
  expect(shareShown(owner("terminal"), true)).toBe(false);
+ expect(shareShown(owner("chat"), true)).toBe(false);
 });
 
 test("writes: always on the desktop, only a terminal-scope link in the browser", () => {

@@ -87,7 +87,7 @@ type Page = "machines" | "herdrupAccount" | "accounts" | "sharedAccess" | "notif
 /** The Settings of a device viewing a share (guest mode): the share's card and its page
  *  (`details`, guestHome.ts) in place of the machine's, and a way to connect a machine of
  *  its own. `key` changes when the page's content does. */
-export interface ShareSettings { key: string; agentName: string; ownerName: string; machineLabel: string; details(): HTMLElement; connectOwn(): void }
+export interface ShareSettings { key: string; agentName: string; ownerName: string; machineLabel: string; details(): HTMLElement; connectOwn?: () => void }
 /** The pages a share's Settings has: the share's ("machines"), and the app's own (its text size,
  *  updates and HerdrUp account, whose row it lists too). */
 const shareLeaves = new Set<Page>(["machines", "herdrupAccount", "textSize", "appUpdates"]);
@@ -364,10 +364,10 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
     // A share's Settings: the app's own settings; what needs a machine of your own (its
     // accounts, sharing, notifications and typing measurements) waits for one.
     const herd = share
-      ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn(), "Pair your computer or add an SSH host")])
+      ? share.connectOwn ? group("YOUR OWN MACHINE", [row("Connect your own machine", "plus.circle", () => share?.connectOwn?.(), parts.federation ? "Pair your computer or add an SSH host" : "Open your approved machines")]) : null
       : group("YOUR HERD", [...(served.accounts && administers() ? [accountRow] : []), ...(served.sharedAccess && administers() ? [sharedRow] : []), ...(served.notifications ? [notificationRow] : [])]);
-    const herdShown = share !== null || (served.accounts || served.sharedAccess) && administers() || served.notifications;
-    index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), ...(herdShown ? [herd] : []), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
+    const herdShown = herd !== null && (share !== null || (served.accounts || served.sharedAccess) && administers() || served.notifications);
+    index.replaceChildren(card, suggestions, ...(herdrupAccountShown ? [group(ACCOUNT_TITLE.toUpperCase(), [herdrupAccountRow])] : []), ...(herdShown && herd ? [herd] : []), group("PREFERENCES", [sizing, typingRow, chatPreferenceRow]), group("HELP", [
       ...(share ? [] : [latencyRow]),
       link("Report a bug or request a feature", "exclamationmark.bubble", "https://github.com/themartianapp/herdrup/issues"),
     ]), group("ABOUT", [
