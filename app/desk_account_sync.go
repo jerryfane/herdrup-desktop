@@ -766,6 +766,15 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if err != nil {
 		return err
 	}
+	// Before a full pull settles a sent create it lacks as superseded, the
+	// service's retained history may prove it never landed (keptSince).
+	kept, err := d.keptSince(ctx, round, acct, pull)
+	if errors.Is(err, account.ErrAccountChanged) {
+		return errSyncAbandoned
+	}
+	if err != nil {
+		return err
+	}
 	// The lock may be long in coming: the wait ends with the round, and a
 	// round past its deadline applies nothing.
 	if !d.storeMu.LockCtx(ctx) {
@@ -911,7 +920,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent, revs)
 	promptsChanged := !slices.Equal(prompts, ps.Prompts)
 	changes = append(changes, promptChanges...)
-	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs, pull.Full, pull.Rev)
+	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs, pull.Full, pull.Rev, kept)
 	changes = append(changes, shareChanges...)
 	// The writes that may still land: those the pull is past, or past
 	// their deadline (promptAttempt), are settled.
@@ -1171,12 +1180,21 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 	}
 	var readBack account.Pull
+	var readKept int64
 	if len(acked) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, round, mirror.Rev)
 		if readBack.Reset {
 			d.noteReset(acct, state.ResetsSeen) // whatever comes of the readback, before anything else
 		}
+		if errors.Is(err, account.ErrAccountChanged) {
+			return errSyncAbandoned
+		}
+		if err != nil {
+			return err
+		}
+		// As for the pull (keptSince), for a full readback.
+		readKept, err = d.keptSince(ctx, round, acct, readBack)
 		if errors.Is(err, account.ErrAccountChanged) {
 			return errSyncAbandoned
 		}
@@ -1304,8 +1322,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			// Shares, decided once, over every id this device had cause to
 			// think the account held: the mirror before (held), those the
 			// account acknowledged (SharesHeld, this round's writes it took
-			// among them) and the creates sent whose landing the history
-			// since can't rule out (unprovenCreate). One the full readback
+			// among them) and the creates sent whose landing neither the
+			// history since nor what the service retains of it can rule
+			// out (unprovenCreate, readKept). One the full readback
 			// lacks was deleted, its tombstone pruned (or restored away)
 			// since, unless this device deleted it this round: gone, as a
 			// tombstone would say, before the held ids are discarded below.
@@ -1320,7 +1339,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				was[id] = true
 			}
 			for _, op := range state.ShareWrites {
-				if op.Account == acct && unprovenCreate(op, readBack.Rev) {
+				if op.Account == acct && unprovenCreate(op, readBack.Rev, readKept) {
 					was[op.ID] = true
 				}
 			}

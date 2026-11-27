@@ -984,22 +984,24 @@ func TestASentCreateAFullPullCantRuleOutIsNotWrittenAfresh(t *testing.T) {
 
 // A sent create the account's history proves never landed is sent again,
 // once: its push answered 503, the pull after it incremental, or a full
-// one with nothing written since; or its push refused (provably nothing
-// written), whatever pull comes after, another account's in between and
-// a full one of this account back included.
+// one with nothing written since, or one after the account moved on
+// whose history from the send the service still holds; or its push
+// refused (provably nothing written), whatever pull comes after, another
+// account's in between and a full one of this account back included.
 func TestASentCreateThatNeverLandedIsSentAgainOnce(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		// seed is a prompt on the account first, so its pulls past it are
 		// incremental; refused fills the account instead of failing the
-		// push, and the account moves on (another prompt) before the next
-		// sync; away signs another account in and syncs it first.
-		seed, refused, away bool
+		// push; away signs another account in and syncs it first, and
+		// moveOn writes another prompt to the account meanwhile.
+		seed, refused, away, moveOn bool
 	}{
-		{"its pull after incremental", true, false, false},
-		{"a full pull, the account unwritten since", false, false, false},
-		{"a full pull after another account, the account unwritten since", true, false, true},
-		{"refused, a full pull after another account, the account written since", true, true, true},
+		{"its pull after incremental", true, false, false, false},
+		{"a full pull, the account unwritten since", false, false, false, false},
+		{"a full pull after another account, the account unwritten since", true, false, true, false},
+		{"a full pull after another account, the account written since", true, false, true, true},
+		{"refused, a full pull after another account, the account written since", true, true, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			quietSync(t)
@@ -1031,7 +1033,7 @@ func TestASentCreateThatNeverLandedIsSentAgainOnce(t *testing.T) {
 				if err := d.SyncMachines(ctx); err != nil {
 					t.Fatal(err)
 				}
-				if c.refused {
+				if c.moveOn {
 					w.seedPrompt("prompt-2", `{"text":"meanwhile"}`) // the account moves on
 				}
 				signInAs(t, w, d, "acct")
@@ -1110,6 +1112,57 @@ func TestASentCreateThatLandedLateBeforeAFullReadbackIsLetGo(t *testing.T) {
 	}
 	if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
 		t.Fatalf("connections: %+v, %v; want the left share's grant gone", grants, err)
+	}
+}
+
+// A full readback (from an empty account's 0) that lacks a create whose
+// push had no answer doesn't let it go while the service still holds its
+// history from the send: nothing was pruned, so the readback would list
+// a landing and its tombstone. The create is sent again at the next sync.
+func TestASentCreateAFullReadbackLacksIsKeptWhileItsHistoryIs(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+		t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	// A full first push of prompts, so the share's re-send goes second and
+	// is rate limited, after the first is read back.
+	for i := range account.MaxPushChanges {
+		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.rateLimit, w.windowPosts = 1, 0
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a sync whose second push was rate limited: no error")
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	posts := w.posts
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	sent := w.posts - posts
+	w.mu.Unlock()
+	if _, live := w.live()[id]; !live || sent != 1 {
+		t.Fatalf("the share on the account: %v, in %d pushes; want it, in 1", live, sent)
+	}
+	if grants, err := d.SharedConnections(); err != nil || len(grants) != 1 || grants[0].AccountShare != shareConfirmed {
+		t.Fatalf("after the sync: %+v, %v; want the share confirmed", grants, err)
 	}
 }
 

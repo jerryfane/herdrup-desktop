@@ -152,6 +152,28 @@ func (c *Client) pull(ctx context.Context, r Round, since int64) (Pull, error) {
 	return Pull{}, fmt.Errorf("account service: more than %d sync pages", maxPullPages)
 }
 
+// Retains is whether the service still holds the account's whole history
+// after since (> 0; a pull from 0 is never refused): a pull from there
+// isn't refused (410), so no tombstone above since was pruned
+// (sync_floor, AccountService DESIGN.md §5.5). It reads one page, for r's
+// session as PullSince.
+func (c *Client) Retains(ctx context.Context, r Round, since int64) (bool, error) {
+	query := url.Values{"since": {strconv.FormatInt(since, 10)}}
+	var answer struct {
+		NowMs int64 `json:"now_ms"`
+	}
+	err := c.authedEach(ctx, r, http.MethodGet, "/v1/sync?"+query.Encode(), func() (any, error) { return nil, nil }, nil, &answer)
+	var api *APIError
+	if errors.As(err, &api) && api.Status == http.StatusGone {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	c.noteNow(answer.NowMs)
+	return true, nil
+}
+
 // The service's limits on one push (src/sync.ts MAX_CHANGES,
 // MAX_SYNC_BODY_BYTES): past either it answers 413 to the whole push.
 const (

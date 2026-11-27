@@ -66,14 +66,62 @@ type shareOp struct {
 
 // unprovenCreate is whether op is a create (base 0) sent whose landing a
 // full pull of its account at revision rev can't rule out. Any landing of
-// it, and any tombstone of that landing, has a revision past SentAt. An
-// incremental pull from at or below SentAt can't miss either: it lists
-// the row or its tombstone, or the service refuses it (410) once that
-// tombstone was pruned (sync_floor, AccountService DESIGN.md §5.5). A full
-// pull lists no pruned tombstone, so its lacking the item proves nothing,
-// unless the account has written nothing since (rev at or below SentAt).
-func unprovenCreate(op shareOp, rev int64) bool {
-	return op.Sent != nil && *op.Sent == 0 && rev > op.SentAt
+// it has a revision past SentAt, and any tombstone of that landing one
+// past that. An incremental pull from at or below SentAt can't miss
+// either: it lists the row or its tombstone, or the service refuses it
+// (410) once that tombstone was pruned (sync_floor, AccountService
+// DESIGN.md §5.5). A full pull lists no pruned tombstone, so its lacking
+// the item proves nothing, unless the account has written nothing since
+// (rev at or below SentAt), or the service still holds its history from
+// where op was sent (retainedFrom at or past kept: the lowest revision a
+// pull from which the service doesn't refuse, keptSince; 0 for none).
+func unprovenCreate(op shareOp, rev, kept int64) bool {
+	return op.Sent != nil && *op.Sent == 0 && rev > op.SentAt && (kept == 0 || retainedFrom(op) < kept)
+}
+
+// retainedFrom is where a pull starts that, not refused, proves a full
+// pull lists any landing of op since it was sent: SentAt, or 1 for one
+// sent on an empty account (a pull from 0 is never refused; a tombstone
+// of a landing there has a revision past 1).
+func retainedFrom(op shareOp) int64 {
+	return max(op.SentAt, 1)
+}
+
+// keptSince asks the service whether it still holds its history from
+// where each sent create of acct that full pull p can't rule out by
+// itself was sent (unprovenCreate, retainedFrom), and returns the lowest
+// revision it does (from there on it does from every later one), 0 for
+// none or a pull that isn't full. Each ask is one page
+// (account.Retains), made only when such a create is owed, before the
+// merge or readback settles it as superseded.
+func (d *Desk) keptSince(ctx context.Context, round account.Round, acct string, p account.Pull) (int64, error) {
+	if !p.Full {
+		return 0, nil
+	}
+	if !d.storeMu.LockCtx(ctx) {
+		return 0, ctx.Err()
+	}
+	state, err := d.loadSyncState()
+	d.storeMu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	var froms []int64
+	for _, op := range state.ShareWrites {
+		if op.Account == acct && unprovenCreate(op, p.Rev, 0) {
+			froms = append(froms, retainedFrom(op))
+		}
+	}
+	slices.Sort(froms)
+	for _, from := range slices.Compact(froms) {
+		switch kept, err := d.account.Retains(ctx, round, from); {
+		case err != nil:
+			return 0, err
+		case kept:
+			return from, nil
+		}
+	}
+	return 0, nil
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -438,7 +486,8 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 }
 
 // mergeShares plans account acct's shares changes from the mirror after a
-// pull (mirror; full, at revision rev: the pull that brought it), the ids
+// pull (mirror; full, at revision rev: the pull that brought it, the
+// service holding its history from kept on, keptSince), the ids
 // the account is known to have held (known, as syncPass builds it for
 // hosts and prompts), the writes and deletes owed (as shareOp, other
 // accounts' kept as they are) and the base revisions (revs, as baseRevs):
@@ -452,21 +501,22 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 //     base revision: a tombstone not passed, or none), read by pulls that
 //     each would have shown a landing since (unprovenCreate: an absent
 //     item after a full pull proves nothing for a create, unless the
-//     account wrote nothing since). Otherwise someone else's change
+//     account wrote nothing since, or the service still holds its history
+//     from where the create was sent). Otherwise someone else's change
 //     superseded it (a tombstone or another write past that base, and not
 //     held), or may have (a create a full pull can't rule out, deleted
 //     elsewhere, its tombstone pruned): it goes, and so does the grant
 //     (gone), as a leave elsewhere would have it. A create that never
 //     landed is lost so only past a dispatch with no answer (or an answer
-//     whose settling couldn't be saved) and a full pull after it; the
-//     invitation can be accepted again;
+//     whose settling couldn't be saved) and a full pull after a tombstone
+//     since was pruned; the invitation can be accepted again;
 //   - any other is written, on the revision last seen of its item;
 //   - an owed delete of an item the account holds is sent, on its
 //     revision; one of an item it doesn't hold is done.
 //
 // gone are the known items the account no longer holds, and the items of
 // superseded writes: this device's bound grants for them go.
-func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
+func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev, kept int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
 	held := map[string]int64{}
 	for _, s := range mirror {
 		held[s.ID] = s.Rev
@@ -486,7 +536,7 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 			continue
 		}
 		base := revs["shares/"+op.ID]
-		if op.Sent != nil && (*op.Sent != base || full && unprovenCreate(op, rev)) {
+		if op.Sent != nil && (*op.Sent != base || full && unprovenCreate(op, rev, kept)) {
 			gone[op.ID] = true
 			continue
 		}
