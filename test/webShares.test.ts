@@ -1266,4 +1266,68 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   mac.storage.setItem = origSet;
   mac.grants.remove = origRemove;
  }
+ // Variant 4 (RESET-DURING-OPEN): a 410+503 landing during openSyncedShare's save refuses the
+ // open without deleting a still-valid saved grant, and recovers once the full pull commits.
+ {
+  const w = worker(), h = host();
+  const mac = await browser(w), linux = await browser(w);
+  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id = `${h.relay.hostID}/${access.guestID}`;
+  const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+  await linux.shares.sync();
+  await linux.desk.openSyncedShare(id);
+  const origPut = linux.grants.put.bind(linux.grants);
+  let triggered = false;
+  linux.grants.put = async g => {
+   await origPut(g);
+   if (!triggered) {
+    triggered = true;
+    w.reset();
+    w.seedShare(id, liveBody);
+    w.seedPrompt("bump-floor", {});
+    w.prune(w.rev);
+    w.failPullSince = 0;
+    await linux.shares.sync().catch(() => {});
+   }
+  };
+  await expect(linux.desk.openSyncedShare(id)).rejects.toThrow("refreshing");
+  linux.grants.put = origPut;
+  // Saved grant was NOT removed by the unverified check during the 503 outage.
+  expect(await linux.grants.get(id)).toBeDefined();
+  w.failPullSince = null;
+  await linux.shares.sync();
+  expect((await linux.desk.syncedShares()).find(s => s.id === id)?.local).toBe(true);
+  expect((await linux.desk.sharedConnections()).map(c => c.guestID)).toContain(access.guestID);
+ }
+ // Variant 5 (DEVICE-ONLY-REFUSED-ADD): a pending 410 reset for an account mirror does not hide
+ // or block a bound grant whose account add was refused and that never entered the mirror.
+ {
+  const w = worker(), h = host();
+  const mac = await browser(w);
+  const a1 = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id1 = `${h.relay.hostID}/${a1.guestID}`;
+  const origSet = mac.storage.setItem.bind(mac.storage);
+  mac.storage.setItem = (k, v) => {
+   if (k === SHARES_KEY_PREFIX + "acct") throw new DOMException("quota", "QuotaExceededError");
+   origSet(k, v);
+  };
+  const a2 = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id2 = `${h.relay.hostID}/${a2.guestID}`;
+  expect(a2.added?.outcome).toBe("refused");
+  expect(id1).not.toBe(id2);
+  mac.storage.setItem = origSet;
+  // Trigger a 410 + 503 for the account mirror (which holds id1 at rev 1, never id2).
+  w.reset();
+  w.seedPrompt("reset-1", {});
+  w.seedPrompt("reset-2", {});
+  w.prune(w.rev);
+  w.failPullSince = 0;
+  await expect(mac.shares.sync()).rejects.toThrow();
+  // Mirror-backed id1 is unverified/hidden, while device-only id2 stays listed and openable.
+  expect((await mac.desk.sharedConnections()).map(c => c.guestID)).toEqual([a2.guestID]);
+  await expect(mac.desk.connectGuest(id1)).rejects.toThrow("no longer saved");
+  await mac.desk.connectGuest(id2);
+  expect((await mac.desk.state()).phase).not.toBe("idle");
+  w.failPullSince = null;
+ }
 }, CONNECTS_LIMIT_MS);

@@ -394,20 +394,16 @@ export function createGuestDesk(env: DeskEnv) {
   if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
   return { shares: env.shares, statements: boundShareStatements(env.statements) };
  }
- /** Whether a bound grant is masked as deleted by the shares sync (confirmed deletion only). */
- function isGrantMasked(grant: Access): boolean {
-  return shares !== undefined && grant.accountBound === true && grant.account !== undefined
-   && shares.isMasked(grant.account, grantKey(grant));
- }
- /** Whether a bound grant is currently unavailable to list or open: masked as deleted or
-  *  unverified behind a pending 410 history reset awaiting a committed full pull. */
- function isGrantUnavailable(grant: Access): boolean {
-  return isGrantMasked(grant) || (shares !== undefined && grant.accountBound === true
-   && grant.account !== undefined && shares.isUnverified(grant.account, grantKey(grant)));
+ /** Classifies a bound grant against the shares sync in a single record read ("masked" for
+  *  confirmed deletion, "unverified" for mirror-backed rows awaiting a 410 full pull, else
+  *  "available"). Plain grants are always "available". */
+ function grantStateOf(grant: Access): "available" | "unverified" | "masked" {
+  if (shares === undefined || grant.accountBound !== true || grant.account === undefined) return "available";
+  return shares.grantState(grant.account, grantKey(grant));
  }
  /** Available grants currently held by this browser. */
  async function unmaskedGrants(): Promise<Access[]> {
-  return (await env.grants.list()).filter(g => !isGrantUnavailable(g));
+  return (await env.grants.list()).filter(g => grantStateOf(g) === "available");
  }
  /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
  async function publishShares(shares: RemoteShare[]) {
@@ -447,7 +443,7 @@ export function createGuestDesk(env: DeskEnv) {
   if (open?.id.startsWith("guest:")) {
    const openID = open.id.slice("guest:".length);
    const held = await env.grants.get(openID);
-   if ((held === undefined || isGrantMasked(held)) && active === open) {
+   if ((held === undefined || grantStateOf(held) === "masked") && active === open) {
     disconnect();
     publishIdle();
    }
@@ -803,14 +799,19 @@ export function createGuestDesk(env: DeskEnv) {
    }, identity, statements, { now: now(), webSocket: env.webSocket });
    // Its session is closed already. Saved only while the share is still on the account it is
    // bound to, and checked again once saved: a round that pulls its deletion comes wholly before
-   // a check (which then refuses it) or after it (and its listener finds the grant and drops it).
+   // a check (which then refuses and removes it) or after it (and its listener finds the grant and
+   // drops it). A pending 410 reset (unverified) refuses the open without deleting a saved grant.
    const acct = access.account;
-   const removed = async () => acct === undefined || !await shares.listed(acct, id);
-   if (await removed()) throw new Error("This share was removed.");
+   const checkState = async () => acct === undefined ? "absent" as const : await shares.listedState(acct, id);
+   const beforeSave = await checkState();
+   if (beforeSave !== "listed") {
+    throw new Error(beforeSave === "unverified" ? "Your account shares are refreshing. Try again." : "This share was removed.");
+   }
    await env.grants.put(access);
-   if (await removed()) {
-    await env.grants.remove(id);
-    throw new Error("This share was removed.");
+   const afterSave = await checkState();
+   if (afterSave !== "listed") {
+    if (afterSave === "absent") await env.grants.remove(id);
+    throw new Error(afterSave === "unverified" ? "Your account shares are refreshing. Try again." : "This share was removed.");
    }
    env.owner.set(access.ownerName);
    await publishShares(shares.list());
@@ -825,11 +826,11 @@ export function createGuestDesk(env: DeskEnv) {
   async connectGuest(id: string): Promise<void> {
    const missing = () => new Error("This shared connection is no longer saved");
    const existing = await env.grants.get(id);
-   if (existing === undefined || isGrantUnavailable(existing)) throw missing();
+   if (existing === undefined || grantStateOf(existing) !== "available") throw missing();
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    const grant = await env.grants.activate(id);
-   if (grant === undefined || isGrantUnavailable(grant)) throw missing();
+   if (grant === undefined || grantStateOf(grant) !== "available") throw missing();
    disconnect();
    // The machine as each hello names it (its owner may have renamed it, herdr #519): on the grant
    // still saved, numbered as the latest observation (SHARED WITH YOU; one forgotten or replaced

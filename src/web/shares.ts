@@ -736,12 +736,29 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   if (maskActiveIn(r, acct, id)) return true;
   return (r.drop ?? []).includes(id) && !visible(r).some(s => s.id === id);
  };
+ const grantStateIn = (r: SharesRecord, acct: string, id: string): "available" | "unverified" | "masked" => {
+  if (isDroppedIn(r, acct, id)) return "masked";
+  if (hasPendingReset(r, acct) && r.shares.some(s => s.id === id) && !r.pending.some(p => p.body && p.id === id)) {
+   return "unverified";
+  }
+  return "available";
+ };
 
  return {
   /** The current account's shares as this browser knows them; none signed out. */
   list(): RemoteShare[] {
    const acct = account.current?.accountID;
    return acct === undefined ? [] : visible(read(acct), acct);
+  },
+  /** Classifies a bound grant against acct's record in one storage read: "masked" for confirmed
+   *  deletions, "unverified" for mirror-backed ids behind a pending 410 reset (never device-only
+   *  grants that were never in the mirror), and "available" otherwise. */
+  grantState(acct: string, id: string): "available" | "unverified" | "masked" {
+   try {
+    return grantStateIn(read(acct), acct, id);
+   } catch {
+    return masked.get(acct)?.has(id) ? "masked" : "available";
+   }
   },
   /** Whether share id of acct is masked as deleted (in memory or durably in r.drop while not
    *  superseded by a newer live row or new put). */
@@ -750,17 +767,6 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
     return isDroppedIn(read(acct), acct, id);
    } catch {
     return masked.get(acct)?.has(id) ?? false;
-   }
-  },
-  /** Whether share id of acct is currently unverified because a 410 history reset has not yet
-   *  committed a full pull (distinct from a confirmed deletion: hides/refuses opens without
-   *  removing local grants). */
-  isUnverified(acct: string, id: string): boolean {
-   try {
-    const r = read(acct);
-    return hasPendingReset(r, acct) && !r.pending.some(p => p.body && p.id === id);
-   } catch {
-    return false;
    }
   },
   /** Account id holding a pending Leave delete for share id (survives grant removal on retry). */
@@ -782,14 +788,23 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    }
    return undefined;
   },
-  /** Whether share id is on acct as this browser knows it (pulled live or put here, and neither
-   *  seen deleted nor left here), read under acct's record lock: a round's update of the record
-   *  (what its pull showed) is wholly before or after it. */
-  async listed(acct: string, id: string): Promise<boolean> {
-   let listed = false;
-   const ran = await withStorageLock(keyOf(acct), () => { listed = visible(read(acct), acct).some(s => s.id === id); }, place.locks);
+  /** Classifies share id on acct under acct's record lock: "listed" when live/put and neither
+   *  deleted nor behind a reset, "unverified" when backed by a pre-reset mirror row still awaiting
+   *  a committed full pull (distinct from confirmed absence), and "absent" otherwise. */
+  async listedState(acct: string, id: string): Promise<"listed" | "unverified" | "absent"> {
+   let state: "listed" | "unverified" | "absent" = "absent";
+   const ran = await withStorageLock(keyOf(acct), () => {
+    const r = read(acct);
+    if (visible(r, acct).some(s => s.id === id)) state = "listed";
+    else if (grantStateIn(r, acct, id) === "unverified" && !r.pending.some(p => p.deleted && p.id === id)) state = "unverified";
+   }, place.locks);
    if (!ran) throw new Error("This browser's storage is locked by another tab. Try again.");
-   return listed;
+   return state;
+  },
+  /** Whether share id is on acct as this browser knows it (pulled live or put here, and neither
+   *  seen deleted nor left here), read under acct's record lock. */
+  async listed(acct: string, id: string): Promise<boolean> {
+   return (await this.listedState(acct, id)) === "listed";
   },
   /** The shares left here, or a pull saw leave acct (in any tab of this browser), whose grants may
    *  still be held here: each until cleared via dropLocked, and none put here again or pulled live
