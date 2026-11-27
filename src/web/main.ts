@@ -54,10 +54,12 @@ function saveShellReturn(openAccount: { problem: string | null } | null | undefi
  if (!openAccount) return;
  try { sessionStorage.setItem(SHELL_RETURN_KEY, JSON.stringify(openAccount)); } catch { /* ignore */ }
 }
-function takeShellReturn(): { problem: string | null } | null {
+function clearShellReturn() {
+ try { sessionStorage.removeItem(SHELL_RETURN_KEY); } catch { /* ignore */ }
+}
+function readShellReturn(): { problem: string | null } | null {
  try {
   const raw = sessionStorage.getItem(SHELL_RETURN_KEY);
-  sessionStorage.removeItem(SHELL_RETURN_KEY);
   if (!raw) return null;
   const parsed = JSON.parse(raw) as { problem?: unknown };
   return { problem: typeof parsed?.problem === "string" ? parsed.problem : null };
@@ -70,17 +72,19 @@ function takeShellReturn(): { problem: string | null } | null {
  *  loading card visible until the shell module and its CSS finish downloading; catches both
  *  JS and Vite CSS preload failures and uses its own bounded one-retry key (independent of
  *  bootMarks, which already marked the guest bootstrap loaded), preserving any OAuth return
- *  destination and error across the recovery reload. */
+ *  destination and error across both automatic and interrupted reloads until the shell loads. */
 async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount?: { problem: string | null } | null) {
  if (shellLoading) return shellLoading;
  launched = true;
  shownWelcome = null;
+ saveShellReturn(openAccount);
  showOpeningCard("Opening HerdrUp…");
  document.documentElement.classList.add("desk");
  shellLoading = (async () => {
   try {
    await import("../main");
    clearShellReload();
+   clearShellReturn();
    welcomeView.hidden = true;
    welcomeView.replaceChildren();
    document.body.classList.remove("web-welcome-visible");
@@ -91,13 +95,12 @@ async function launchShell(bound?: { agentName: string; added: Parameters<typeof
    launched = false;
    shellLoading = null;
    document.documentElement.classList.remove("desk");
-   saveShellReturn(openAccount);
    if (shellLoadFailedAction() === "reload") { location.reload(); return; }
    const card = el("div", "web-welcome-card");
    card.setAttribute("role", "alert");
    const reload = el("button", "web-owner-action web-owner-primary", "Reload");
    reload.type = "button";
-   reload.onclick = () => { saveShellReturn(openAccount); clearShellReload(); location.reload(); };
+   reload.onclick = () => { clearShellReload(); location.reload(); };
    card.append(el("h1", "", "HerdrUp didn't load"), el("p", "", "Part of this page couldn't be downloaded. Check the connection, then reload."), reload);
    welcomeView.replaceChildren(card);
    welcomeView.hidden = false;
@@ -244,12 +247,12 @@ async function init() {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
  if (started.kind === "connected") {
-  const savedReturn = takeShellReturn();
+  const savedReturn = readShellReturn();
   const openAccount = (signInReturned && pending === null ? signInEnded() : null) ?? savedReturn;
   await launchShell(started.bound, openAccount);
   return;
  }
- takeShellReturn();
+ clearShellReturn();
  await document.fonts.ready;
  const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
