@@ -1060,42 +1060,57 @@ func TestASentCreateThatNeverLandedIsSentAgainOnce(t *testing.T) {
 // A create whose dispatch had no answer may still land late, after the
 // next pull proved it hadn't: if it lands, is left on another device and
 // its tombstone pruned before a full readback, the readback is what
-// can't rule it out. Its re-send that round was refused (rate limited,
-// so it wrote nothing) and owes it as the late one did. The write is let
-// go with its grant, not written afresh at the next sync.
+// can't rule it out, nor can the service's history (pruned past it). Its
+// re-send that round was refused (rate limited, so it wrote nothing) and
+// owes it as the late one did. The write is let go with its grant, not
+// written afresh at the next sync.
 func TestASentCreateThatLandedLateBeforeAFullReadbackIsLetGo(t *testing.T) {
 	quietSync(t)
 	quietShares(t)
-	wait := acceptShareWait
-	acceptShareWait = 300 * time.Millisecond
-	t.Cleanup(func() { acceptShareWait = wait })
 	w, srv := newWorker(t, "")
 	w.seedPrompt("prompt-1", `{"text":"held"}`)
 	relay, base := shareRelay(t, true)
 	d := shareDevice(t, srv)
 	ctx := context.Background()
-	w.holdNextPush()
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
 	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
 	if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
 		t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
 	}
 	id := relay.HostID() + "/" + access.GuestID
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	// The next sync sends it again; the service keeps that push to land
+	// late, and the sync gives it up.
+	syncGivingUpTheUpload(t, w, d)
 	// A full first push of prompts, so the share's re-send goes second.
 	for i := range account.MaxPushChanges {
 		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	landed := false
 	w.mu.Lock()
 	w.rateLimit, w.windowPosts = 1, 0
 	w.afterPush = func() {
 		w.landHeldLocked()
+		it, ok := w.items[id]
+		landed = ok && !it.Deleted
 		w.tombstone(id)
 		w.prune(id)
 	}
 	w.mu.Unlock()
 	if err := d.SyncMachines(ctx); err == nil {
 		t.Fatal("a sync whose second push was rate limited: no error")
+	}
+	w.mu.Lock()
+	landedLate := landed
+	w.mu.Unlock()
+	if !landedLate {
+		t.Fatal("the held create did not land on the account")
 	}
 	w.mu.Lock()
 	w.rateLimit = 0
