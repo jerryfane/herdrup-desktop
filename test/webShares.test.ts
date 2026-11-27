@@ -1143,3 +1143,105 @@ test("retrying an unsent Leave after local grant removal still retries the accou
  await mac.desk.forgetGuestConnection(id);
  expect(w.sharesIn("acct")).toEqual([]);
 }, CONNECTS_LIMIT_MS);
+
+test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a failed live-commit unmask", async () => {
+ // Variant 1: 410 followed by 503 on the since=0 retry; unrelated writes advance reset history
+ // past cached rev 3 -> next sync still pulls since=0 and keeps the deleted share hidden/unopenable.
+ {
+  const w = worker(), h = host();
+  const mac = await browser(w);
+  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id = `${h.relay.hostID}/${access.guestID}`;
+  const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+  w.seedPrompt("bump-1", {});
+  w.seedShare(id, liveBody);
+  await mac.shares.sync();
+  w.reset();
+  w.seedPrompt("reset-only", {});
+  w.prune(w.rev);
+  w.failPullSince = 0;
+  await expect(mac.shares.sync()).rejects.toThrow();
+  w.failPullSince = null;
+  w.seedPrompt("unrelated-2", {});
+  w.seedPrompt("unrelated-3", {});
+  w.seedPrompt("unrelated-4", {});
+  w.pulls.length = 0;
+  await mac.shares.sync();
+  expect(w.pulls[0]).toBe("?since=0");
+  expect(mac.shares.list()).toEqual([]);
+  expect(await mac.desk.sharedConnections()).toEqual([]);
+  await expect(mac.desk.openSyncedShare(id)).rejects.toThrow();
+  await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ }
+ // Variant 2: Tab A gets 410 + full response whose setItem commit throws QuotaExceededError;
+ // unrelated writes advance reset history to rev 4 -> Tab B sharing storage still pulls since=0
+ // and keeps the deleted share hidden/unopenable in both lists and both open methods.
+ {
+  const w = worker(), h = host();
+  const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore(), locks = tabLocks();
+  const tabA = await browser(w, true, grants, storage, identities, locks);
+  const tabB = await browser(w, true, grants, storage, identities, locks);
+  const access = await tabA.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id = `${h.relay.hostID}/${access.guestID}`;
+  const liveBody = (JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+  w.seedPrompt("bump-1", {});
+  w.seedShare(id, liveBody);
+  await tabA.shares.sync();
+  w.reset();
+  w.seedPrompt("reset-only", {});
+  w.prune(w.rev);
+  const origSet = storage.setItem.bind(storage);
+  storage.setItem = (k, v) => {
+   if (k === SHARES_KEY_PREFIX + "acct") throw new DOMException("quota", "QuotaExceededError");
+   origSet(k, v);
+  };
+  await tabA.shares.sync().catch(() => {});
+  storage.setItem = origSet;
+  w.seedPrompt("unrelated-2", {});
+  w.seedPrompt("unrelated-3", {});
+  w.seedPrompt("unrelated-4", {});
+  w.pulls.length = 0;
+  await tabB.shares.sync();
+  expect(w.pulls[0]).toBe("?since=0");
+  expect(tabB.shares.list()).toEqual([]);
+  expect(await tabB.desk.sharedConnections()).toEqual([]);
+  await expect(tabB.desk.openSyncedShare(id)).rejects.toThrow();
+  await expect(tabB.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ }
+ // Variant 3: Share masked after failed 410 commit; a subsequent full response returns the share
+ // live, but its setItem commit ALSO fails -> mask must NOT be cleared before commit, so deleting
+ // the share afterward still keeps the old cached row hidden and unopenable.
+ {
+  const w = worker(), h = host();
+  const mac = await browser(w);
+  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+  const id = `${h.relay.hostID}/${access.guestID}`;
+  const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+  w.seedPrompt("bump-1", {});
+  w.seedShare(id, liveBody);
+  await mac.shares.sync();
+  const origSet = mac.storage.setItem.bind(mac.storage);
+  const origRemove = mac.grants.remove.bind(mac.grants);
+  mac.storage.setItem = (k, v) => {
+   if (k === SHARES_KEY_PREFIX + "acct") throw new DOMException("quota", "QuotaExceededError");
+   origSet(k, v);
+  };
+  mac.grants.remove = async () => { throw new Error("transient idb error"); };
+  w.reset();
+  w.seedPrompt("reset-only", {});
+  w.prune(w.rev);
+  await mac.shares.sync().catch(() => {});
+  expect(mac.shares.isMasked("acct", id)).toBe(true);
+  // Server briefly has share live again, full pull returns it, but commit STILL throws quota.
+  w.seedShare(id, liveBody);
+  await mac.shares.sync().catch(() => {});
+  // Mask MUST still hold because the live observation never committed.
+  expect(mac.shares.isMasked("acct", id)).toBe(true);
+  expect(mac.shares.list()).toEqual([]);
+  expect(await mac.desk.sharedConnections()).toEqual([]);
+  await expect(mac.desk.openSyncedShare(id)).rejects.toThrow();
+  await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+  mac.storage.setItem = origSet;
+  mac.grants.remove = origRemove;
+ }
+}, CONNECTS_LIMIT_MS);

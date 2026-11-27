@@ -20,8 +20,24 @@ import { withStorageLock, type AbortableLocks } from "./locks";
 
 /** One account's record: SHARES_KEY_PREFIX + the account id. */
 export const SHARES_KEY_PREFIX = "herdrup.web.shares.";
+/** Per-account 410 reset counter shared across tabs on the same localStorage (fixed-width JSON
+ *  so updating it in place never grows storage usage and stays valid JSON for storage wrappers). */
+export const SHARES_RESET_PREFIX = "herdrup.web.shares.reset.";
 /** The Web Lock a tab holds for an account's sync round: SYNC_LOCK_PREFIX + the account id. */
 export const SYNC_LOCK_PREFIX = "herdrup.web.shares.sync.";
+
+const RESET_DIGITS = 10;
+const resetMark = (n: number) => JSON.stringify({ r: String(n).padStart(RESET_DIGITS, "0") });
+const parseResetMark = (raw: string | null): number => {
+ if (raw === null) return 0;
+ try {
+  const parsed = JSON.parse(raw) as unknown;
+  return Number(typeof parsed === "object" && parsed !== null && "r" in parsed ? (parsed as { r: unknown }).r : parsed) || 0;
+ } catch { return Number(raw) || 0; }
+};
+/** Fallback in-process reset counter keyed by Storage instance so tabs sharing a Storage object
+ *  still observe a 410 reset even if every storage.setItem threw during a quota outage. */
+const memoryResets = new WeakMap<object, Map<string, number>>();
 
 /** A browser without Web Locks (none the page supports: its build targets browsers that all have
  *  them) can't take turns with its other tabs, so it syncs no share: it writes nothing to the
@@ -151,6 +167,8 @@ interface SharesRecord {
  seq?: number;
  /** Commit sequence when each live share id was last confirmed live (pull, settle, or put). */
  liveSeq?: Record<string, number>;
+ /** Count of 410 history resets already folded by a committed full pull. */
+ resetsFolded?: number;
  shares: RemoteShare[];
  gone: Record<string, number>;
  pending: PendingWrite[];
@@ -263,10 +281,31 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  /** Account id for each share left in this tab whose delete is still pending, so retrying an
   *  unsent Leave after the IndexedDB grant was removed still retries the account deletion. */
  const pendingLeaveAccts = new Map<string, string>();
- /** Accounts that observed a 410/full pull whose commit failed (e.g. localStorage quota), so the
-  *  next pull retries a full pull from revision 0 instead of an incremental pull from the stale
-  *  cached revision. */
- const needsFullPull = new Set<string>();
+ const resetKeyOf = (acct: string) => SHARES_RESET_PREFIX + acct;
+ const readReset = (acct: string): number => {
+  const s = place.storage();
+  return Math.max(parseResetMark(s.getItem(resetKeyOf(acct))), memoryResets.get(s)?.get(acct) ?? 0);
+ };
+ const reserveReset = (acct: string) => {
+  const s = place.storage();
+  try {
+   if (s.getItem(resetKeyOf(acct)) === null) s.setItem(resetKeyOf(acct), resetMark(0));
+  } catch { /* fallback map still tracks resets if quota is already full */ }
+ };
+ const recordReset = (acct: string): number => {
+  const s = place.storage();
+  const next = Math.max(readReset(acct), read(acct).resetsFolded ?? 0) + 1;
+  let map = memoryResets.get(s);
+  if (map === undefined) { map = new Map(); memoryResets.set(s, map); }
+  map.set(acct, next);
+  try {
+   for (let i = 0; i < 4; i++) {
+    if (parseResetMark(s.getItem(resetKeyOf(acct))) >= next) break;
+    s.setItem(resetKeyOf(acct), resetMark(next));
+   }
+  } catch { /* fallback map preserves the reset across tabs sharing this Storage */ }
+  return next;
+ };
  const maskInMemory = (acct: string, entries: Iterable<[string, number]>) => {
   const added: string[] = [];
   let map = masked.get(acct);
@@ -472,11 +511,16 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  readback), an applied delete is retired only if the share is absent from the readback; if a
   *  410/full restore brought it back live, the delete stays queued for the next round. */
  async function pullInto(acct: string, signal: AbortSignal, generation: number, appliedDeletes?: Set<string>): Promise<{ change: SharesChange; newestMs: number | null; unproven?: { error: unknown } }> {
-  const since = needsFullPull.has(acct) ? 0 : read(acct).rev;
-  const pulled = await pullSince(account, acct, since, signal, generation);
-  if (pulled.full) needsFullPull.add(acct);
+  reserveReset(acct);
+  const r0 = read(acct);
+  const resetAtStart = readReset(acct);
+  const since = resetAtStart > (r0.resetsFolded ?? 0) ? 0 : r0.rev;
+  let resetSeen = resetAtStart;
+  const pulled = await pullSince(account, acct, since, signal, generation, () => {
+   resetSeen = Math.max(resetSeen, recordReset(acct));
+  });
   const newestMs = pulled.nowMs === null ? null : pulled.newestMs;
-  const { change, owed } = await update(acct, (r, baseSeq) => {
+  const { owed, liveToUnmask } = await update(acct, (r, baseSeq) => {
    const before = new Set(r.shares.map(s => s.id));
    const live = new Map(pulled.full ? [] : r.shares.map(s => [s.id, s] as const));
    const gone = pulled.full ? {} : r.gone;
@@ -491,6 +535,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
    r.gone = gone;
    r.liveSeq = liveSeq;
+   if (pulled.full) r.resetsFolded = Math.max(r.resetsFolded ?? 0, resetSeen);
    if (appliedDeletes && appliedDeletes.size > 0) {
     r.pending = r.pending.filter(p => !(p.deleted && appliedDeletes.has(writeKey(p)) && (!pulled.full || !live.has(p.id))));
    }
@@ -502,13 +547,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    // A share left here stays until its grant is gone, live on the account or not (its delete
    // not taken yet).
    noteDrops(r, candidates);
-   const liveWithoutDelete = [...observedLive].filter(id => !r.pending.some(p => p.deleted && p.id === id));
-   unmaskInMemory(acct, liveWithoutDelete);
+   const liveToUnmask = [...observedLive].filter(id => !r.pending.some(p => p.deleted && p.id === id));
    const shown = new Set(visible(r).map(s => s.id));
    maskInMemory(acct, [...new Set(candidates)].filter(id => !shown.has(id)).map(id => [id, baseSeq] as [string, number]));
-   return { change: { account: acct, shares: visible(r, acct) }, owed };
+   return { owed, liveToUnmask };
   });
-  if (pulled.full) needsFullPull.delete(acct);
+  // Only a committed live observation may supersede a tab-local deletion mask: if setItem threw
+  // above (e.g. QuotaExceededError), the mask stays intact and the share stays hidden/unopenable.
+  unmaskInMemory(acct, liveToUnmask);
+  const change: SharesChange = { account: acct, shares: visible(read(acct), acct) };
   if (owed.length === 0) return { change, newestMs };
   const froms = [...new Set(owed.map(o => o.from))].sort((a, b) => a - b);
   const proofs = new Map<number, boolean>();
