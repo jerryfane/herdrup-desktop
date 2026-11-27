@@ -135,10 +135,12 @@ export function initWebAccess(clock: SheetClock = systemClock, paused: () => boo
  // kinds). A refresh that fails keeps it; with none yet, the look ends and the next asks again.
  let offers: { browsers: boolean; pairs: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
- // Consecutive poll failures (reset on a successful list read or sign-in change) and the earliest
- // clock time a visibilitychange may trigger an immediate look while backed off.
+ // Consecutive poll failures (reset on a successful list read or actual sign-in session change)
+ // and the earliest clock time a visibilitychange may trigger an immediate look while backed off.
  let failures = 0;
  let backoffUntil = 0;
+ const sessionOf = (s: { signedIn: boolean; displayHint?: string }) => s.signedIn ? `in:${s.displayHint ?? ""}` : "out";
+ let sessionKey: string | null = null;
  // When the user last typed anywhere in the window.
  let typedAt = -Infinity;
  const typed = () => { typedAt = clock.now(); };
@@ -159,6 +161,9 @@ export function initWebAccess(clock: SheetClock = systemClock, paused: () => boo
   try {
    if (document.visibilityState !== "visible" || open !== null || paused()) return;
    const state = await Desk.accountState();
+   const nextSession = sessionOf(state);
+   if (sessionKey !== null && nextSession !== sessionKey) { failures = 0; backoffUntil = 0; }
+   sessionKey = nextSession;
    if (!state.signedIn) { offers = null; failures = 0; backoffUntil = 0; return; }
    if (askOffered(offers, clock.now())) {
     try { offers = { ...await Desk.approvalsOffered(), at: clock.now() }; }
@@ -201,7 +206,16 @@ export function initWebAccess(clock: SheetClock = systemClock, paused: () => boo
   clearTimeout(timer);
   void look();
  });
- events.accountChanged.on(() => { offers = null; failures = 0; backoffUntil = 0; });
+ events.accountChanged.on(state => {
+  offers = null;
+  if (!state) return;
+  const nextSession = sessionOf(state);
+  if (sessionKey !== null && nextSession !== sessionKey) {
+   failures = 0;
+   backoffUntil = 0;
+  }
+  sessionKey = nextSession;
+ });
  schedule();
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word
