@@ -122,6 +122,8 @@ export function gramMarkdown(text: string): RenderedGramMarkdown {
     frame.className = "gtable-frame";
     const columns = Math.max(1, ...[...table.rows].map((row) => row.cells.length));
     frame.style.setProperty("--table-columns", String(columns));
+    // ChatView.swift ChatStyle.ok for gains (same as chatMarkdown.ts).
+    frame.style.setProperty("--chat-ok", "#7fc89a");
     table.replaceWith(scroller);
     frame.append(table);
     scroller.append(frame);
