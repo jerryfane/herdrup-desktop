@@ -23,9 +23,14 @@ export function shareableInviteURL(text: string): string {
 }
 
 export interface CreatedGuestInvite {
-  invite: { invite_id: string; name: string; created_ms?: number; expires_ms?: number; share_gram?: boolean };
+  invite: { invite_id: string; name: string; machine_label?: string; created_ms?: number; expires_ms?: number; share_gram?: boolean };
   url: string;
   web_url: string;
+}
+// The receipt names the machine as herdr created the invite with it; the
+// label the dialog opened with is only a preview.
+export function inviteMachineLabel(invite: CreatedGuestInvite["invite"], preview: string): string {
+  return invite.machine_label?.trim() || preview;
 }
 export function inviteValidity(invite: CreatedGuestInvite["invite"]): string {
   if (invite.created_ms === undefined || invite.expires_ms === undefined || invite.expires_ms <= invite.created_ms) return "Works once";

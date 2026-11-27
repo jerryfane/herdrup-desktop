@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { guestName, guestOwnerName, shareableInviteURL } from "../src/guestInviteModel";
+import { guestName, guestOwnerName, inviteMachineLabel, shareableInviteURL } from "../src/guestInviteModel";
 
 test("invitation names preserve ASCII guest limits and Unicode owner graphemes", () => {
   expect(guestName(" alex.smith-2_ ")).toBe("alex.smith-2_");
@@ -20,4 +20,10 @@ test("legacy invitation links move only eligible fragments into the relay path",
   expect(shareableInviteURL("https://relay.example/i?#payload")).toBe("https://relay.example/i?#payload");
   expect(shareableInviteURL("https://relay.example/elsewhere#payload")).toBe("https://relay.example/elsewhere#payload");
   expect(shareableInviteURL("herdrup://guest-invite#payload")).toBe("herdrup://guest-invite#payload");
+});
+
+test("the invite receipt names the machine as herdr created the invite", () => {
+  expect(inviteMachineLabel({ invite_id: "i1", name: "alex", machine_label: "New" }, "Old")).toBe("New");
+  expect(inviteMachineLabel({ invite_id: "i1", name: "alex" }, "Old")).toBe("Old");
+  expect(inviteMachineLabel({ invite_id: "i1", name: "alex", machine_label: " " }, "Old")).toBe("Old");
 });
