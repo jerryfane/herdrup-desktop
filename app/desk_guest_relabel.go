@@ -193,12 +193,18 @@ func (d *Desk) publishLabelLocked(want *link, st machineStore, cause publishCaus
 	case cause.firstList:
 		l.legacyOn = true
 	case l.legacyOn && cause.renamed != "" && cause.renamed == l.profile:
-		l.legacyRev = shown.rev
+		l.legacyPending = shown
+	}
+	if !revs && l.legacyPending.rev != 0 && l.legacyPending != shown {
+		// Another writer (such as account sync) replaced the saved label or
+		// revision before our pending local rename was sent; discard it so
+		// recovery never sends that other device's label to an older herdr.
+		l.legacyPending = shownLabel{}
 	}
 	if d.undurable {
 		return shown, errShareUndurable
 	}
-	owed := l.legacyRev == shown.rev && l.sentRev < shown.rev
+	owed := l.legacyPending.rev != 0 && l.legacyPending == shown && l.sentRev < shown.rev
 	if revs {
 		owed = max(l.sentRev, l.sendingRev) < shown.rev
 	}

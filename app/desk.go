@@ -336,9 +336,10 @@ type link struct {
 	sentRev, sendingRev uint64
 	// legacyOn: this SSH connection's first list read the link's profile,
 	// so a herdr without guest_relabel_rev may be sent a rename made from
-	// then on (legacyRev, its revision); false, and 0, at each connect.
-	legacyOn  bool
-	legacyRev uint64
+	// then on (legacyPending: exact label and revision saved locally);
+	// false, and zero, at each connect.
+	legacyOn      bool
+	legacyPending shownLabel
 	// profile is the local id (Machine.LocalID) of the saved profile the
 	// link was started with; "" when that id was not stored (load): the
 	// link then relabels nothing and opens no invite of its machine for
@@ -606,16 +607,23 @@ func (d *Desk) readMachines() (machineStore, error) {
 // older build still finds its machine. A failure, even after the file is
 // in place (its folder's sync), leaves the store not durable
 // (Desk.undurable); a success makes it so.
-func (d *Desk) store(st machineStore) (err error) {
+func (d *Desk) store(st machineStore) error {
+	_, err := d.storeInstalled(st)
+	return err
+}
+
+// storeInstalled is store, also reporting whether the supplied machines.json
+// snapshot was renamed into place on disk (even if syncDir then failed).
+func (d *Desk) storeInstalled(st machineStore) (installed bool, err error) {
 	defer func() { d.settle(err == nil) }()
 	if err := d.replayCommit(); err != nil {
-		return err
+		return false, err
 	}
 	data, err := encodeMachines(st)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return writeFileAtomic(d.machinesPath(), data)
+	return writeFileAtomicInstalled(d.machinesPath(), data)
 }
 
 // encodeMachines is machines.json's content for st.
@@ -632,14 +640,21 @@ func encodeMachines(st machineStore) ([]byte, error) {
 // leaves the old one. An error after it (the folder's sync) means the new
 // file is in place but may not outlive a crash.
 func writeFileAtomic(path string, data []byte) error {
+	_, err := writeFileAtomicInstalled(path, data)
+	return err
+}
+
+// writeFileAtomicInstalled is writeFileAtomic, also reporting whether
+// os.Rename already installed the new file at path before any syncDir error.
+func writeFileAtomicInstalled(path string, data []byte) (bool, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return false, err
 	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, err = f.Write(data)
 	if err == nil {
@@ -653,20 +668,13 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return false, err
 	}
 	if err := syncDir(dir); err != nil {
-		return &dirSyncError{err: err}
+		return true, err
 	}
-	return nil
+	return true, nil
 }
-
-// dirSyncError marks a writeFileAtomic failure after os.Rename already put
-// the new file in place: only the directory sync failed.
-type dirSyncError struct{ err error }
-
-func (e *dirSyncError) Error() string { return e.err.Error() }
-func (e *dirSyncError) Unwrap() error { return e.err }
 
 // syncDir makes the names written in dir durable (an fsync of the folder).
 // A system that doesn't sync folders is not an error (dirSyncUnsupported);
@@ -780,20 +788,17 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 			st.Active = id
 		}
 	}
-	if err := d.store(st); err != nil {
-		var syncErr *dirSyncError
-		if errors.As(err, &syncErr) {
-			// The new file is already in place on disk while d.undurable is
-			// true: record any legacy online-rename provenance on the live
-			// link now (without sending while undurable), so recovery or a
-			// retry sends guest.update once the exact revision is durable.
-			_, _ = d.publishLabelLocked(nil, st, cause)
-		}
+	installed, err := d.storeInstalled(st)
+	if installed {
+		// The live link shows its profile as saved now, and records any legacy
+		// online-rename provenance even when syncDir failed (d.undurable keeps
+		// it from sending until durable); when durable, a label its guests
+		// don't have yet goes to them (publishLabel).
+		_, _ = d.publishLabelLocked(nil, st, cause)
+	}
+	if err != nil {
 		return err
 	}
-	// The live link shows its profile as saved now, and a label its guests
-	// don't have yet goes to them (publishLabel).
-	_, _ = d.publishLabelLocked(nil, st, cause)
 	if replacing != "" && replacing != id {
 		d.boards.forget(replacing)
 	}
@@ -1215,7 +1220,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	}
 	defer c.Close()
 	d.mu.Lock()
-	l.client, l.sentRev, l.sendingRev, l.legacyOn, l.legacyRev = c, 0, 0, false, 0
+	l.client, l.sentRev, l.sendingRev, l.legacyOn, l.legacyPending = c, 0, 0, false, shownLabel{}
 	d.mu.Unlock()
 	// relabeled: this SSH connection's first list published the link's
 	// label (desk_guest_relabel.go); a session switch keeps it.

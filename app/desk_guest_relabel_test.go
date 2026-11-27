@@ -1478,7 +1478,9 @@ func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 		if held {
 			entered := make(chan struct{})
 			release := make(chan struct{})
-			var once sync.Once
+			saveDone := make(chan error, 1)
+			var once, releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
 			origSync := syncDir
 			syncDir = func(dir string) error {
 				once.Do(func() {
@@ -1487,15 +1489,28 @@ func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 				})
 				return origSync(dir)
 			}
-			t.Cleanup(func() { syncDir = origSync })
+			saveWaited := false
+			t.Cleanup(func() {
+				unblock()
+				if !saveWaited {
+					<-saveDone
+				}
+				syncDir = origSync
+			})
 
 			during := m
 			during.Nickname = "During"
-			saveDone := make(chan error, 1)
 			go func() {
 				saveDone <- h.d.SaveMachine(during, machineID(m))
 			}()
-			<-entered
+			select {
+			case <-entered:
+			case err := <-saveDone:
+				saveWaited = true
+				t.Fatalf("held SaveMachine returned before syncDir: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("timed out waiting for SaveMachine to reach syncDir")
+			}
 			h.d.start(m, "")
 			// Wait until this connection's own link installed its relabel route
 			// under d.mu (right before calling publishLabel for its first list).
@@ -1504,7 +1519,8 @@ func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 				defer h.d.mu.Unlock()
 				return h.d.link != nil && h.d.link.relabelVia.view != nil
 			})
-			close(release)
+			unblock()
+			saveWaited = true
 			if err := <-saveDone; err != nil {
 				t.Fatalf("held SaveMachine: %v", err)
 			}
@@ -1625,5 +1641,68 @@ func TestALegacyFirstListThatCantReadSendsNothing(t *testing.T) {
 	h.drain(t)
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("a connection whose first list couldn't read sent %+v", got)
+	}
+}
+
+// #594 round 13: if a local online rename on a legacy herdr fails at syncDir
+// (leaving d.undurable true) and another writer (such as account sync) then
+// installs a different nickname without changing LabelRev, recovery must NOT
+// send that other device's nickname to the legacy herdr.
+func TestLegacyRecoveryDoesNotSendAccountRename(t *testing.T) {
+	h, m := offlineRenamedLegacy(t)
+	before, _ := h.labels(t)
+	h.d.start(m, "")
+	h.listed(t)
+	h.drain(t)
+
+	// Fail syncDir during a local rename so the new file lands on disk with
+	// a bumped LabelRev while d.undurable stays true.
+	var failSync atomic.Bool
+	failSync.Store(true)
+	origSync := syncDir
+	syncDir = func(dir string) error {
+		if failSync.Load() {
+			return errors.New("EIO")
+		}
+		return origSync(dir)
+	}
+	t.Cleanup(func() { syncDir = origSync })
+
+	local := m
+	local.Nickname = "LocalPending"
+	if err := h.d.SaveMachine(local, machineID(m)); err == nil {
+		t.Fatal("SaveMachine succeeded despite syncDir error")
+	}
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("undurable local rename sent early: %+v", got)
+	}
+
+	// Simulate account sync replacing the saved nickname with another device's
+	// label while keeping LabelRev unchanged, then clearing the disk error.
+	failSync.Store(false)
+	h.store(t, func(st *machineStore) {
+		st.Machines[0].Nickname = "RemoteFromSync"
+	})
+
+	// Trigger recovery publish (e.g. a durable read or Machine() after sync).
+	if _, err := h.d.Machine(); err != nil {
+		t.Fatalf("Machine: %v", err)
+	}
+	h.d.storeMu.Lock()
+	st, err := h.d.load()
+	if err == nil {
+		_, _ = h.d.publishLabelLocked(nil, st, publishCause{})
+	}
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("recovery sent another device's rename to legacy herdr: %+v", got)
+	}
+	if got, _ := h.labels(t); !slices.Equal(got, before) {
+		t.Fatalf("existing share labels changed to %q; want %q", got, before)
 	}
 }
