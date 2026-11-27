@@ -1469,7 +1469,8 @@ func offlineRenamedLegacy(t *testing.T) (*relabelHerdr, Machine) {
 // saves (here, as SaveMachine stores and publishes) that held the store
 // while that first list waited for it, an unrelated one or a rename of the
 // machine itself. The healthy control, the first list not held up, sends
-// nothing either; a rename saved once it read the profile is sent.
+// nothing either, nor does a save then that renames nothing; a rename saved
+// once it read the profile is sent.
 func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		h, m := offlineRenamedLegacy(t)
@@ -1505,6 +1506,15 @@ func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 		}
 		if got, _ := h.labels(t); !slices.Equal(got, before) {
 			t.Fatalf("held %v: labels %q; want the shares' own kept", held, got)
+		}
+		now, err := h.d.Machine()
+		if err != nil || now == nil {
+			t.Fatalf("the saved machine %+v, %v", now, err)
+		}
+		h.rename(t, now.Nickname) // a save on the connection that renames nothing
+		h.drain(t)
+		if got := h.updates(); len(got) != 0 {
+			t.Fatalf("held %v: a save that renames nothing sent %+v", held, got)
 		}
 		h.rename(t, "Online")
 		if p := h.answered(t, 1)[0]; *p.MachineLabel != "Online" || p.MachineLabelRev != nil {
