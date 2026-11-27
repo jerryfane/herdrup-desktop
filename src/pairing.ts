@@ -306,13 +306,15 @@ export function notAddedLine(view: PairRequestView, m: PairRequestMachine): stri
   return `${view.approver || "Your other device"} couldn't add the key${m.reason ? `: ${m.reason}` : ""}`;
 }
 
-/** The saved profile a result row opens (its id now), joined by the profile id the save gave it,
- *  so a profile saved since at the same address is not the result's; null when the result saved
- *  none or its profile is gone. Before the saved list is known (null), the result's own id. */
+/** The saved profile a result row opens (its id now), joined by the profile id the save gave it
+ *  and the address it saved it at (the result's), so a profile saved since at the same address,
+ *  or the same profile edited to another one, is not the result's; null when the result saved
+ *  none or its profile is gone or changed. Before the saved list is known (null), the result's
+ *  own id. */
 export function pairResultTarget(m: PairRequestMachine, saved: readonly SavedMachine[] | null): string | null {
-  if ((m.result !== "saved" && m.result !== "kept") || m.reach === "removed" || !m.profileId) return null;
+  if ((m.result !== "saved" && m.result !== "kept") || m.reach === "removed" || m.reach === "changed" || !m.profileId) return null;
   if (saved === null) return m.id ?? null;
-  return saved.find(s => s.localId === m.profileId)?.id ?? null;
+  return saved.find(s => s.localId === m.profileId && s.user === m.user && s.host === m.host && s.port === m.port)?.id ?? null;
 }
 
 /** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open, with the saved
@@ -330,9 +332,10 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
     // button, not in it.
     const id = pairResultTarget(m, saved);
     const gone = (m.result === "saved" || m.result === "kept") && id === null;
+    const changed = gone && (m.reach === "changed" || (saved?.some(s => s.localId === m.profileId) ?? false));
     let second: string, value: HTMLElement | null = null, off = false, pair = false;
     switch (gone ? "gone" : m.result) {
-      case "gone": second = `No longer saved on ${here}`; off = true; break;
+      case "gone": second = changed ? `Changed on ${here} since it was saved` : `No longer saved on ${here}`; off = true; break;
       case "saved":
         if (m.reach === "online") { second = `${m.user}@${m.host}`; value = hostRowValue("Online"); }
         else if (m.reach === "unreachable") { second = "Join its network to connect"; off = pair = true; away.push(m.label); }
@@ -360,8 +363,8 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
     if (pair) { const qr = button("Use herdr pair", actions.qr); qr.className = "host-home-pair-synced"; row.append(qr); }
     rows.append(row);
   }
-  if (rows.childElementCount === 0) return [];
-  const out = [root];
+  // The list's problem shows even when no row does (each one the account's row says).
+  const out = rows.childElementCount ? [root] : [];
   if (away.length) out.push(el("p", "host-home-note", `${nameList(away)} ${away.length === 1 ? "is" : "are"} on another network. Join it from ${here} (same Wi-Fi or Tailscale), then open ${away.length === 1 ? away[0] : "them"}. Nothing to approve again.`));
   if (view.problem) { const problem = el("p", "host-home-note"); problem.textContent = view.problem; problem.setAttribute("role", "status"); out.push(problem); }
   return out;

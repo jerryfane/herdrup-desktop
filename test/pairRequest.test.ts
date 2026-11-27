@@ -18,7 +18,10 @@ const holder = (doc: FakeDocument, parts: HTMLElement[]) => { const box = doc.cr
 
 const view = (over: Partial<PairRequestView> = {}): PairRequestView => ({ id: "r1", phase: "waiting", expiresIn: 600, device: "Jerry's MacBook Pro", machines: [], retryOpen: false, ...over });
 const machine = (over: Partial<PairRequestMachine> = {}): PairRequestMachine => ({ label: "studio", host: "studio.lan", port: 22, user: "jerry", result: "saved", ...over });
-const savedAs = (id: string, localId: string): SavedMachine => ({ id, nickname: "", host: "", port: 22, user: "", keyPath: "", session: "", localId, active: false });
+const savedAs = (id: string, localId: string): SavedMachine => {
+ const [, user, host, port] = /^(.*)@(.*):(\d+)$/.exec(id)!;
+ return { id, nickname: "", host: host!, port: Number(port), user: user!, keyPath: "", session: "", localId, active: false };
+};
 const glyphs = { machine: () => document.createElement("span"), chevron: () => document.createElement("span") };
 
 test("this computer names itself by its platform", () => {
@@ -144,29 +147,32 @@ test("n4: the saved machines open with their menu; one off this network says so 
   machine({ label: "moved", host: "moved.lan", result: "pin_differs" }),
   machine({ label: "pi", host: "pi.lan", user: "pi", result: "failed", reason: "herdr is too old", syncedId: "s1" }),
   machine({ label: "nas", host: "nas.lan", result: "failed", reason: "unreachable" }),
+  machine({ id: "jerry@edited.lan:22", profileId: "p-edited", label: "edited", host: "edited.lan", reach: "online" }),
+  machine({ id: "jerry@retyped.lan:22", profileId: "p-retyped", label: "retyped", host: "retyped.lan", reach: "changed" }),
  ] });
- // studio was edited since (its id is its new port); gone and deleted were removed, and deleted's
- // address saved again as another profile.
- const saved = [savedAs("jerry@studio.lan:2222", "p-studio"), savedAs("jerry@mini.lan:22", "p-mini"), savedAs("jerry@old.lan:22", "p-old"),
-  savedAs("jerry@kept.lan:22", "p-kept"), savedAs("jerry@gone.lan:22", "p-gone-again"), savedAs("jerry@deleted.lan:22", "")];
+ // edited and retyped were edited since to another port (Go settled retyped as changed); gone and
+ // deleted were removed, and deleted's address saved again as another profile.
+ const saved = [savedAs("jerry@studio.lan:22", "p-studio"), savedAs("jerry@mini.lan:22", "p-mini"), savedAs("jerry@old.lan:22", "p-old"),
+  savedAs("jerry@kept.lan:22", "p-kept"), savedAs("jerry@gone.lan:22", "p-gone-again"), savedAs("jerry@deleted.lan:22", ""),
+  savedAs("jerry@edited.lan:2222", "p-edited"), savedAs("jerry@retyped.lan:2200", "p-retyped")];
  const actions = { open: (id: string) => opened.push(id), qr: () => qr.push("qr"), menu: (id: string, x: number, y: number) => menus.push(`${id} ${x},${y}`) };
  expect(pairLayout(list)).toEqual({ card: null, results: true });
  // The SAVED rows that step aside (hosts.ts): only the profiles a result row opens.
- expect(list.machines.flatMap(m => pairResultTarget(m, saved) ?? [])).toEqual(["jerry@studio.lan:2222", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
+ expect(list.machines.flatMap(m => pairResultTarget(m, saved) ?? [])).toEqual(["jerry@studio.lan:22", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
  const box = holder(doc, pairResultSection(list, "this Mac", synced, saved, glyphs, "<svg/>", actions));
  expect(box.querySelector("h2")!.text()).toBe("PAIRED BY JERRY'S IPHONE");
  const rows = box.all().filter(n => n.className.includes("host-home-paired-row"));
  const rowOf = (name: string) => rows.find(r => r.querySelector(".host-home-name")!.text() === name)!;
  // The failed machine the account lists (by its record's id) says why on its own row there.
- expect(rows.map(r => r.querySelector(".host-home-name")!.text())).toEqual(["studio", "mini", "old", "kept", "gone", "deleted", "moved", "nas"]);
+ expect(rows.map(r => r.querySelector(".host-home-name")!.text())).toEqual(["studio", "mini", "old", "kept", "gone", "deleted", "moved", "nas", "edited", "retyped"]);
  expect(rowOf("studio").querySelector(".host-home-value")!.text()).toBe("Online");
  const studio = rowOf("studio").querySelector("button")!;
  studio.click();
- expect(opened).toEqual(["jerry@studio.lan:2222"]);
+ expect(opened).toEqual(["jerry@studio.lan:22"]);
  // The saved host's menu (Edit, Delete), as its SAVED row has it: right click, or the menu key.
  (studio.oncontextmenu as unknown as (e: object) => void)({ preventDefault() {}, clientX: 5, clientY: 7 });
  (studio.onkeydown as unknown as (e: object) => void)({ key: "ContextMenu", shiftKey: false, preventDefault() {} });
- expect(menus).toEqual(["jerry@studio.lan:2222 5,7", "jerry@studio.lan:2222 20,0"]);
+ expect(menus).toEqual(["jerry@studio.lan:22 5,7", "jerry@studio.lan:22 20,0"]);
  const mini = rowOf("mini");
  expect(mini.querySelector(".host-home-address")!.text()).toBe("Join its network to connect");
  expect(mini.querySelector(".host-home-paired-body")!.className).toContain("host-home-row-off");
@@ -181,12 +187,20 @@ test("n4: the saved machines open with their menu; one off this network says so 
   expect(rowOf(name).querySelector(".host-home-address")!.text()).toBe("No longer saved on this Mac");
   expect(rowOf(name).querySelector("button")).toBeNull();
  }
+ // Edited here since to another address: not the machine approved, so no row to open either.
+ for (const name of ["edited", "retyped"]) {
+  expect(rowOf(name).querySelector(".host-home-address")!.text()).toBe("Changed on this Mac since it was saved");
+  expect(rowOf(name).querySelector("button")).toBeNull();
+ }
  expect(rowOf("moved").querySelector(".host-home-address")!.text()).toBe("Not saved: this Mac knows another host key for it");
  expect(rowOf("moved").querySelector("button")).toBeNull();
  expect(rowOf("nas").querySelector(".host-home-address")!.text()).toBe("Jerry's iPhone couldn't add the key: unreachable");
  expect(notAddedLine(list, list.machines[7]!)).toBe("Jerry's iPhone couldn't add the key: herdr is too old");
- // A list with only an account-listed failure draws nothing.
+ // A list with only an account-listed failure draws no rows, but still its problem.
  expect(pairResultSection(view({ phase: "done", machines: [list.machines[7]!] }), "this Mac", synced, saved, glyphs, "", actions)).toEqual([]);
+ const problem = holder(doc, pairResultSection(view({ phase: "done", machines: [list.machines[7]!], problem: "A later machine list was tampered with on its way, so this device saved none of it." }), "this Mac", synced, saved, glyphs, "", actions));
+ expect(problem.querySelector("h2")).toBeNull();
+ expect(problem.text()).toBe("A later machine list was tampered with on its way, so this device saved none of it.");
 });
 
 test("the page tries saved machines, then reads, never at once, and stops once settled", () => {
