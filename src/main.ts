@@ -661,7 +661,17 @@ events.boardChanged.on((b) => {
   }
   render();
 });
-window.addEventListener("open-account-settings", () => { openSettingsPage("herdrupAccount"); });
+let pendingAccountOpen: { problem: string } | null = null;
+window.addEventListener("open-account-settings", event => {
+  const detail = (event as CustomEvent<{ problem?: string } | null>).detail;
+  const problem = typeof detail?.problem === "string" ? detail.problem : "";
+  if (!settings || !renderReady) {
+    pendingAccountOpen = { problem };
+    return;
+  }
+  if (problem) settings.setAccountProblem(problem);
+  openSettingsPage("herdrupAccount");
+});
 events.syncedSharesChanged.on(() => { void refreshShared(); });
 events.accountChanged.on((s) => { setAccountSignedIn(s.signedIn === true); });
 
@@ -914,6 +924,12 @@ async function init(rendered: () => void) {
   showHostScreen();
   rendered();
   startupStep("rendered");
+  if (pendingAccountOpen) {
+    const req = pendingAccountOpen;
+    pendingAccountOpen = null;
+    if (req.problem) settings.setAccountProblem(req.problem);
+    openSettingsPage("herdrupAccount");
+  }
   // An App updates request from before the page was ready (desk openAppUpdates).
   if (parts.appUpdates) void Desk.appUpdatesPending().then((pending) => { if (pending) showAppUpdates(); }).catch(() => {});
   const version = activationVersion;
