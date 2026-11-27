@@ -387,6 +387,19 @@ test("a4: once retries are over, Try again stays off and only the reason is said
  expect(w.button("Done")!.disabled).toBe(false);
 });
 
+test("a4: a Try again that finds the machine can't be retried any more shows its new reason, with no Try again", async () => {
+ const w = await failedOne();
+ w.button("Try fleet-hel1 again")!.click();
+ await until("retrying", () => w.adds.length === 1);
+ w.adds.shift()!({ sent: true, machines: [
+  { id: "s", label: "studio", status: "added", keyLabel: "MacBook Air approved on Mac Studio" },
+  { id: "f", label: "fleet-hel1", status: "failed", reason: "that machine is no longer saved here" },
+ ] });
+ await until("no retry left", () => w.buttons().join() === "Done");
+ expect(w.rowText("fleet-hel1")).toBe("fleet-hel1 | Failed: that machine is no longer saved here");
+ expect(w.problem()).toBe("fleet-hel1: that machine is no longer saved here. Use herdr pair there.");
+});
+
 test("only failures a retry may mend get Try again; the rest are sent to herdr pair", async () => {
  const w = await matched();
  for (const id of ["s", "f", "o"]) w.probes.get(id)!({ state: "ready" });
