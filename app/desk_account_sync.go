@@ -1326,8 +1326,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			// its tombstone pruned (or restored away) since, unless this
 			// device deleted it this round: gone, as a tombstone would say,
 			// before the held ids are discarded below. Its owed write goes
-			// with it, never written afresh, and its grant here at the next
-			// merge (mergeShares), so no list or accept confirms it. A
+			// with it, never written afresh, and its grant here in this
+			// save (below), so no list or accept confirms it. A
 			// create sent whose landing the history since can't rule out
 			// (needsProof) is kept as it is, unsent (Unproven), for the
 			// service's history to settle once this is committed.
@@ -1389,8 +1389,26 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if finished && !proofsOwed {
 		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	}
+	// The bound grants of the shares the readback found gone go in this
+	// save, before the state that no longer knows them (as the merge's,
+	// dropGoneShares): left to the next merge, another account's sync
+	// first would forget them (SharesGone is this account's only), and
+	// the grants would stay.
+	var dropped []detached
+	if len(acked) > 0 {
+		gone := map[string]bool{}
+		for _, id := range state.SharesGone {
+			gone[id] = true
+		}
+		if dropped, err = d.dropGoneShares(acct, gone); err != nil {
+			d.storeMu.Unlock()
+			d.finishGuests(dropped)
+			return err
+		}
+	}
 	err = d.storeSyncState(state)
 	d.storeMu.Unlock()
+	d.finishGuests(dropped)
 	if err != nil {
 		return err
 	}

@@ -668,8 +668,8 @@ func TestAShareLeftWhileAnotherAccountWasSignedInStaysLeft(t *testing.T) {
 // A share another device deletes between the push that wrote it and that
 // push's readback isn't confirmed: the readback is newer than the write's
 // acknowledgement. The accept says nothing of the account (no
-// AccountShare), the synced list doesn't list it, and the next sync lets
-// the grant go.
+// AccountShare), the synced list doesn't list it, and the readback's save
+// lets the grant go, as the merge would (dropGoneShares).
 func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
 	quietSync(t)
 	quietShares(t)
@@ -699,8 +699,8 @@ func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
 	if len(w.live()) != 0 || len(sharesOf(t, d)) != 0 {
 		t.Fatalf("rows %v, synced shares %+v; want none", w.live(), sharesOf(t, d))
 	}
-	if grants, _ := d.SharedConnections(); len(grants) != 1 || grants[0].AccountShare != "" {
-		t.Fatalf("before the next sync: %+v; want the grant, not confirmed", grants)
+	if grants, _ := d.SharedConnections(); len(grants) != 0 {
+		t.Fatalf("after the accept's readback: %+v; want the grant gone", grants)
 	}
 	if err := d.SyncMachines(ctx); err != nil {
 		t.Fatal(err)
@@ -1062,75 +1062,187 @@ func TestASentCreateThatNeverLandedIsSentAgainOnce(t *testing.T) {
 // its tombstone pruned before a full readback, the readback is what
 // can't rule it out, nor can the service's history (pruned past it). Its
 // re-send that round was refused (rate limited, so it wrote nothing) and
-// owes it as the late one did. The write is let go with its grant, not
-// written afresh at the next sync.
+// owes it as the late one did. The write is let go with its grant in
+// the ask's own save, so another account signed in and synced before
+// this one's next sync changes nothing; it isn't written afresh.
 func TestASentCreateThatLandedLateBeforeAFullReadbackIsLetGo(t *testing.T) {
+	for _, away := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the next sync", true: "another account synced first"}[away], func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			w.seedPrompt("prompt-1", `{"text":"held"}`)
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+			w.mu.Lock()
+			w.failPush = true
+			w.mu.Unlock()
+			access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+			if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+				t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+			}
+			id := relay.HostID() + "/" + access.GuestID
+			w.mu.Lock()
+			w.failPush = false
+			w.mu.Unlock()
+			// The next sync sends it again; the service keeps that push to
+			// land late, and the sync gives it up.
+			syncGivingUpTheUpload(t, w, d)
+			// A full first push of prompts, so the share's re-send goes
+			// second.
+			for i := range account.MaxPushChanges {
+				if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			landed := false
+			w.mu.Lock()
+			w.rateLimit, w.windowPosts = 1, 0
+			w.afterPush = func() {
+				w.landHeldLocked()
+				it, ok := w.items[id]
+				landed = ok && !it.Deleted
+				w.tombstone(id)
+				w.prune(id)
+			}
+			w.mu.Unlock()
+			if err := d.SyncMachines(ctx); err == nil {
+				t.Fatal("a sync whose second push was rate limited: no error")
+			}
+			w.mu.Lock()
+			landedLate := landed
+			w.rateLimit = 0
+			w.mu.Unlock()
+			if !landedLate {
+				t.Fatal("the held create did not land on the account")
+			}
+			// The readback's own ask settled it: pruned past it, let go.
+			if owed := savedSyncState(t, d).ShareWrites; slices.ContainsFunc(owed, func(op shareOp) bool { return op.ID == id }) {
+				t.Fatalf("after the readback's ask: owed %+v; want the create let go", owed)
+			}
+			if away {
+				signInAs(t, w, d, "")
+				if err := d.SyncMachines(ctx); err != nil {
+					t.Fatal(err)
+				}
+				signInAs(t, w, d, "acct")
+			}
+			w.mu.Lock()
+			posts := w.posts
+			w.mu.Unlock()
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			sent := w.posts - posts
+			w.mu.Unlock()
+			if _, live := w.live()[id]; live || sent != 0 {
+				t.Fatalf("the left share on the account: %v, in %d pushes; want it gone, in none", live, sent)
+			}
+			if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
+				t.Fatalf("connections: %+v, %v; want the left share's grant gone", grants, err)
+			}
+		})
+	}
+}
+
+// Two creates sent in one push share the revision their history is asked
+// from. When a full readback lists one (A, written meanwhile by another
+// device) and lacks the other (C), only C is asked for, and only C is
+// settled by the answer (pruned past it: let go with its grant): A, live,
+// keeps its grant and isn't named gone.
+func TestAHistoryAnswerSettlesOnlyTheCreatesItWasAskedFor(t *testing.T) {
 	quietSync(t)
 	quietShares(t)
 	w, srv := newWorker(t, "")
 	w.seedPrompt("prompt-1", `{"text":"held"}`)
-	relay, base := shareRelay(t, true)
 	d := shareDevice(t, srv)
 	ctx := context.Background()
+	accept := func() (guest.Access, string) {
+		t.Helper()
+		relay, base := shareRelay(t, true)
+		access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+		if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+			t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+		}
+		return access, relay.HostID() + "/" + access.GuestID
+	}
+	// Both sent with no answer, the second accept's push carrying both.
 	w.mu.Lock()
 	w.failPush = true
 	w.mu.Unlock()
-	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
-	if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
-		t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
-	}
-	id := relay.HostID() + "/" + access.GuestID
+	a, idA := accept()
+	c, idC := accept()
 	w.mu.Lock()
 	w.failPush = false
 	w.mu.Unlock()
-	// The next sync sends it again; the service keeps that push to land
-	// late, and the sync gives it up.
-	syncGivingUpTheUpload(t, w, d)
-	// A full first push of prompts, so the share's re-send goes second.
-	for i := range account.MaxPushChanges {
-		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
-			t.Fatal(err)
+	sentAt := map[string]int64{}
+	for _, op := range savedSyncState(t, d).ShareWrites {
+		if op.Sent != nil {
+			sentAt[op.ID] = op.SentAt
 		}
 	}
-	landed := false
-	w.mu.Lock()
-	w.rateLimit, w.windowPosts = 1, 0
-	w.afterPush = func() {
-		w.landHeldLocked()
-		it, ok := w.items[id]
-		landed = ok && !it.Deleted
-		w.tombstone(id)
-		w.prune(id)
+	if len(sentAt) != 2 || sentAt[idA] != sentAt[idC] {
+		t.Fatalf("sent at %v; want both creates sent from one revision", sentAt)
 	}
-	w.mu.Unlock()
-	if err := d.SyncMachines(ctx); err == nil {
-		t.Fatal("a sync whose second push was rate limited: no error")
-	}
-	w.mu.Lock()
-	landedLate := landed
-	w.mu.Unlock()
-	if !landedLate {
-		t.Fatal("the held create did not land on the account")
-	}
-	// The readback's own ask settled it: pruned past it, let go.
-	if owed := savedSyncState(t, d).ShareWrites; slices.ContainsFunc(owed, func(op shareOp) bool { return op.ID == id }) {
-		t.Fatalf("after the readback's ask: owed %+v; want the create let go", owed)
-	}
-	w.mu.Lock()
-	w.rateLimit = 0
-	posts := w.posts
-	w.mu.Unlock()
+	// Back from another account, this one moved on meanwhile, the ask
+	// answering 503: both creates' proofs are owed.
+	signInAs(t, w, d, "")
 	if err := d.SyncMachines(ctx); err != nil {
 		t.Fatal(err)
 	}
+	w.seedPrompt("prompt-2", `{"text":"meanwhile"}`)
+	signInAs(t, w, d, "acct")
 	w.mu.Lock()
-	sent := w.posts - posts
+	w.onPull = func() { w.failPull = true }
 	w.mu.Unlock()
-	if _, live := w.live()[id]; live || sent != 0 {
-		t.Fatalf("the left share on the account: %v, in %d pushes; want it gone, in none", live, sent)
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a round whose history ask failed: no error")
 	}
-	if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
-		t.Fatalf("connections: %+v, %v; want the left share's grant gone", grants, err)
+	var body json.RawMessage
+	for _, op := range savedSyncState(t, d).ShareWrites {
+		if op.ID == idA && op.Unproven {
+			body, _ = json.Marshal(op.Body)
+		}
+	}
+	if body == nil {
+		t.Fatalf("A after a failed ask: owed %+v; want its proof owed", savedSyncState(t, d).ShareWrites)
+	}
+	// The next round: its own ask answers 503; a prompt is pushed; then
+	// another device writes A, and the history is pruned past both sends
+	// (prompt-1's tombstone), so the readback starts over: A live, C not.
+	if _, err := d.SavePrompt(SavedPrompt{Text: "to push"}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.onPull = func() { w.failPull = true }
+	w.afterPush = func() {
+		w.rev++
+		w.items[idA] = account.Item{Collection: "shares", ID: idA, Rev: w.rev, Body: body}
+		w.tombstone("prompt-1")
+		w.prune("prompt-1")
+	}
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a round whose first history ask failed: no error")
+	}
+	if gone := savedSyncState(t, d).SharesGone; slices.Contains(gone, idA) {
+		t.Fatalf("shares gone %q; want A, listed live by the readback, not among them", gone)
+	}
+	held := map[string]bool{}
+	grants, err := d.SharedConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range grants {
+		held[g.GuestID] = true
+	}
+	if !held[a.GuestID] || held[c.GuestID] {
+		t.Fatalf("grants %+v; want A's kept and C's gone", grants)
+	}
+	if _, live := w.live()[idC]; live {
+		t.Fatal("C, its history pruned past it, was written to the account")
 	}
 }
 

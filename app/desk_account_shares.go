@@ -95,41 +95,49 @@ func retainedFrom(op shareOp) int64 {
 // (the caller's snapshot of syncState.ShareWrites, nothing read here)
 // that pull p doesn't list and can't settle by itself (needsProof),
 // whether it still holds its history from where the create was sent
-// (retainedFrom): one page each (account.Retains), lowest first; once it
-// does, it does from every later one. proofs maps each revision answered
-// to the answer. One missing is unknown: the error that left it so comes
-// back with what was answered, and the creates it leaves unknown are kept
-// as they are (Unproven).
-func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string, p account.Pull, writes []shareOp) (map[int64]bool, error) {
+// (retainedFrom): one page per revision (account.Retains), lowest first;
+// once it does, it does from every later one. proofs maps the id of each
+// create answered for to the answer, and holds no other: the one set the
+// merge or the readback's settling decides by (settleShareProofs). One
+// missing is unknown: the error that left it so comes back with what was
+// answered, and the creates it leaves unknown are kept as they are
+// (Unproven).
+func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string, p account.Pull, writes []shareOp) (map[string]bool, error) {
 	listed := map[string]bool{}
 	for _, it := range p.Items {
 		if it.Collection == "shares" {
 			listed[it.ID] = true
 		}
 	}
-	var froms []int64
+	from := map[string]int64{}
 	for _, op := range writes {
 		if op.Account == acct && !listed[op.ID] && needsProof(op, p.Full, p.Rev) {
-			froms = append(froms, retainedFrom(op))
+			from[op.ID] = retainedFrom(op)
 		}
 	}
-	slices.Sort(froms)
-	froms = slices.Compact(froms)
-	proofs := map[int64]bool{}
-	for i, from := range froms {
-		kept, err := d.account.Retains(ctx, round, from)
-		if err != nil {
-			return proofs, err
+	revs := slices.Compact(slices.Sorted(maps.Values(from)))
+	answers := map[int64]bool{}
+	var err error
+	for i, rev := range revs {
+		var kept bool
+		if kept, err = d.account.Retains(ctx, round, rev); err != nil {
+			break
 		}
 		if kept {
-			for _, f := range froms[i:] {
-				proofs[f] = true
+			for _, later := range revs[i:] {
+				answers[later] = true
 			}
 			break
 		}
-		proofs[from] = false
+		answers[rev] = false
 	}
-	return proofs, nil
+	proofs := map[string]bool{}
+	for id, rev := range from {
+		if kept, answered := answers[rev]; answered {
+			proofs[id] = kept
+		}
+	}
+	return proofs, err
 }
 
 // settleShareProofs settles, by the service's answers (proofs,
@@ -138,46 +146,54 @@ func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string
 // readback would list it), owed again as never proven otherwise, and goes
 // at the next push; one whose history was pruned past it may have landed
 // and been deleted: it goes, superseded, as the readback would have let
-// it go (SharesGone, so its grant goes at the next merge). One unanswered
-// is left as it is. Only a round still running (still) settles anything;
-// finished, with nothing left unproven, the round's status is the
-// readback's (LastSync).
-func (d *Desk) settleShareProofs(ctx context.Context, still func() bool, acct string, proofs map[int64]bool, finished bool) error {
+// it go, and its grant here with it, in this save (dropGoneShares), not
+// left to a later merge another account's sync may come before. Only a
+// round still running (still) settles anything; finished (every create
+// asked for answered), the round's status is the readback's (LastSync).
+func (d *Desk) settleShareProofs(ctx context.Context, still func() bool, acct string, proofs map[string]bool, finished bool) error {
 	if !d.storeMu.LockCtx(ctx) {
 		return ctx.Err()
 	}
-	defer d.storeMu.Unlock()
+	ended, err := d.settleShareProofsLocked(still, acct, proofs, finished)
+	d.storeMu.Unlock()
+	d.finishGuests(ended)
+	return err
+}
+
+// settleShareProofsLocked is settleShareProofs with d.storeMu held; it
+// returns the connections its dropped grants ended, for the caller to
+// finish once d.storeMu is free.
+func (d *Desk) settleShareProofsLocked(still func() bool, acct string, proofs map[string]bool, finished bool) ([]detached, error) {
 	if !still() {
-		return errSyncAbandoned
+		return nil, errSyncAbandoned
 	}
 	state, err := d.loadSyncState()
-	if err != nil {
-		return err
+	if err != nil || state.AccountID != acct {
+		return nil, err
 	}
-	if state.AccountID != acct {
-		return nil
-	}
-	writes, left := state.ShareWrites[:0:0], false
+	gone := map[string]bool{}
+	writes := state.ShareWrites[:0:0]
 	for _, op := range state.ShareWrites {
-		if op.Account == acct && op.Unproven && op.Sent != nil && *op.Sent == 0 {
-			retained, answered := proofs[retainedFrom(op)]
-			switch {
-			case !answered:
-				left = true
-			case retained:
-				op.Unproven = false
-			default:
-				state.SharesGone = append(state.SharesGone, op.ID)
+		if retained, answered := proofs[op.ID]; answered && op.Account == acct && op.Unproven && op.Sent != nil && *op.Sent == 0 {
+			if !retained {
+				gone[op.ID] = true
 				continue
 			}
+			op.Unproven = false
 		}
 		writes = append(writes, op)
 	}
 	state.ShareWrites = writes
-	if finished && !left {
+	if finished {
 		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	}
-	return d.storeSyncState(state)
+	// The grants go before the state that no longer owes their writes is
+	// saved: a failure leaves the writes as they were, for a later ask.
+	ended, err := d.dropGoneShares(acct, gone)
+	if err != nil {
+		return ended, err
+	}
+	return ended, d.storeSyncState(state)
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -573,7 +589,7 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 //
 // gone are the known items the account no longer holds, and the items of
 // superseded writes: this device's bound grants for them go.
-func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev int64, proofs map[int64]bool) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
+func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev int64, proofs map[string]bool) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
 	held := map[string]int64{}
 	for _, s := range mirror {
 		held[s.ID] = s.Rev
@@ -598,7 +614,7 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 			continue
 		}
 		if needsProof(op, full, rev) {
-			retained, answered := proofs[retainedFrom(op)]
+			retained, answered := proofs[op.ID]
 			if !answered {
 				op.Unproven = true
 				nextWrites = append(nextWrites, op)
