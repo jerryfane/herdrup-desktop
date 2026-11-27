@@ -50,9 +50,16 @@ func startFakeHost(t *testing.T, key ssh.Signer, extra []ssh.Signer, clientPub s
 			switch method {
 			case "ping":
 				return fakeherdr.Pong(true), nil
+			case "agent.list":
+				return map[string]any{"type": "agent_list", "agents": []any{}}, nil
+			case "group.list":
+				return map[string]any{"type": "group_list", "groups": []any{}, "stars": []any{}}, nil
 			default:
 				return map[string]any{}, nil
 			}
+		},
+		Events: func(ctx context.Context, _ func([]byte) error) {
+			<-ctx.Done()
 		},
 	}
 	addr, err := srv.Listen("127.0.0.1:0")
@@ -168,26 +175,27 @@ func TestSessionStillRejectsActuallyRotatedHostKey(t *testing.T) {
 }
 
 // When the pinned host key matches during fallback but credentials are
-// rejected, dialWithPinFallback returns the auth failure instead of masking it
-// as HostKeyChangedError.
+// rejected, ownerClient returns the auth failure instead of masking it as
+// HostKeyChangedError.
 func TestSessionSurfacesAuthFailureAfterPinFallback(t *testing.T) {
 	dir := t.TempDir()
 	d := newDesk(dir)
+	wrongKeyPath, _ := writeTestClientKey(t, dir)
+	_, authorizedPub := writeTestClientKey(t, t.TempDir())
 
 	ed := ed25519HostKey(t)
 	ec := ecdsaHostKey(t)
-	host, port, _ := startFakeHost(t, ed, []ssh.Signer{ec}, nil, "right-secret")
+	host, port, _ := startFakeHost(t, ed, []ssh.Signer{ec}, authorizedPub, "")
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	if err := d.pins.SetPin(addr, bridge.Fingerprint(ed.PublicKey())); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := dialWithPinFallback(context.Background(), bridge.Config{
-		Host: host, Port: port, User: "dev", Password: "wrong-secret", Pins: d.pins,
-	})
+	m := Machine{Nickname: "auth-fail", Host: host, Port: port, User: "dev", KeyPath: wrongKeyPath}
+	_, _, err := d.ownerClient(context.Background(), m)
 	if err == nil {
-		t.Fatal("wrong password succeeded")
+		t.Fatal("wrong key succeeded")
 	}
 	var changed *bridge.HostKeyChangedError
 	if errors.As(err, &changed) {
