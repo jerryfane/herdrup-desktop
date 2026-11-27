@@ -708,11 +708,30 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	return d.saveMachine(m, replacing, true)
 }
 
-// saveMachine is SaveMachine. keepKeyType: a paired machine edited at its
-// address keeps the pinned host key's type and pin (an edit from the page,
-// which holds neither; nor can it set them); a QR re-pairing, which pins
+// saveMachine is SaveMachine. fromPage: m is the page's, which may set
+// none of the host key fields (keptKeys); a QR re-pairing, which pins
 // anew, passes false.
-func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error {
+func (d *Desk) saveMachine(m Machine, replacing string, fromPage bool) error {
+	_, err := d.saveMachineIf(m, replacing, fromPage, nil)
+	return err
+}
+
+// keptKeys gives m, a machine as the page sent it, the host key fields
+// (Paired, HostKeyType, HostKeyPin) of old, the saved profile it replaces
+// (nil: none), never the page's: a profile at old's address keeps them;
+// one at another address, or a new one, has none, and its host is
+// negotiated and pinned as any machine's is.
+func keptKeys(m *Machine, old *Machine) {
+	m.Paired, m.HostKeyType, m.HostKeyPin = false, "", ""
+	if old != nil && sameHostPort(*old, m.Host, m.Port) {
+		m.Paired, m.HostKeyType, m.HostKeyPin = old.Paired, old.HostKeyType, old.HostKeyPin
+	}
+}
+
+// saveMachineIf is saveMachine, only while the profile it replaces is the
+// one want accepts (nil: any, else replacing must name one), checked under
+// d.storeMu: saved is false, and nothing changes, when it isn't.
+func (d *Desk) saveMachineIf(m Machine, replacing string, fromPage bool, want func(Machine) bool) (saved bool, err error) {
 	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
 	m.User = strings.TrimSpace(m.User)
@@ -721,32 +740,35 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 		m.Port = 22
 	}
 	if m.Host == "" || m.User == "" {
-		return errors.New("host and user are required")
+		return false, errors.New("host and user are required")
 	}
 	if !bridge.ValidSession(m.Session) {
-		return fmt.Errorf("invalid herdr session name %q", m.Session)
+		return false, fmt.Errorf("invalid herdr session name %q", m.Session)
 	}
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
 	st, err := d.load()
 	if err != nil {
-		return err
+		return false, err
 	}
 	id := machineID(m)
 	index := st.find(replacing)
+	if want != nil && (index < 0 || !want(st.Machines[index])) {
+		return false, nil
+	}
 	if replacing != "" && index < 0 {
-		return errors.New("the saved host no longer exists")
+		return false, errors.New("the saved host no longer exists")
 	}
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
-		return errors.New("that host and user are already saved")
+		return false, errors.New("that host and user are already saved")
 	}
 	relabel := ""
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision.
 		m.LocalID, m.LabelRev = "", 0
-		if keepKeyType {
-			m.HostKeyPin = ""
+		if fromPage {
+			keptKeys(&m, nil)
 		}
 		st.Machines = append(st.Machines, m)
 	} else {
@@ -754,14 +776,8 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 		// local id and its label revision.
 		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
-		// The page doesn't hold the pinned key's type and pin either: a
-		// paired machine edited at its address keeps them, one moved to
-		// another address has no pin of its own any more.
-		if keepKeyType {
-			m.HostKeyPin = ""
-			if m.Paired && sameHostPort(old, m.Host, m.Port) {
-				m.HostKeyType, m.HostKeyPin = old.HostKeyType, old.HostKeyPin
-			}
+		if fromPage {
+			keptKeys(&m, &old)
 		}
 		// A rename names the machine anew to its existing shares' guests
 		// (desk_guest_relabel.go), queued under the profile's local id at a
@@ -779,7 +795,7 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 		}
 	}
 	if err := d.store(st); err != nil {
-		return err
+		return false, err
 	}
 	if relabel != "" {
 		// The rename stands whatever happens to its relabel.
@@ -804,7 +820,7 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 	}
 	d.boards.allow(id)
 	d.syncMachinesSoon()
-	return nil
+	return true, nil
 }
 
 // SelectMachine makes a saved machine the active one and connects to it,
@@ -860,16 +876,25 @@ func (d *Desk) selectMachine(id, password string, want func(Machine) bool) (sele
 // RemoveMachine forgets a saved machine. Removing the active machine
 // disconnects it and leaves no machine active.
 func (d *Desk) RemoveMachine(id string) error {
+	_, err := d.removeMachine(id, nil)
+	return err
+}
+
+// removeMachine is RemoveMachine, only while the saved machine is the one
+// want accepts (nil: any), checked under d.storeMu: removed is false, and
+// nothing changes, when it isn't (or, with want nil, when id is saved no
+// more).
+func (d *Desk) removeMachine(id string, want func(Machine) bool) (removed bool, err error) {
 	d.storeMu.Lock()
 	st, err := d.load()
 	if err != nil {
 		d.storeMu.Unlock()
-		return err
+		return false, err
 	}
 	i := st.find(id)
-	if i < 0 {
+	if i < 0 || (want != nil && !want(st.Machines[i])) {
 		d.storeMu.Unlock()
-		return nil
+		return false, nil
 	}
 	syncID, localID := st.Machines[i].SyncID, st.Machines[i].LocalID
 	if syncID != "" {
@@ -879,13 +904,13 @@ func (d *Desk) RemoveMachine(id string) error {
 		state, err := d.loadSyncState()
 		if err != nil {
 			d.storeMu.Unlock()
-			return err
+			return false, err
 		}
 		if !slices.Contains(state.Deletes, syncID) {
 			state.Deletes = append(state.Deletes, syncID)
 			if err := d.storeSyncState(state); err != nil {
 				d.storeMu.Unlock()
-				return err
+				return false, err
 			}
 		}
 	}
@@ -906,7 +931,7 @@ func (d *Desk) RemoveMachine(id string) error {
 	}
 	d.storeMu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.mu.Lock()
 	connected := d.link != nil && d.link.id == id
@@ -917,7 +942,7 @@ func (d *Desk) RemoveMachine(id string) error {
 	if syncID != "" {
 		d.syncMachinesSoon()
 	}
-	return nil
+	return true, nil
 }
 
 // Sessions lists the herdr sessions on the connected machine. A herdr

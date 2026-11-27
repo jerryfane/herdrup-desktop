@@ -1,4 +1,4 @@
-import { Desk, type PairedMachine, type PairingOffer, type PairingPreview, type PairOpenTarget, type PairRequestMachine, type PairRequestView, type SavedMachine, type SyncedMachine } from "./mygo";
+import { Desk, type Machine, type PairedMachine, type PairingOffer, type PairingPreview, type PairOpenTarget, type PairRequestMachine, type PairRequestView, type SavedMachine, type SyncedMachine } from "./mygo";
 import { hostRowChevron, hostRowIcon, hostRowLines, hostRowValue, hostSection } from "./hostHome";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
@@ -328,6 +328,20 @@ export function pairOpenTarget(m: PairRequestMachine, saved: readonly SavedMachi
 /** Whether a saved machine is still the one target names: same id, profile id and address. */
 export function isOpenTarget(s: SavedMachine, target: PairOpenTarget): boolean {
   return s.id === target.id && s.localId === target.profileId && s.user === target.user && s.host === target.host && s.port === target.port;
+}
+
+/** What Edit and Delete say when the profile a result row drew changed or was replaced since. */
+export const pairRowChanged = "This machine changed since it was shown here. Open it again from the list.";
+
+/** The writes a saved host's Edit and Delete make. From a result row's menu (`target`), Go makes
+ *  them only while the profile is still the row's (Desk.savePairedMachine, removePairedMachine),
+ *  as Open opens it, else throws pairRowChanged; from its SAVED row, SaveMachine and RemoveMachine. */
+export function machineWrites(target: PairOpenTarget | null, desk: Pick<typeof Desk, "saveMachine" | "removeMachine" | "savePairedMachine" | "removePairedMachine"> = Desk) {
+  if (!target) return { save: (m: Machine, replacing: string) => desk.saveMachine(m, replacing), remove: (id: string) => desk.removeMachine(id) };
+  return {
+    save: async (m: Machine, _replacing: string) => { if (!await desk.savePairedMachine(m, target)) throw new Error(pairRowChanged); },
+    remove: async (_id: string) => { if (!await desk.removePairedMachine(target)) throw new Error(pairRowChanged); },
+  };
 }
 
 /** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open, with the saved

@@ -969,8 +969,9 @@ export interface PairApproveUpdate {
 }
 
 /**
- * PairOpenTarget is the saved profile a result row opens, as the page drew
- * it: its id, and the profile id and address the row joined it by.
+ * PairOpenTarget is the saved profile a result row opens, edits or
+ * removes, as the page drew it: its id, and the profile id and address the
+ * row joined it by.
  */
 export interface PairOpenTarget {
   id: string;
@@ -2488,6 +2489,14 @@ export const Desk = {
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
   },
+  /**
+   * RemovePairedMachine is RemoveMachine for a result row's menu: it removes
+   * target.ID only while that profile is still the row's. removed is false,
+   * and nothing changes, when it isn't.
+   */
+  removePairedMachine(target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.RemovePairedMachine", target);
+  },
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
@@ -2539,6 +2548,15 @@ export const Desk = {
    */
   saveMachine(m: Machine, replacing: string): Promise<void> {
     return call("Desk.SaveMachine", m, replacing);
+  },
+  /**
+   * SavePairedMachine is SaveMachine for an edit begun from a result row's
+   * menu: it saves m over target.ID only while that profile is still the
+   * row's, as SelectPairedMachine opens it. saved is false, and nothing
+   * changes, when it isn't.
+   */
+  savePairedMachine(m: Machine, target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.SavePairedMachine", m, target);
   },
   /**
    * SavePrompt adds p (ID "") at the end, or replaces the saved prompt with

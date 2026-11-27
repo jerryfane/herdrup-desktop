@@ -2364,11 +2364,10 @@ func mergeMachines(st *machineStore, old, mirror account.Mirror, known map[strin
 			if next.Port == 0 {
 				next.Port = 22
 			}
-			// A pin another device's approval kept in the profile is for
-			// its address (Machine.HostKeyPin), as for an edit here.
-			if !sameHostPort(m, next.Host, next.Port) {
-				next.HostKeyPin = ""
-			}
+			// The host key fields are for the machine's address, as for an
+			// edit here (keptKeys): at another one it has none, and its
+			// host is negotiated and pinned as any machine's is.
+			keptKeys(&next, &m)
 			from, to := machineID(m), machineID(next)
 			if to != from && st.find(to) >= 0 {
 				continue

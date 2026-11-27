@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1102,6 +1103,62 @@ func TestPairRequestOpensOnlyTheProfileItSaved(t *testing.T) {
 	}
 }
 
+// A result row's menu edits and removes its profile only while it is still
+// that profile, as Open opens it: once another profile is saved at the same
+// address (the same id), Edit and Delete change nothing, and the
+// replacement stays as it is. The replacement's own row edits and removes it.
+func TestPairRequestEditsAndRemovesOnlyTheProfileItSaved(t *testing.T) {
+	w := newAskWorld(t)
+	id, _ := w.approved(t)
+	r := resultOf(w.read(t, id), "studio")
+	target := PairOpenTarget{ID: r.ID, ProfileID: r.ProfileID, User: r.User, Host: r.Host, Port: r.Port}
+	w.d.storeMu.Lock()
+	st, err := w.d.load()
+	if err == nil {
+		st.Machines[0].LocalID, st.Machines[0].Nickname = "another-profile", "replacement"
+		err = w.d.store(st)
+	}
+	w.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := w.machines(t)[0]
+	edited := replacement
+	edited.Nickname = "edited from the old row"
+	if saved, err := w.d.SavePairedMachine(edited, target); err != nil || saved {
+		t.Fatalf("saved over the replacement: %v %v", saved, err)
+	}
+	if removed, err := w.d.RemovePairedMachine(target); err != nil || removed {
+		t.Fatalf("removed the replacement: %v %v", removed, err)
+	}
+	if now := w.machines(t); len(now) != 1 || now[0].Nickname != "replacement" || now[0].LocalID != "another-profile" {
+		t.Fatalf("replacement changed: %+v", now)
+	}
+	moved := target
+	moved.ProfileID, moved.Port = "another-profile", target.Port+1
+	if saved, err := w.d.SavePairedMachine(edited, moved); err != nil || saved {
+		t.Fatalf("saved at another address: %v %v", saved, err)
+	}
+	ok := target
+	ok.ProfileID = "another-profile"
+	if saved, err := w.d.SavePairedMachine(edited, ok); err != nil || !saved || w.machines(t)[0].Nickname != edited.Nickname {
+		t.Fatalf("not saved: %v %v, %+v", saved, err, w.machines(t))
+	}
+	if removed, err := w.d.RemovePairedMachine(ok); err != nil || !removed || len(w.machines(t)) != 0 {
+		t.Fatalf("not removed: %v %v, %+v", removed, err, w.machines(t))
+	}
+	// A row that named no profile names none, not one saved without a
+	// profile id.
+	plain := Machine{Host: "plain.lan", Port: 22, User: "jerry", KeyPath: "/k"}
+	if err := w.d.SaveMachine(plain, ""); err != nil {
+		t.Fatal(err)
+	}
+	none := PairOpenTarget{ID: machineID(plain), User: plain.User, Host: plain.Host, Port: plain.Port}
+	if removed, err := w.d.RemovePairedMachine(none); err != nil || removed || len(w.machines(t)) != 1 {
+		t.Fatalf("removed with no profile id: %v %v", removed, err)
+	}
+}
+
 // A list that can't be saved is saved again on later reads, but only while
 // the approver could still send it again: then the problem is final.
 func TestPairRequestStopsRetryingASaveAfterTheWindow(t *testing.T) {
@@ -1429,52 +1486,71 @@ func TestPairRequestSettlesARemovedMachine(t *testing.T) {
 	}
 }
 
-// Another device moving a paired machine to another address takes its pin
-// with the old address; renaming it there keeps the pin.
-func TestPairPinStaysWithItsAddressThroughSync(t *testing.T) {
+// Another device moving a paired machine to another address takes its
+// host key fields with the old address: at the new one it is no paired
+// machine, and a host serving only an RSA key is negotiated and connects,
+// as after an edit here. A later save from the page at that address can't
+// give the fields back; renaming it at its address keeps them.
+func TestPairKeyFieldsStayWithTheAddressThroughSync(t *testing.T) {
 	quietSync(t)
 	_, srv := newWorker(t, "")
 	ctx := context.Background()
 	mac, linux := device(t, srv), device(t, srv)
-	if err := linux.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k", Paired: true, HostKeyType: ssh.KeyAlgoED25519}, ""); err != nil {
+	_, clientPriv, _ := ed25519.GenerateKey(rand.Reader)
+	client, _ := ssh.NewSignerFromKey(clientPriv)
+	block, err := ssh.MarshalPrivateKey(clientPriv, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	linux.storeMu.Lock()
-	st, err := linux.load()
-	if err == nil {
-		st.Machines[0].HostKeyPin = "00ff"
-		err = linux.store(st)
+	keyPath := filepath.Join(t.TempDir(), "linux.key")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	rsaPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaHost, _ := ssh.NewSignerFromKey(rsaPriv)
+	rsaOnly := servedMachineKeys(t, client.PublicKey(), rsaHost)
+	linux.storeMu.Lock()
+	err = linux.store(machineStore{Machines: []Machine{{Host: "pi", Port: 22, User: "root", KeyPath: keyPath, Paired: true, HostKeyType: ssh.KeyAlgoED25519, HostKeyPin: "00ff"}}})
 	linux.storeMu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinOnLinux := func() string {
+	onLinux := func() Machine {
 		t.Helper()
 		if err := linux.SyncMachines(ctx); err != nil {
 			t.Fatal(err)
 		}
-		ms, err := linux.Machines()
-		if err != nil || len(ms) != 1 {
-			t.Fatalf("linux %+v, %v", ms, err)
+		linux.storeMu.Lock()
+		st, err := linux.load()
+		linux.storeMu.Unlock()
+		if err != nil || len(st.Machines) != 1 {
+			t.Fatalf("linux %+v, %v", st.Machines, err)
 		}
-		return ms[0].HostKeyPin
+		return st.Machines[0]
 	}
-	pinOnLinux()
-	// The Mac has it too (saved with its own key, it takes the same item).
-	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/m"}, ""); err != nil {
+	onLinux()
+	// The Mac has it too (saved with its own key, it takes the same item);
+	// host key fields the page sends for a new profile aren't saved.
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/m", Paired: true, HostKeyType: ssh.KeyAlgoED25519, HostKeyPin: "forged"}, ""); err != nil {
 		t.Fatal(err)
+	}
+	if ms, err := mac.Machines(); err != nil || len(ms) != 1 || ms[0].Paired || ms[0].HostKeyType != "" || ms[0].HostKeyPin != "" {
+		t.Fatalf("mac %+v, %v", ms, err)
 	}
 	if err := mac.SyncMachines(ctx); err != nil {
 		t.Fatal(err)
 	}
+	keys := func(m Machine) string { return fmt.Sprint(m.Paired, m.HostKeyType, m.HostKeyPin) }
 	for _, c := range []struct {
-		m   Machine
-		was string
-		pin string
+		m    Machine
+		was  string
+		keys string
 	}{
-		{Machine{Nickname: "Pi", Host: "pi", User: "root", KeyPath: "/m"}, "root@pi:22", "00ff"},
-		{Machine{Nickname: "Pi", Host: "pi.lan", User: "root", KeyPath: "/m"}, "root@pi:22", ""},
+		{Machine{Nickname: "Pi", Host: "pi", User: "root", KeyPath: "/m"}, "root@pi:22", keys(Machine{Paired: true, HostKeyType: ssh.KeyAlgoED25519, HostKeyPin: "00ff"})},
+		{Machine{Nickname: "Pi", Host: rsaOnly.host, Port: rsaOnly.port, User: "root", KeyPath: "/m"}, "root@pi:22", keys(Machine{})},
 	} {
 		if err := mac.SaveMachine(c.m, c.was); err != nil {
 			t.Fatal(err)
@@ -1482,9 +1558,26 @@ func TestPairPinStaysWithItsAddressThroughSync(t *testing.T) {
 		if err := mac.SyncMachines(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if pin := pinOnLinux(); pin != c.pin {
-			t.Fatalf("after %+v: pin %q, want %q", c.m, pin, c.pin)
+		if got := onLinux(); keys(got) != c.keys {
+			t.Errorf("after %+v: %+v, want keys %s", c.m, got, c.keys)
 		}
+	}
+	moved := onLinux()
+	if reach, problem := linux.tryPairedMachine(ctx, moved, ""); reach != PairOnline {
+		t.Errorf("after the move: %s %s", reach, problem)
+	}
+	// The page saves it at its address as it last drew it (paired, with
+	// the fields it had): the profile's stay as they are.
+	stale := moved
+	stale.Nickname, stale.Paired, stale.HostKeyType, stale.HostKeyPin = "Pi 4", true, ssh.KeyAlgoED25519, "00ff"
+	if err := linux.SaveMachine(stale, machineID(moved)); err != nil {
+		t.Fatal(err)
+	}
+	if got := onLinux(); keys(got) != keys(Machine{}) || got.Nickname != "Pi 4" {
+		t.Errorf("after the page's save: %+v", got)
+	}
+	if reach, problem := linux.tryPairedMachine(ctx, onLinux(), ""); reach != PairOnline {
+		t.Errorf("after the page's save: %s %s", reach, problem)
 	}
 }
 

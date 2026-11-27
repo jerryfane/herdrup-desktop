@@ -491,8 +491,9 @@ func (d *Desk) tryPairedMachine(ctx context.Context, m Machine, approver string)
 	return PairUnreachable, ""
 }
 
-// PairOpenTarget is the saved profile a result row opens, as the page drew
-// it: its id, and the profile id and address the row joined it by.
+// PairOpenTarget is the saved profile a result row opens, edits or
+// removes, as the page drew it: its id, and the profile id and address the
+// row joined it by.
 type PairOpenTarget struct {
 	ID        string `json:"id"`
 	ProfileID string `json:"profileId"`
@@ -501,18 +502,36 @@ type PairOpenTarget struct {
 	Port      int    `json:"port"`
 }
 
+// is reports whether a saved machine is still the profile t names: the
+// row's profile id and address. A row that named no profile names none.
+func (t PairOpenTarget) is() func(Machine) bool {
+	return func(m Machine) bool {
+		return t.ProfileID != "" && m.LocalID == t.ProfileID && m.User == t.User && m.Host == t.Host && m.Port == t.Port
+	}
+}
+
 // SelectPairedMachine is SelectMachine for a result row: it opens
 // target.ID only while that saved profile is still the row's (its profile
 // id and address), checked under the store lock. opened is false, and
 // nothing changes, when it isn't (removed, edited or replaced since): the
 // page draws its rows again.
 func (d *Desk) SelectPairedMachine(target PairOpenTarget, password string) (opened bool, err error) {
-	if target.ProfileID == "" {
-		return false, nil
-	}
-	return d.selectMachine(target.ID, password, func(m Machine) bool {
-		return m.LocalID == target.ProfileID && m.User == target.User && m.Host == target.Host && m.Port == target.Port
-	})
+	return d.selectMachine(target.ID, password, target.is())
+}
+
+// SavePairedMachine is SaveMachine for an edit begun from a result row's
+// menu: it saves m over target.ID only while that profile is still the
+// row's, as SelectPairedMachine opens it. saved is false, and nothing
+// changes, when it isn't.
+func (d *Desk) SavePairedMachine(m Machine, target PairOpenTarget) (saved bool, err error) {
+	return d.saveMachineIf(m, target.ID, true, target.is())
+}
+
+// RemovePairedMachine is RemoveMachine for a result row's menu: it removes
+// target.ID only while that profile is still the row's. removed is false,
+// and nothing changes, when it isn't.
+func (d *Desk) RemovePairedMachine(target PairOpenTarget) (removed bool, err error) {
+	return d.removeMachine(target.ID, target.is())
 }
 
 // errPairStopped: the request was cancelled or replaced here, or the

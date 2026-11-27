@@ -4,8 +4,8 @@
 // document (Bun has no DOM); the host home (src/hosts.ts) places them.
 import { afterEach, expect, test } from "bun:test";
 import { FakeDocument, type FakeElement } from "./fakeDom";
-import type { PairOpenTarget, PairRequestMachine, PairRequestView, SavedMachine, SyncedMachine } from "../src/mygo";
-import { isOpenTarget, minutesLeft, nameList, notAddedLine, pairChoiceParts, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairReadDelay, pairRequestCard, pairResultSection, pairResultTarget, showPairChoice, thisDevice, untried } from "../src/pairing";
+import type { Machine, PairOpenTarget, PairRequestMachine, PairRequestView, SavedMachine, SyncedMachine } from "../src/mygo";
+import { isOpenTarget, machineWrites, minutesLeft, nameList, notAddedLine, pairChoiceParts, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairReadDelay, pairRequestCard, pairResultSection, pairResultTarget, pairRowChanged, showPairChoice, thisDevice, untried } from "../src/pairing";
 
 const G = globalThis as { document?: unknown };
 const saved = G.document;
@@ -221,6 +221,32 @@ test("the request's problem shows without a card even when the list had no machi
  // A card says its own problem: no second note.
  expect(pairProblemNote(view({ phase: "approved", saveFailed: true, problem: "This device couldn't save those machines (disk full). Trying again." }))).toBeNull();
  expect(pairProblemNote(view({ phase: "failed", problem: "The approved list didn't open on this Mac." }))).toBeNull();
+});
+
+test("Edit and Delete from a result row's menu go through Go's check of the row's profile; from SAVED, as before", async () => {
+ const calls: string[] = [];
+ let still = true;
+ const desk = {
+  saveMachine: async (m: Machine, replacing: string) => { calls.push(`save ${m.nickname} over ${replacing}`); },
+  removeMachine: async (id: string) => { calls.push(`remove ${id}`); },
+  savePairedMachine: async (m: Machine, t: PairOpenTarget) => { calls.push(`save ${m.nickname} over ${t.id} if ${t.profileId}`); return still; },
+  removePairedMachine: async (t: PairOpenTarget) => { calls.push(`remove ${t.id} if ${t.profileId}`); return still; },
+ };
+ const target = { id: "jerry@studio.lan:22", profileId: "p-studio", user: "jerry", host: "studio.lan", port: 22 };
+ const edited: Machine = { nickname: "Studio", host: "studio.lan", port: 22, user: "jerry", keyPath: "/k", session: "" };
+ await machineWrites(target, desk).save(edited, "jerry@studio.lan:22");
+ await machineWrites(target, desk).remove("jerry@studio.lan:22");
+ await machineWrites(null, desk).save(edited, "jerry@studio.lan:22");
+ await machineWrites(null, desk).remove("jerry@studio.lan:22");
+ expect(calls).toEqual([
+  "save Studio over jerry@studio.lan:22 if p-studio", "remove jerry@studio.lan:22 if p-studio",
+  "save Studio over jerry@studio.lan:22", "remove jerry@studio.lan:22",
+ ]);
+ // The profile was replaced at the same address since the row was drawn: Go changes nothing, and
+ // the page says it changed.
+ still = false;
+ await expect(machineWrites(target, desk).save(edited, "jerry@studio.lan:22")).rejects.toThrow(pairRowChanged);
+ await expect(machineWrites(target, desk).remove("jerry@studio.lan:22")).rejects.toThrow(pairRowChanged);
 });
 
 test("the page tries saved machines, then reads, never at once, and stops once settled", () => {
