@@ -122,7 +122,7 @@ export class HerdrUpAccountPanel {
  get signInProviders(): readonly string[] { return this.providers; }
  /** What went wrong last, as the panel shows it ("" for nothing): a sign-in that came back with
   *  an error, a service that couldn't be reached. */
- get problem(): string { return this.state?.problem || this.returnProblem; }
+ get problem(): string { return this.returnProblem || this.state?.problem || ""; }
 
  /** Preserves an OAuth return problem handed off from the bootstrap across background state reads. */
  setReturnProblem(problem: string) {
@@ -250,7 +250,7 @@ export class HerdrUpAccountPanel {
    nodes.push(buttons);
    if (this.waiting) nodes.push(el("p", "account-note", "Finish signing in in your browser."));
   }
-  const problem = s?.problem || this.returnProblem;
+  const problem = this.returnProblem || s?.problem;
   if (problem) { const line = el("p", "account-note account-problem", problem); line.setAttribute("role", "status"); nodes.push(line); }
   if (!s?.signedIn && this.deleteNote) { const line = el("p", "account-note account-problem", this.deleteNote); line.setAttribute("role", "status"); nodes.push(line); }
   if (s && !s.persistent) nodes.push(el("p", "account-note", "This computer has no credential store, so you'll sign in again each time herdrup starts."));
