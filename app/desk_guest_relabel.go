@@ -7,27 +7,29 @@ package main
 // label (guest.update {machine_label}, no scope: one call), and guests see it
 // in their next hello reply.
 //
-// The saved profile holds all of it: its label (inviteLabel: its nickname,
-// else its host) and that label's revision (Machine.LabelRev: every change
-// of the label takes max(now in unix ms, the one before + 1)). The desk
-// keeps no delivery state. A herdr reporting guest_relabel_rev (herdr #526)
-// keeps each share's and invite's revision and takes a label only above it,
-// so every send is idempotent and ordered there: the profile's label goes at
-// its revision on each SSH connection's first list and on every label change
-// of the profile while connected, and duplicates, concurrent sends and late
-// replies change nothing. A send left unanswered or refused needs nothing:
-// the next connect sends again. A herdr reporting only guest_relabel is sent
-// a label change once, while connected, without a revision, best effort: one
-// that misses it (not connected, refused, unanswered, overtaken by an older
-// one landing late) keeps the old name until the next change. A herdr
-// reporting neither is asked nothing.
+// The saved profile holds the label (inviteLabel: its nickname, else its
+// host) and that label's revision (Machine.LabelRev: every change of the
+// label takes max(now in unix ms, the one before + 1)). One path,
+// publishLabel, takes it to the live link and its guests, whatever the
+// trigger: the SSH connection's first list, a save, the saved machines
+// becoming durable again (Desk.settle), an invite of the machine. It reads
+// the profile as saved, by the link's local id and at its destination; the
+// link shows that label (what an invite carries, never a view's snapshot);
+// and one above what herdr has taken on this connection (link.sentRev,
+// from 0 at each connect) is sent. A herdr reporting guest_relabel_rev
+// (herdr #526) keeps each share's and invite's revision and takes a label
+// only above it, so every send is idempotent and ordered there:
+// duplicates, concurrent sends and late replies change nothing, and one
+// left unanswered or refused stays owed until the next publishLabel or
+// connect. A herdr reporting only guest_relabel is sent a label change
+// once, while connected, without a revision, best effort, and nothing on
+// connect. A herdr reporting neither is asked nothing.
 //
 // A revision reaches herdr, by a relabel or an invite, only once the file
 // holding it is durable (Desk.undurable: a store or folder sync that fully
 // succeeded since start): one a crash could take back, the clock gone back
-// since, would let herdr refuse the next rename's. Once it is durable again,
-// the live link catches up with its profile as stored and relabels its
-// shares if it was behind (reconcileLink), as an invite of it does first.
+// since, would let herdr refuse the next rename's. Until then the send stays
+// owed and no invite of the machine opens (errShareUndurable).
 //
 // A link knows its profile by its local id (link.profile: every saved
 // profile has one, given at load to those without and used once stored),
@@ -36,15 +38,10 @@ package main
 // of its own machine until the next connect, started from a stored one.
 // (Its first list doesn't take the id stored since for the profile at its
 // address: account sync may have put another profile there, just as
-// id-less.) It names its machine by the profile snapshot it was started
-// with until its SSH connection's first list reads the profile as saved
-// then (a change saved while it was starting included), before that list's
-// board offers an invite; a label change of that profile while connected,
-// its destination unchanged, moves it on. A relabel goes by the route of
-// the SSH connection it was scheduled on (link.relabelVia: its view,
-// capabilities and lifetime, which a session switch keeps), never a later
-// one. A profile moved to another destination is relabeled there on its
-// next connect.
+// id-less.) A relabel goes by the route of the SSH connection it was
+// scheduled on (link.relabelVia: its view, capabilities and lifetime, which
+// a session switch keeps), never a later one. A profile moved to another
+// destination is relabeled there on its next connect.
 
 import (
 	"context"
@@ -125,71 +122,73 @@ func (d *Desk) retireRelabelQueue() {
 	}
 }
 
-// sameProfile reports whether old, the saved profile a save replaces, is
-// the one l was started with. d.mu must be held.
-func sameProfile(l *link, old Machine) bool {
-	return l != nil && l.guest == nil && l.profile != "" && old.LocalID == l.profile
+// shownLabel is the label a link names its machine by, at its revision.
+type shownLabel struct {
+	label string
+	rev   uint64
 }
 
-// renewLabel reads l's profile as saved now: unless the link has no stored
-// profile, or it is gone or names another destination, or ctx (the watch)
-// ends while the store is busy (false), the link names the machine by it
-// (what an invite opened from now on carries), a rename saved since aside.
-func (d *Desk) renewLabel(ctx context.Context, l *link) bool {
+// errShareUnread is why no invite of the machine opens while its saved
+// profile can't be read: its label may be stale.
+var errShareUnread = errors.New("Couldn't read this machine's settings. Try sharing again in a moment.")
+
+// publishLabel is the one way the live link's label reaches its guests: on its
+// SSH connection's first list (firstList), a save, sharing resuming once
+// the saved machines are durable (Desk.settle), and an invite of its
+// machine. want, when not nil, is the link the caller saw: any other is
+// ErrSessionChanged. See publishLabelLocked; ctx ends the wait for the store.
+func (d *Desk) publishLabel(ctx context.Context, want *link, firstList bool) (shownLabel, error) {
 	if !d.storeMu.LockCtx(ctx) {
-		return false
+		return shownLabel{}, ctx.Err()
 	}
 	defer d.storeMu.Unlock()
 	st, err := d.load()
 	if err != nil {
-		log.Printf("guest relabel: %s: %v", l.id, err)
-		return false
+		log.Printf("guest relabel: reading the saved machines: %v", err)
+		return shownLabel{}, errShareUnread
 	}
-	i := st.findProfile(l.profile)
-	if i < 0 || machineID(st.Machines[i]) != l.id {
-		return false
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if rev := st.Machines[i].LabelRev; rev >= l.shareLabelRev {
-		l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), rev
-	}
-	return true
+	return d.publishLabelLocked(want, st, firstList)
 }
 
-// reconcileLink is sharing resuming once the saved machines are durable
-// (Desk.settle) or as an invite is created: the live link, bound to a
-// stored profile at its destination, reads it by local id as stored now;
-// one behind it (a rename whose store failed its folder's sync, now
-// durable) names the machine by it and relabels its shares over its
-// current route. An unbound link waits for a reconnect.
-func (d *Desk) reconcileLink(ctx context.Context) {
-	if !d.storeMu.LockCtx(ctx) {
-		return
-	}
-	defer d.storeMu.Unlock()
-	if d.undurable.Load() {
-		return
-	}
-	st, err := d.readMachines()
-	if err != nil {
-		log.Printf("guest relabel: reading the saved machines: %v", err)
-		return
-	}
+// publishLabelLocked verifies the live link's profile in st, the saved
+// machines as read now: found by its local id at the link's destination,
+// else errShareUnbound (a link bound to none, or the profile moved or
+// gone). The link then shows its label (link.shareLabel, what an invite
+// carries). Once the saved machines are durable (else errShareUndurable,
+// and the send stays owed), a label above what herdr has taken on this
+// connection (link.sentRev) and above the one on its way there
+// (link.sendingRev) goes over its current route. A herdr without
+// guest_relabel_rev is sent a label change once, best effort, and nothing
+// on connect. d.storeMu must be held.
+func (d *Desk) publishLabelLocked(want *link, st machineStore, firstList bool) (shownLabel, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	l := d.link
-	if l == nil || l.guest != nil {
-		return
+	if l == nil || l.guest != nil || want != nil && l != want {
+		return shownLabel{}, ErrSessionChanged
 	}
 	i := st.findProfile(l.profile)
-	if i < 0 || machineID(st.Machines[i]) != l.id || st.Machines[i].LabelRev <= l.shareLabelRev {
-		return
+	if i < 0 || machineID(st.Machines[i]) != l.id {
+		return shownLabel{}, errShareUnbound
 	}
 	l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
-	if herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
-		d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
+	shown := shownLabel{l.shareLabel, l.shareLabelRev}
+	revs := herdrapi.CapabilityGuestRelabelRev.Supported(l.relabelVia.caps)
+	if firstList && !revs {
+		l.sentRev = shown.rev
 	}
+	if d.undurable.Load() {
+		return shown, errShareUndurable
+	}
+	if max(l.sentRev, l.sendingRev) < shown.rev && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
+		if revs {
+			l.sendingRev = shown.rev
+		} else {
+			l.sentRev = shown.rev
+		}
+		d.relabelLocked(l, shown)
+	}
+	return shown, nil
 }
 
 // findProfile is the index of the saved profile localID, -1 if none.
@@ -211,38 +210,49 @@ type relabelRoute struct {
 	ctx  context.Context
 }
 
-// relabelLocked schedules label at rev by l's route as it is now, so the
-// send goes over that connection or not at all, whatever replaces it.
-// d.mu must be held.
-func (d *Desk) relabelLocked(l *link, label string, rev uint64) {
+// relabelLocked schedules shown by l's route as it is now, so the send
+// goes over that connection or not at all, whatever replaces it. d.mu must
+// be held.
+func (d *Desk) relabelLocked(l *link, shown shownLabel) {
 	route := l.relabelVia
 	l.relabels.Add(1)
 	if !l.work.Go(func() {
 		defer l.relabels.Add(-1)
-		d.relabelGuests(l.id, route, label, rev)
+		d.relabelGuests(l, route, shown)
 	}) {
 		l.relabels.Add(-1)
 	}
 }
 
-// relabelGuests asks the herdr of route to relabel its shares and pending
-// invites label: at rev where it reports guest_relabel_rev, else without
-// one, once the saved machines are durable (else nothing: the next connect
-// sends). Failures are logged; nothing is kept to send again.
-func (d *Desk) relabelGuests(id string, route relabelRoute, label string, rev uint64) {
+// relabelGuests asks the herdr of route to relabel l's shares and pending
+// invites shown.label: at its revision where it reports guest_relabel_rev,
+// which, answered while route is still l's, herdr has (link.sentRev); else
+// without one. Failures are logged; the label stays owed (link.sendingRev
+// cleared) until the next publishLabel.
+func (d *Desk) relabelGuests(l *link, route relabelRoute, shown shownLabel) {
+	var at *uint64
+	answered := false
+	defer func() {
+		d.mu.Lock()
+		if l.relabelVia.ctx == route.ctx {
+			if l.sendingRev == shown.rev {
+				l.sendingRev = 0
+			}
+			if answered && at != nil && shown.rev > l.sentRev {
+				l.sentRev = shown.rev
+			}
+		}
+		d.mu.Unlock()
+	}()
 	if route.view == nil || route.ctx == nil || route.ctx.Err() != nil || !herdrapi.CapabilityGuestRelabel.Supported(route.caps) {
 		return
 	}
-	if !d.durable(route.ctx) {
-		log.Printf("guest relabel: %s: %q at %d not sent: the saved machines may not be durable", id, label, rev)
-		return
-	}
-	var at *uint64
 	if herdrapi.CapabilityGuestRelabelRev.Supported(route.caps) {
-		at = &rev
+		at = &shown.rev
 	}
-	_, err := engine.New(engine.Bridge(route.view)).GuestRelabel(route.ctx, label, at)
+	_, err := engine.New(engine.Bridge(route.view)).GuestRelabel(route.ctx, shown.label, at)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("guest relabel: %s: %q at %d: %v", id, label, rev, err)
+		log.Printf("guest relabel: %s: %q at %d: %v", l.id, shown.label, shown.rev, err)
 	}
+	answered = err == nil
 }

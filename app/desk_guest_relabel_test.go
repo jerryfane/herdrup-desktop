@@ -559,13 +559,12 @@ func TestAMovedProfileIsRelabeledOnlyAtItsNewDestination(t *testing.T) {
 // stays until it ends) and moves another to its address, written without a
 // local id (given one where it is read). A save of a third profile, or a
 // rename of the one now at the address, leaves the link naming the profile
-// it was started with: nothing is sent, and an invite carries that
-// profile's label and revision.
+// it was started with: nothing is sent, and (round 11) no invite opens of
+// a machine whose profile is gone.
 func TestALinkKeepsItsLabelWhenAnotherProfileTakesItsAddress(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
 	h.rename(t, "Named")
-	rev := h.labelRev(t)
 	h.reconnect(t)
 	h.answered(t, 1)
 	h.store(t, func(st *machineStore) {
@@ -586,8 +585,8 @@ func TestALinkKeepsItsLabelWhenAnotherProfileTakesItsAddress(t *testing.T) {
 	if err := h.d.SaveMachine(m, saved[i].ID); err != nil {
 		t.Fatal(err)
 	}
-	if p := h.invite(t); len(h.updates()) != 1 || p.MachineLabel != "Named" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
-		t.Fatalf("%d guest.update calls, an invite %+v (rev %v); want nothing more sent, Named at %d", len(h.updates()), p, p.MachineLabelRev, rev)
+	if p, err := h.tryInvite(t); !refused(err, unboundRefusal) || len(h.updates()) != 1 {
+		t.Fatalf("%d guest.update calls, an invite %+v (rev %v), %v; want nothing more sent, the invite refused", len(h.updates()), p, p.MachineLabelRev, err)
 	}
 }
 
@@ -1053,7 +1052,7 @@ func TestADisconnectEndsAFirstListWaitingForTheStore(t *testing.T) {
 	h.d.start(*m, "")
 	waitFor(t, "the first list waiting for the store", func() bool {
 		buf := make([]byte, 1<<20)
-		return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("(*Desk).renewLabel("))
+		return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("(*Desk).publishLabel("))
 	})
 	began := time.Now()
 	h.d.Disconnect()
@@ -1082,7 +1081,7 @@ func TestARelabelGoesByTheRouteItWasScheduledOn(t *testing.T) {
 	h.d.mu.Lock()
 	replacement := l.relabelVia
 	l.relabelVia = relabelRoute{view: replacement.view, caps: replacement.caps, ctx: ended}
-	h.d.relabelLocked(l, "Late", nextLabelRev(0))
+	h.d.relabelLocked(l, shownLabel{"Late", nextLabelRev(0)})
 	l.relabelVia = replacement
 	h.d.mu.Unlock()
 	h.drain(t)
@@ -1117,6 +1116,7 @@ func refused(err error, want string) bool { return err != nil && err.Error() == 
 const (
 	unboundRefusal   = "Couldn't save this machine's settings. Reconnect to share it."
 	undurableRefusal = "Couldn't save this machine's settings. Try sharing again in a moment."
+	unreadRefusal    = "Couldn't read this machine's settings. Try sharing again in a moment."
 )
 
 // #594 rounds 7 to 9: the older queue goes only once its fold is durable.
@@ -1207,7 +1207,8 @@ func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 // #594 round 9: a plain rename whose store's folder sync fails (EIO) is in
 // the file but may not survive a crash: nothing goes out (not by the save,
 // not by the next connect) and no invite of the machine opens, until a sync
-// succeeds; then the next connect sends it, and invites carry it.
+// succeeds; then the link still connected sends it (round 11: the send was
+// owed), and invites carry it.
 func TestARenameIsSentOnlyOnceDurable(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.drain(t)
@@ -1238,7 +1239,6 @@ func TestARenameIsSentOnlyOnceDurable(t *testing.T) {
 	}
 	lift()
 	rev := h.labelRev(t)
-	h.reconnect(t)
 	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "New" || *p.MachineLabelRev != rev || !h.holds(t, "New", rev) {
 		t.Fatalf("sent %+v, shares %+v; want New at %d", p, h.list(t), rev)
 	}
@@ -1375,5 +1375,73 @@ func TestALoadThatRewritesSyncsTheFolderOnce(t *testing.T) {
 	}
 	if n := syncs(); n != 1 {
 		t.Fatalf("%d syncs of the folder; want the rewrite's one", n)
+	}
+}
+
+// #594 round 11, probe 1: an account sync commit left interrupted (here,
+// cut short) keeps the saved machines from being read; an invite of the
+// machine, its profile not verified, is refused rather than sent with the
+// label the link had.
+func TestAnInviteWhoseProfileCantBeReadIsRefused(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	h.d.storeMu.Lock()
+	err := os.WriteFile(h.d.commitPath(), []byte(`{"machines":`), 0o600)
+	h.d.storeMu.replayed = false
+	h.d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := h.tryInvite(t); !refused(err, unreadRefusal) {
+		t.Fatalf("an invite of a profile that can't be read: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
+	}
+}
+
+// #594 round 11, probe 2: a connection whose first list read the rename
+// while its folder's sync failed owes it to the shares: once the sync
+// succeeds, at an invite, the shares are relabeled, not only the invite.
+func TestAFirstListNotDurableIsSentOnceASyncSucceeds(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	lift := h.failedRename(t, "New")
+	h.d.Disconnect()
+	started, err := h.d.Machine()
+	if err != nil || started == nil || started.Nickname != "New" {
+		t.Fatalf("the saved machine %+v, %v", started, err)
+	}
+	h.d.start(*started, "")
+	h.listed(t)
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a rename not durable sent %+v", got)
+	}
+	lift()
+	p := h.invite(t)
+	rev := h.labelRev(t)
+	if rev == 0 || p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite once durable: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	}
+	if u := h.answered(t, 1)[0]; *u.MachineLabel != "New" || *u.MachineLabelRev != rev {
+		t.Fatalf("sent %+v; want New at %d", u, rev)
+	}
+}
+
+// #594 round 11: what herdr took on one SSH connection is not taken for
+// the next one's (link.sentRev starts at 0): a redial of the same link
+// sends the label again on its first list.
+func TestEveryConnectionSendsTheLabelAgain(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	l := h.live()
+	h.rename(t, "New")
+	rev := h.labelRev(t)
+	h.answered(t, 1)
+	h.srv.DropConns()
+	got := h.answered(t, 2)
+	if *got[1].MachineLabel != "New" || *got[1].MachineLabelRev != rev {
+		t.Fatalf("sent %+v at the redial; want New at %d", got[1], rev)
+	}
+	if h.live() != l {
+		t.Fatal("the redial replaced the link")
 	}
 }

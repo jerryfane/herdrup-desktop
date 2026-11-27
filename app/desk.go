@@ -324,13 +324,16 @@ type link struct {
 	// (guest.invite.create's machine_label, shown on the invite page and
 	// under SHARED WITH YOU): the saved machine's nickname, else its host,
 	// never user@host:port, as herdr takes it (inviteLabel), as saved in
-	// the profile it was started with, renewed under d.mu by a rename of
-	// that profile (desk_guest_relabel.go). A guest's link has its access's
-	// label.
+	// the profile it was started with, then as each publishLabel reads it
+	// (desk_guest_relabel.go). A guest's link has its access's label.
 	shareLabel string
 	// shareLabelRev is shareLabel's revision (Machine.LabelRev), taken with
 	// it, which an invite of this machine carries; 0 for a guest's link.
 	shareLabelRev uint64
+	// sentRev is the label revision herdr has taken on this SSH connection
+	// (0 at each connect): a shareLabelRev above it is owed to its guests,
+	// unless it is sendingRev, the one sent and not yet answered.
+	sentRev, sendingRev uint64
 	// profile is the local id (Machine.LocalID) of the saved profile the
 	// link was started with; "" when that id was not stored (load): the
 	// link then relabels nothing and opens no invite of its machine for
@@ -550,28 +553,13 @@ func (d *Desk) syncStored() {
 }
 
 // settle records whether machines.json is durable now (Desk.undurable).
-// Once it becomes so, sharing resumes: the live link catches up with its
-// profile as stored (reconcileLink), on a goroutine of its own, since the
-// caller may hold d.mu. d.storeMu must be held.
+// Once it becomes so, sharing resumes: the live link publishes its label
+// again (publishLabel: a send owed while it was not goes now), on a goroutine of
+// its own, since the caller may hold d.mu. d.storeMu must be held.
 func (d *Desk) settle(durable bool) {
 	if d.undurable.Swap(!durable) && durable {
-		go d.reconcileLink(context.Background())
+		go func() { _, _ = d.publishLabel(context.Background(), nil, false) }()
 	}
-}
-
-// durable reports whether machines.json as read is durable, retrying its
-// folder's sync while it may not be; false too once ctx ends while the
-// store is busy.
-func (d *Desk) durable(ctx context.Context) bool {
-	if !d.undurable.Load() {
-		return true
-	}
-	if !d.storeMu.LockCtx(ctx) {
-		return false
-	}
-	defer d.storeMu.Unlock()
-	d.syncStored()
-	return !d.undurable.Load()
 }
 
 // readMachines is load's read, as the file holds them.
@@ -751,8 +739,6 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
 		return errors.New("that host and user are already saved")
 	}
-	relabel := false
-	var old Machine
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision: it gets its own id.
@@ -761,13 +747,12 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's, its
 		// local id and its label revision.
-		old = st.Machines[index]
+		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
 		// A change of the machine's invite label (its nickname, or its host
 		// while it has none) names it anew to its existing shares' guests
 		// (desk_guest_relabel.go), at a new label revision.
 		if inviteLabel(old) != inviteLabel(m) {
-			relabel = true
 			m.LabelRev = nextLabelRev(old.LabelRev)
 		}
 		st.Machines[index] = m
@@ -778,21 +763,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if err := d.store(st); err != nil {
 		return err
 	}
-	// The live link started with this profile, its destination unchanged,
-	// names it to its guests as saved now: an invite created after a
-	// rename sends the new name (#523), and the shares it has already are
-	// relabeled, as they are when the link was behind (a save that failed
-	// its folder's sync, now found on disk). A profile moved to another
-	// destination is relabeled there on its next connect.
-	d.mu.Lock()
-	if l := d.link; index >= 0 && sameProfile(l, old) && l.id == id {
-		behind := l.shareLabelRev < m.LabelRev
-		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if (relabel || behind) && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
-			d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
-		}
-	}
-	d.mu.Unlock()
+	// The live link shows its profile as saved now, and a label its guests
+	// don't have yet goes to them (publishLabel).
+	_, _ = d.publishLabelLocked(nil, st, false)
 	if replacing != "" && replacing != id {
 		d.boards.forget(replacing)
 	}
@@ -1214,10 +1187,10 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	}
 	defer c.Close()
 	d.mu.Lock()
-	l.client = c
+	l.client, l.sentRev, l.sendingRev = c, 0, 0
 	d.mu.Unlock()
-	// relabeled: this SSH connection's first list renewed the link's label
-	// and sent it (desk_guest_relabel.go); a session switch keeps it.
+	// relabeled: this SSH connection's first list published the link's
+	// label (desk_guest_relabel.go); a session switch keeps it.
 	relabeled := false
 	sctx, stopSessions := context.WithCancel(ctx)
 	defer stopSessions()
@@ -1263,10 +1236,19 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				return
 			}
 			// The connection's first list, before any board offers an
-			// invite: the profile as saved now names the machine. The wait
-			// for the store ends with the watch, which then publishes
-			// nothing.
-			renewed := !relabeled && d.renewLabel(wctx, l)
+			// invite: the profile as saved now names the machine, and its
+			// label goes on the connection's capability and lifetime
+			// (desk_guest_relabel.go). The wait for the store ends with the
+			// watch, which then publishes nothing.
+			if !relabeled {
+				d.mu.Lock()
+				if wctx.Err() == nil {
+					l.relabelVia = relabelRoute{view: view, caps: u.Pong.Capabilities, ctx: sctx}
+				}
+				d.mu.Unlock()
+				_, _ = d.publishLabel(wctx, l, true)
+				relabeled = wctx.Err() == nil
+			}
 			if !shown {
 				shown, listed = true, true
 				groups.attach(ec, u.Pong)
@@ -1286,14 +1268,6 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 			}
 			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
 			l.relabelVia = relabelRoute{view: view, caps: u.Pong.Capabilities, ctx: sctx}
-			if !relabeled {
-				// Its label goes at its revision, on the connection's
-				// capability and lifetime (desk_guest_relabel.go).
-				relabeled = true
-				if renewed && l.shareLabelRev > 0 && herdrapi.CapabilityGuestRelabelRev.Supported(l.relabelVia.caps) {
-					d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
-				}
-			}
 			var started []herdrapi.AgentInfo
 			l.needing, started = startedNeedingYou(l.needing, u.Agents)
 			d.presence.notify(started, l.id, l.session)

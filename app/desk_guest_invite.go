@@ -22,20 +22,14 @@ type guestShareRoute struct {
 	details GuestShareDetails
 	target  string
 	machine *string
-	// labelRev is details.MachineLabel's revision (Machine.LabelRev) for
-	// this machine's agents: the invite carries it (machine_label_rev), so a
-	// relabel older than its label never overwrites it. 0 sends none.
-	labelRev uint64
-	// own: an agent of the owner link's own machine, named by its saved
-	// profile, so an invite waits for that to be durable
-	// (errShareUndurable); unbound refuses it (errShareUnbound): the link
-	// is bound to no stored profile.
-	own, unbound bool
+	// own: an agent of the owner link's own machine, whose invite takes
+	// the label publishLabel verifies as it is created, never details'.
+	own bool
 }
 
-// errShareUnbound is why a link bound to no stored profile
-// (desk_guest_relabel.go) opens no invite of its machine: its label may be
-// stale, and no rename would reach the share.
+// errShareUnbound is why a link not bound to its stored profile
+// (desk_guest_relabel.go: none, or it moved) opens no invite of its
+// machine: its label may be stale, and no rename would reach the share.
 var errShareUnbound = errors.New("Couldn't save this machine's settings. Reconnect to share it.")
 
 // errShareUndurable is why no invite of the machine opens while its saved
@@ -44,15 +38,14 @@ var errShareUnbound = errors.New("Couldn't save this machine's settings. Reconne
 var errShareUndurable = errors.New("Couldn't save this machine's settings. Try sharing again in a moment.")
 
 // shareRoute routes an invite to agent and names its machine to the guests:
-// hostLabel (inviteLabel, already a shareLabel) at hostRev for this
-// machine's agents, a federated peer's by herdr's machine_label for it (as a
-// shareLabel), else the peer's id, with no revision.
-func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string, hostRev uint64) guestShareRoute {
-	route := guestShareRoute{details: GuestShareDetails{AgentName: name, MachineLabel: hostLabel}, target: agent.PaneID, labelRev: hostRev}
+// hostLabel (inviteLabel, already a shareLabel) for this machine's agents,
+// a federated peer's by herdr's machine_label for it (as a shareLabel),
+// else the peer's id.
+func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string) guestShareRoute {
+	route := guestShareRoute{details: GuestShareDetails{AgentName: name, MachineLabel: hostLabel}, target: agent.PaneID}
 	if agent.MachineID != nil && *agent.MachineID != "" && strings.HasPrefix(agent.PaneID, *agent.MachineID+"/") {
 		route.target = strings.TrimPrefix(agent.PaneID, *agent.MachineID+"/")
 		route.machine = agent.MachineID
-		route.labelRev = 0
 		route.details.AgentName = strings.TrimPrefix(name, *agent.MachineID+"/")
 		route.details.MachineLabel = *agent.MachineID
 		if agent.MachineLabel != nil {
@@ -65,12 +58,10 @@ func shareRoute(agent herdrapi.AgentInfo, name, hostLabel string, hostRev uint64
 }
 
 // linkShareRoute is shareRoute for agent on l, by l's label for its own
-// machine, which l refuses to share while bound to no stored profile.
-// d.mu must be held.
+// machine. d.mu must be held.
 func linkShareRoute(l *link, agent herdrapi.AgentInfo, name string) guestShareRoute {
-	route := shareRoute(agent, name, l.shareLabel, l.shareLabelRev)
+	route := shareRoute(agent, name, l.shareLabel)
 	route.own = l.guest == nil && route.machine == nil
-	route.unbound = route.own && l.profile == ""
 	return route
 }
 
@@ -123,31 +114,25 @@ func (d *Desk) CreateGuestInvite(ctx context.Context, token, name, ownerName str
 	if err != nil {
 		return "", err
 	}
-	if v.guestShare.unbound {
-		return "", errShareUnbound
-	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	label, rev := v.guestShare.details.MachineLabel, v.guestShare.labelRev
-	if v.guestShare.own {
-		// The machine as saved now, durable: a view opened before a
-		// rename reached the link names it anew (reconcileLink).
-		if !d.durable(ctx) {
-			return "", errShareUndurable
-		}
-		d.reconcileLink(ctx)
-		d.mu.Lock()
-		label, rev = v.at.link.shareLabel, v.at.link.shareLabelRev
-		d.mu.Unlock()
-	}
 	params := herdrapi.GuestInviteCreateParams{
 		Target: v.guestShare.target, Machine: v.guestShare.machine,
-		MachineLabel: label,
+		MachineLabel: v.guestShare.details.MachineLabel,
 		Name:         strings.TrimSpace(name), OwnerName: strings.TrimSpace(ownerName), ShareGram: shareGram,
 	}
-	// A herdr without guest_relabel_rev ignores the field.
-	if rev > 0 {
-		params.MachineLabelRev = &rev
+	if v.guestShare.own {
+		// The machine as saved now, verified and durable (publishLabel),
+		// never the label the view opened with.
+		shown, err := d.publishLabel(ctx, v.at.link, false)
+		if err != nil {
+			return "", err
+		}
+		params.MachineLabel = shown.label
+		// A herdr without guest_relabel_rev ignores the field.
+		if shown.rev > 0 {
+			params.MachineLabelRev = &shown.rev
+		}
 	}
 	created, err := v.client.GuestInviteCreate(ctx, params)
 	if err != nil {
