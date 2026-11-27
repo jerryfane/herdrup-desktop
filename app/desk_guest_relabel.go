@@ -14,16 +14,18 @@ package main
 // trigger: the SSH connection's first list, a save, the saved machines
 // becoming durable again (Desk.settle), an invite of the machine. It reads
 // the profile as saved, by the link's local id and at its destination; the
-// link shows that label (what an invite carries, never a view's snapshot);
-// and one above what herdr has taken on this connection (link.sentRev,
-// from 0 at each connect) is sent. A herdr reporting guest_relabel_rev
-// (herdr #526) keeps each share's and invite's revision and takes a label
-// only above it, so every send is idempotent and ordered there:
-// duplicates, concurrent sends and late replies change nothing, and one
-// left unanswered or refused stays owed until the next publishLabel or
-// connect. A herdr reporting only guest_relabel is sent a label change
-// once, while connected, without a revision, best effort, and nothing on
-// connect. A herdr reporting neither is asked nothing.
+// invite carries that label at its revision (never a view's snapshot), and
+// one above what herdr has taken on this connection (link.sentRev, from 0
+// at each connect) is sent. A herdr reporting guest_relabel_rev (herdr
+// #526) keeps each share's and invite's revision and takes a label only
+// above it, so every send is idempotent and ordered there: duplicates,
+// concurrent sends and late replies change nothing, and one left unanswered
+// or refused stays owed until the next publishLabel or connect. A herdr
+// reporting only guest_relabel is sent, once, without a revision, best
+// effort, only a rename saved on the connection after its first list read
+// the profile (link.legacyOn): nothing on connect, nor a rename made before
+// (offline, or while that read waited or failed), which could rename shares
+// made under another name. A herdr reporting neither is asked nothing.
 //
 // A revision reaches herdr, by a relabel or an invite, only once the file
 // holding it is durable (Desk.undurable: a store or folder sync that fully
@@ -128,16 +130,25 @@ type shownLabel struct {
 	rev   uint64
 }
 
+// publishCause is why publishLabel runs: the SSH connection's first list
+// (firstList), or a save that changed the label of the profile renamed (its
+// local id); the zero cause is sharing resuming or an invite.
+type publishCause struct {
+	firstList bool
+	renamed   string
+}
+
 // errShareUnread is why no invite of the machine opens while its saved
 // profile can't be read: its label may be stale.
 var errShareUnread = errors.New("Couldn't read this machine's settings. Try sharing again in a moment.")
 
-// publishLabel is the one way the live link's label reaches its guests: on its
-// SSH connection's first list (firstList), a save, sharing resuming once
-// the saved machines are durable (Desk.settle), and an invite of its
-// machine. want, when not nil, is the link the caller saw: any other is
-// ErrSessionChanged. See publishLabelLocked; ctx ends the wait for the store.
-func (d *Desk) publishLabel(ctx context.Context, want *link, firstList bool) (shownLabel, error) {
+// publishLabel is the one way the live link's label reaches its guests: on
+// its SSH connection's first list, a save, sharing resuming once the saved
+// machines are durable (Desk.settle), and an invite of its machine. want,
+// when not nil, is the link the caller saw: any other is
+// ErrSessionChanged. See publishLabelLocked; ctx ends the wait for the
+// store.
+func (d *Desk) publishLabel(ctx context.Context, want *link, cause publishCause) (shownLabel, error) {
 	if !d.storeMu.LockCtx(ctx) {
 		return shownLabel{}, ctx.Err()
 	}
@@ -147,20 +158,23 @@ func (d *Desk) publishLabel(ctx context.Context, want *link, firstList bool) (sh
 		log.Printf("guest relabel: reading the saved machines: %v", err)
 		return shownLabel{}, errShareUnread
 	}
-	return d.publishLabelLocked(want, st, firstList)
+	return d.publishLabelLocked(want, st, cause)
 }
 
 // publishLabelLocked verifies the live link's profile in st, the saved
 // machines as read now: found by its local id at the link's destination,
 // else errShareUnbound (a link bound to none, or the profile moved or
-// gone). The link then shows its label (link.shareLabel, what an invite
-// carries). Once the saved machines are durable (else errShareUndurable,
-// and the send stays owed), a label above what herdr has taken on this
-// connection (link.sentRev) and above the one on its way there
-// (link.sendingRev) goes over its current route. A herdr without
-// guest_relabel_rev is sent a label change once, best effort, and nothing
-// on connect. d.storeMu must be held.
-func (d *Desk) publishLabelLocked(want *link, st machineStore, firstList bool) (shownLabel, error) {
+// gone). The link's preview then names the machine by it (link.shareLabel),
+// and the label at its revision is what an invite carries. Once the saved
+// machines are durable (else errShareUndurable, and the send stays owed),
+// a herdr with guest_relabel_rev is sent a revision above what it has taken
+// on this connection (link.sentRev) and the one on its way there
+// (link.sendingRev). A herdr without it is sent, once and best effort, only
+// a rename saved on this connection after its first list read the profile
+// (link.legacyOn, legacyRev), and while it is still the label: never one
+// made before, which its shares may not have been named before either.
+// d.storeMu must be held.
+func (d *Desk) publishLabelLocked(want *link, st machineStore, cause publishCause) (shownLabel, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	l := d.link
@@ -171,16 +185,24 @@ func (d *Desk) publishLabelLocked(want *link, st machineStore, firstList bool) (
 	if i < 0 || machineID(st.Machines[i]) != l.id {
 		return shownLabel{}, errShareUnbound
 	}
-	l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
-	shown := shownLabel{l.shareLabel, l.shareLabelRev}
+	shown := shownLabel{inviteLabel(st.Machines[i]), st.Machines[i].LabelRev}
+	l.shareLabel = shown.label
 	revs := herdrapi.CapabilityGuestRelabelRev.Supported(l.relabelVia.caps)
-	if firstList && !revs {
-		l.sentRev = shown.rev
+	switch {
+	case revs:
+	case cause.firstList:
+		l.legacyOn = true
+	case l.legacyOn && cause.renamed != "" && cause.renamed == l.profile:
+		l.legacyRev = shown.rev
 	}
-	if d.undurable.Load() {
+	if d.undurable {
 		return shown, errShareUndurable
 	}
-	if max(l.sentRev, l.sendingRev) < shown.rev && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
+	owed := l.legacyRev == shown.rev && l.sentRev < shown.rev
+	if revs {
+		owed = max(l.sentRev, l.sendingRev) < shown.rev
+	}
+	if owed && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
 		if revs {
 			l.sendingRev = shown.rev
 		} else {

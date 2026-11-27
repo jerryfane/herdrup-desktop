@@ -204,8 +204,9 @@ type Desk struct {
 	// revision in it included, so no relabel goes out and no invite of the
 	// machine opens (desk_guest_relabel.go). Set at start (nothing synced
 	// yet) and by a store that failed; cleared by a store, or a sync of the
-	// folder, that fully succeeded. Changed under storeMu.
-	undurable atomic.Bool
+	// folder, that fully succeeded (settle). Owned by storeMu: read and
+	// written only while holding it.
+	undurable bool
 
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
@@ -325,15 +326,19 @@ type link struct {
 	// under SHARED WITH YOU): the saved machine's nickname, else its host,
 	// never user@host:port, as herdr takes it (inviteLabel), as saved in
 	// the profile it was started with, then as each publishLabel reads it
-	// (desk_guest_relabel.go). A guest's link has its access's label.
+	// (desk_guest_relabel.go). A share view's preview; an invite of the
+	// machine takes the label publishLabel verifies. A guest's link has its
+	// access's label.
 	shareLabel string
-	// shareLabelRev is shareLabel's revision (Machine.LabelRev), taken with
-	// it, which an invite of this machine carries; 0 for a guest's link.
-	shareLabelRev uint64
 	// sentRev is the label revision herdr has taken on this SSH connection
-	// (0 at each connect): a shareLabelRev above it is owed to its guests,
-	// unless it is sendingRev, the one sent and not yet answered.
+	// (0 at each connect); sendingRev, the one sent and not yet answered.
+	// A herdr with guest_relabel_rev is owed a saved revision above both.
 	sentRev, sendingRev uint64
+	// legacyOn: this SSH connection's first list read the link's profile,
+	// so a herdr without guest_relabel_rev may be sent a rename made from
+	// then on (legacyRev, its revision); false, and 0, at each connect.
+	legacyOn  bool
+	legacyRev uint64
 	// profile is the local id (Machine.LocalID) of the saved profile the
 	// link was started with; "" when that id was not stored (load): the
 	// link then relabels nothing and opens no invite of its machine for
@@ -498,7 +503,7 @@ func newDesk(dir string) *Desk {
 	d.openBrowser = mygo.Shell.OpenExternal
 	d.publishTopics = broadcastTopics
 	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())
-	d.undurable.Store(true)
+	d.undurable = true
 	return d
 }
 
@@ -532,7 +537,7 @@ func (d *Desk) load() (machineStore, error) {
 	} else {
 		d.syncStored()
 	}
-	if queued && !d.undurable.Load() {
+	if queued && !d.undurable {
 		d.retireRelabelQueue()
 	}
 	return tagged, nil
@@ -542,7 +547,7 @@ func (d *Desk) load() (machineStore, error) {
 // (Desk.undurable), the sync of its folder that makes it so. d.storeMu
 // must be held.
 func (d *Desk) syncStored() {
-	if !d.undurable.Load() {
+	if !d.undurable {
 		return
 	}
 	err := syncDir(d.dir)
@@ -554,11 +559,14 @@ func (d *Desk) syncStored() {
 
 // settle records whether machines.json is durable now (Desk.undurable).
 // Once it becomes so, sharing resumes: the live link publishes its label
-// again (publishLabel: a send owed while it was not goes now), on a goroutine of
-// its own, since the caller may hold d.mu. d.storeMu must be held.
+// again (publishLabel: a send owed while it was not goes now), on a
+// goroutine of its own, since the caller may hold d.mu. d.storeMu must be
+// held.
 func (d *Desk) settle(durable bool) {
-	if d.undurable.Swap(!durable) && durable {
-		go func() { _, _ = d.publishLabel(context.Background(), nil, false) }()
+	recovered := d.undurable && durable
+	d.undurable = !durable
+	if recovered {
+		go func() { _, _ = d.publishLabel(context.Background(), nil, publishCause{}) }()
 	}
 }
 
@@ -739,6 +747,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
 		return errors.New("that host and user are already saved")
 	}
+	var cause publishCause
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision: it gets its own id.
@@ -754,6 +763,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		// (desk_guest_relabel.go), at a new label revision.
 		if inviteLabel(old) != inviteLabel(m) {
 			m.LabelRev = nextLabelRev(old.LabelRev)
+			cause.renamed = m.LocalID
 		}
 		st.Machines[index] = m
 		if st.Active == replacing {
@@ -765,7 +775,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	// The live link shows its profile as saved now, and a label its guests
 	// don't have yet goes to them (publishLabel).
-	_, _ = d.publishLabelLocked(nil, st, false)
+	_, _ = d.publishLabelLocked(nil, st, cause)
 	if replacing != "" && replacing != id {
 		d.boards.forget(replacing)
 	}
@@ -1102,7 +1112,7 @@ func (d *Desk) remember(m Machine) (saved Machine, err error) {
 // its connection reads the profile as saved then (desk_guest_relabel.go).
 func (d *Desk) start(m Machine, password string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &link{id: machineID(m), profile: m.LocalID, session: m.Session, shareLabel: inviteLabel(m), shareLabelRev: m.LabelRev}
+	l := &link{id: machineID(m), profile: m.LocalID, session: m.Session, shareLabel: inviteLabel(m)}
 	d.mu.Lock()
 	if d.cancel != nil {
 		d.cancel()
@@ -1187,7 +1197,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	}
 	defer c.Close()
 	d.mu.Lock()
-	l.client, l.sentRev, l.sendingRev = c, 0, 0
+	l.client, l.sentRev, l.sendingRev, l.legacyOn, l.legacyRev = c, 0, 0, false, 0
 	d.mu.Unlock()
 	// relabeled: this SSH connection's first list published the link's
 	// label (desk_guest_relabel.go); a session switch keeps it.
@@ -1246,7 +1256,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 					l.relabelVia = relabelRoute{view: view, caps: u.Pong.Capabilities, ctx: sctx}
 				}
 				d.mu.Unlock()
-				_, _ = d.publishLabel(wctx, l, true)
+				_, _ = d.publishLabel(wctx, l, publishCause{firstList: true})
 				relabeled = wctx.Err() == nil
 			}
 			if !shown {

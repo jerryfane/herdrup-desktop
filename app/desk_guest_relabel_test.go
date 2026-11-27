@@ -528,11 +528,12 @@ func TestAStartupConnectRelabels(t *testing.T) {
 
 // #594's probe: one save moves the connected profile to another
 // destination (another user, here on the same server) and renames it. The
-// link to its former destination is sent nothing and keeps its label for
-// invites; connecting to the new destination sends the new label.
+// link to its former destination is sent nothing: its share view still
+// previews the old name, and (round 11) no invite of it opens, its profile
+// no longer there. Connecting to the new destination sends the new label.
 func TestAMovedProfileIsRelabeledOnlyAtItsNewDestination(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
-	l := h.live()
+	h.drain(t)
 	saved, err := h.d.Machines()
 	if err != nil || len(saved) != 1 {
 		t.Fatalf("saved %+v, %v", saved, err)
@@ -542,11 +543,15 @@ func TestAMovedProfileIsRelabeledOnlyAtItsNewDestination(t *testing.T) {
 	if err := h.d.SaveMachine(m, saved[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	h.d.mu.Lock()
-	label, rev := l.shareLabel, l.shareLabelRev
-	h.d.mu.Unlock()
-	if n := len(h.updates()); n != 0 || label != "Old" || rev != 0 {
-		t.Fatalf("%d guest.update calls, the old link names %q at %d; want nothing sent, Old kept", n, label, rev)
+	if p, err := h.tryInvite(t); !refused(err, unboundRefusal) {
+		t.Fatalf("an invite of the old destination: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
+	}
+	if details, err := h.d.GuestShareDetails("v"); err != nil || details.MachineLabel != "Old" {
+		t.Fatalf("the old destination's share view previews %+v, %v; want Old", details, err)
+	}
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("the old destination was sent %+v", got)
 	}
 	h.reconnect(t)
 	moved := h.labelRev(t)
@@ -1386,7 +1391,6 @@ func TestAnInviteWhoseProfileCantBeReadIsRefused(t *testing.T) {
 	h.drain(t)
 	h.d.storeMu.Lock()
 	err := os.WriteFile(h.d.commitPath(), []byte(`{"machines":`), 0o600)
-	h.d.storeMu.replayed = false
 	h.d.storeMu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -1442,5 +1446,107 @@ func TestEveryConnectionSendsTheLabelAgain(t *testing.T) {
 	}
 	if h.live() != l {
 		t.Fatal("the redial replaced the link")
+	}
+}
+
+// offlineRenamedLegacy is a herdr without guest_relabel_rev whose machine
+// was renamed while disconnected: the saved machine, to connect with.
+func offlineRenamedLegacy(t *testing.T) (*relabelHerdr, Machine) {
+	t.Helper()
+	h := newRelabelHerdr(t, "Old", true)
+	h.drain(t)
+	h.d.Disconnect()
+	h.rename(t, "Offline")
+	m, err := h.d.Machine()
+	if err != nil || m == nil || m.Nickname != "Offline" {
+		t.Fatalf("the saved machine %+v, %v", m, err)
+	}
+	return h, *m
+}
+
+// #594 round 12, probe 1: a herdr without guest_relabel_rev is sent no
+// rename made before its connection's first list read the profile: not by
+// saves (here, as SaveMachine stores and publishes) that held the store
+// while that first list waited for it, an unrelated one or a rename of the
+// machine itself. The healthy control, the first list not held up, sends
+// nothing either; a rename saved once it read the profile is sent.
+func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
+	for _, held := range []bool{true, false} {
+		h, m := offlineRenamedLegacy(t)
+		before, _ := h.labels(t)
+		if held {
+			h.d.storeMu.Lock()
+			st, err := h.d.load()
+			if err != nil {
+				h.d.storeMu.Unlock()
+				t.Fatal(err)
+			}
+			h.d.start(m, "")
+			waitFor(t, "the first list waiting for the store", func() bool {
+				buf := make([]byte, 1<<20)
+				return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("(*Desk).publishLabel("))
+			})
+			_, _ = h.d.publishLabelLocked(nil, st, publishCause{})
+			i := st.findProfile(m.LocalID)
+			st.Machines[i].Nickname, st.Machines[i].LabelRev = "During", nextLabelRev(st.Machines[i].LabelRev)
+			if err := h.d.store(st); err != nil {
+				h.d.storeMu.Unlock()
+				t.Fatal(err)
+			}
+			_, _ = h.d.publishLabelLocked(nil, st, publishCause{renamed: m.LocalID})
+			h.d.storeMu.Unlock()
+		} else {
+			h.d.start(m, "")
+		}
+		h.listed(t)
+		h.drain(t)
+		if got := h.updates(); len(got) != 0 {
+			t.Fatalf("held %v: the offline rename was sent %+v", held, got)
+		}
+		if got, _ := h.labels(t); !slices.Equal(got, before) {
+			t.Fatalf("held %v: labels %q; want the shares' own kept", held, got)
+		}
+		h.rename(t, "Online")
+		if p := h.answered(t, 1)[0]; *p.MachineLabel != "Online" || p.MachineLabelRev != nil {
+			t.Fatalf("held %v: sent %+v; want Online without a revision", held, p)
+		}
+	}
+}
+
+// #594 round 12, probe 2: a first list whose read of the profile fails
+// (an account sync commit cut short) leaves a herdr without
+// guest_relabel_rev sent nothing for that connection, even once the commit
+// reads again: neither an invite nor a rename then sends anything.
+func TestALegacyFirstListThatCantReadSendsNothing(t *testing.T) {
+	h, m := offlineRenamedLegacy(t)
+	journal := func(raw []byte) {
+		t.Helper()
+		h.d.storeMu.Lock()
+		defer h.d.storeMu.Unlock()
+		var err error
+		if raw != nil {
+			err = os.WriteFile(h.d.commitPath(), raw, 0o600)
+		} else {
+			err = os.Remove(h.d.commitPath())
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal([]byte(`{"machines":`))
+	h.d.start(m, "")
+	h.listed(t)
+	journal(nil)
+	if p := h.invite(t); p.MachineLabel != "Offline" {
+		t.Fatalf("an invite once the commit reads: %+v; want Offline", p)
+	}
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("the offline rename was sent %+v", got)
+	}
+	h.rename(t, "Online")
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a connection whose first list couldn't read sent %+v", got)
 	}
 }

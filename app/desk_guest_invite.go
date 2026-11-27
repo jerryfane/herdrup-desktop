@@ -124,7 +124,7 @@ func (d *Desk) CreateGuestInvite(ctx context.Context, token, name, ownerName str
 	if v.guestShare.own {
 		// The machine as saved now, verified and durable (publishLabel),
 		// never the label the view opened with.
-		shown, err := d.publishLabel(ctx, v.at.link, false)
+		shown, err := d.publishLabel(ctx, v.at.link, publishCause{})
 		if err != nil {
 			return "", err
 		}
