@@ -1008,54 +1008,62 @@ test("Leave stays queued when a 410 full readback restores the share live, and t
 
 test("reconciliation revalidates under the shares lock across 410 lower-revision restores and failed 410 commits", async () => {
  const w = worker(), h = host();
- const mac = await browser(w);
- const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore(), locks = tabLocks();
+ const tabA = await browser(w, true, grants, storage, identities, locks);
+ const tabB = await browser(w, true, grants, storage, identities, locks);
+ const access = await tabA.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+ const liveBody = (JSON.parse(storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
  // Bump service history so the local live row sits at rev 3.
  w.seedPrompt("bump-1", {});
  w.seedShare(id, liveBody);
- await mac.shares.sync();
+ await tabA.shares.sync();
  // Part 1: 410/full pull removes the share at rev 1 while localStorage throws QuotaExceededError.
- // The old committed live row is at rev 3 (> 1), yet the mask must STILL hold (hide + refuse).
+ // The old committed live row is at rev 3 (> 1), yet the mask must STILL hold (hide + refuse),
+ // and a subsequent sync after unrelated writes advance the reset history to rev 4 must retry
+ // the full pull (never exposing or reopening the deleted share).
  w.reset();
  w.seedPrompt("reset-only", {});
  w.prune(w.rev);
- const origSet = mac.storage.setItem.bind(mac.storage);
- const origRemove = mac.grants.remove.bind(mac.grants);
+ const origSet = storage.setItem.bind(storage);
+ const origRemove = grants.remove.bind(grants);
  let failOnce = true;
- mac.storage.setItem = (k, v) => {
+ storage.setItem = (k, v) => {
   if (failOnce && k === SHARES_KEY_PREFIX + "acct") { failOnce = false; throw new DOMException("quota", "QuotaExceededError"); }
   origSet(k, v);
  };
- // Hold IndexedDB removal so the grant remains present for both the failed-410 refusal checks
- // and Part 2's two-tab lower-revision restore check.
- mac.grants.remove = async () => { throw new Error("transient idb error"); };
- await mac.shares.sync().catch(() => {});
- mac.storage.setItem = origSet;
- mac.grants.remove = origRemove;
- expect(mac.shares.isMasked("acct", id)).toBe(true);
- expect(mac.shares.list()).toEqual([]);
- expect(await mac.desk.sharedConnections()).toEqual([]);
- await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
- // Part 2: Tab B completes a 410/full pull restoring the share live at rev 1 (lower than old rev 3!),
- // advancing the monotonic commit seq and liveSeq[id]. Tab A's stale dropLocked must see the newer
+ grants.remove = async () => { throw new Error("transient idb error"); };
+ await tabA.shares.sync().catch(() => {});
+ storage.setItem = origSet;
+ expect(tabA.shares.isMasked("acct", id)).toBe(true);
+ expect(tabA.shares.list()).toEqual([]);
+ expect(await tabA.desk.sharedConnections()).toEqual([]);
+ await expect(tabA.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ // Unrelated writes advance the reset history past cached rev 3 -> next sync retries full pull,
+ // keeps share hidden/unopenable (even while IDB removal still fails), never resurrects old rev 3.
+ w.seedPrompt("unrelated-2", {});
+ w.seedPrompt("unrelated-3", {});
+ w.seedPrompt("unrelated-4", {});
+ await tabA.shares.sync().catch(() => {});
+ expect(tabA.shares.isMasked("acct", id)).toBe(true);
+ expect(tabA.shares.list()).toEqual([]);
+ expect(await tabA.desk.sharedConnections()).toEqual([]);
+ await expect(tabA.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ // Part 2: Real second tab (tabB) sharing storage/locks syncs a 410/full restore bringing id back
+ // live at rev 1 (lower than the old rev 3!). Tab A's stale dropLocked must see tabB's newer
  // committed live observation, clear its stale mask, keep the grant, and list the share again.
- const rec = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { rev: number; seq?: number; liveSeq?: Record<string, number>; shares: { id: string; rev: number; body: object }[]; gone: Record<string, number>; pending: unknown[]; drop?: string[] };
- const nextSeq = (rec.seq ?? 0) + 1;
- rec.rev = 1;
- rec.seq = nextSeq;
- rec.liveSeq = { [id]: nextSeq };
- rec.shares = [{ id, rev: 1, body: liveBody }];
- rec.gone = {};
- rec.drop = [];
- origSet(SHARES_KEY_PREFIX + "acct", JSON.stringify(rec));
+ grants.remove = origRemove;
+ w.reset();
+ w.seedShare(id, liveBody);
+ w.prune(w.rev);
+ await tabB.shares.sync();
  let removed = false;
- await mac.shares.dropLocked("acct", id, async () => { removed = true; await origRemove(id); });
+ await tabA.shares.dropLocked("acct", id, async () => { removed = true; await origRemove(id); });
  expect(removed).toBe(false);
- expect(await mac.grants.get(id)).toBeDefined();
- expect(mac.shares.isMasked("acct", id)).toBe(false);
- expect(mac.shares.list().map(s => s.id)).toEqual([id]);
+ expect(await grants.get(id)).toBeDefined();
+ expect(tabA.shares.isMasked("acct", id)).toBe(false);
+ expect(tabA.shares.list().map(s => s.id)).toEqual([id]);
+ expect(tabB.shares.list().map(s => s.id)).toEqual([id]);
 }, CONNECTS_LIMIT_MS);
 
 test("a conflict tombstone does not disconnect a live guest when post-push readback returns a newer live row", async () => {
@@ -1070,9 +1078,13 @@ test("a conflict tombstone does not disconnect a live guest when post-push readb
   node_pub: Buffer.from(access.endpoint.hostPublicKey).toString("base64url"),
   guest_id: access.guestID,
  };
- // Actually connect the guest and wait until the handshake reaches phase === "connected".
- await mac.desk.connectGuest(id);
- for (let i = 0; i < 100 && (await mac.desk.state()).phase !== "connected"; i++) await new Promise(r => setTimeout(r, 10));
+ // Actually connect the guest and await the connected state event within the test deadline.
+ const connected = Promise.withResolvers<void>();
+ const off = events.stateChanged.on(s => { if (s.phase === "connected") connected.resolve(); });
+ try {
+  await mac.desk.connectGuest(id);
+  if ((await mac.desk.state()).phase !== "connected") await connected.promise;
+ } finally { off(); }
  expect((await mac.desk.state()).phase).toBe("connected");
  // Inject tombstone at POST dispatch so the put hits a genuine server conflict (deleted=true),
  // and have the post-push readback return a newer live row. Also check mid-round that r.drop is

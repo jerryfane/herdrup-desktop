@@ -263,6 +263,10 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  /** Account id for each share left in this tab whose delete is still pending, so retrying an
   *  unsent Leave after the IndexedDB grant was removed still retries the account deletion. */
  const pendingLeaveAccts = new Map<string, string>();
+ /** Accounts that observed a 410/full pull whose commit failed (e.g. localStorage quota), so the
+  *  next pull retries a full pull from revision 0 instead of an incremental pull from the stale
+  *  cached revision. */
+ const needsFullPull = new Set<string>();
  const maskInMemory = (acct: string, entries: Iterable<[string, number]>) => {
   const added: string[] = [];
   let map = masked.get(acct);
@@ -468,17 +472,20 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  readback), an applied delete is retired only if the share is absent from the readback; if a
   *  410/full restore brought it back live, the delete stays queued for the next round. */
  async function pullInto(acct: string, signal: AbortSignal, generation: number, appliedDeletes?: Set<string>): Promise<{ change: SharesChange; newestMs: number | null; unproven?: { error: unknown } }> {
-  const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
+  const since = needsFullPull.has(acct) ? 0 : read(acct).rev;
+  const pulled = await pullSince(account, acct, since, signal, generation);
+  if (pulled.full) needsFullPull.add(acct);
   const newestMs = pulled.nowMs === null ? null : pulled.newestMs;
   const { change, owed } = await update(acct, (r, baseSeq) => {
    const before = new Set(r.shares.map(s => s.id));
    const live = new Map(pulled.full ? [] : r.shares.map(s => [s.id, s] as const));
    const gone = pulled.full ? {} : r.gone;
    const liveSeq: Record<string, number> = pulled.full ? {} : { ...r.liveSeq };
+   const observedLive = new Set<string>();
    for (const it of [...pulled.items].sort((a, b) => a.rev - b.rev)) {
     if (it.collection !== "shares" || Math.max(live.get(it.id)?.rev ?? -1, gone[it.id] ?? -1) > it.rev) continue;
-    if (it.deleted) { live.delete(it.id); gone[it.id] = it.rev; delete liveSeq[it.id]; }
-    else if (validBody(it.body)) { live.set(it.id, { id: it.id, rev: it.rev, body: it.body }); delete gone[it.id]; liveSeq[it.id] = r.seq!; }
+    if (it.deleted) { live.delete(it.id); gone[it.id] = it.rev; delete liveSeq[it.id]; observedLive.delete(it.id); }
+    else if (validBody(it.body)) { live.set(it.id, { id: it.id, rev: it.rev, body: it.body }); delete gone[it.id]; liveSeq[it.id] = r.seq!; observedLive.add(it.id); }
    }
    r.rev = pulled.rev;
    r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
@@ -495,12 +502,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    // A share left here stays until its grant is gone, live on the account or not (its delete
    // not taken yet).
    noteDrops(r, candidates);
-   const liveWithoutDelete = [...live.keys()].filter(id => !r.pending.some(p => p.deleted && p.id === id));
+   const liveWithoutDelete = [...observedLive].filter(id => !r.pending.some(p => p.deleted && p.id === id));
    unmaskInMemory(acct, liveWithoutDelete);
    const shown = new Set(visible(r).map(s => s.id));
    maskInMemory(acct, [...new Set(candidates)].filter(id => !shown.has(id)).map(id => [id, baseSeq] as [string, number]));
    return { change: { account: acct, shares: visible(r, acct) }, owed };
   });
+  if (pulled.full) needsFullPull.delete(acct);
   if (owed.length === 0) return { change, newestMs };
   const froms = [...new Set(owed.map(o => o.from))].sort((a, b) => a - b);
   const proofs = new Map<number, boolean>();
