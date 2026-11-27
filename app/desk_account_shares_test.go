@@ -577,6 +577,12 @@ func TestASharesConnectionEndsAsItsGrantGoesEvenIfTheCommitFails(t *testing.T) {
 	if connected() {
 		t.Fatal("the left share's grant went, its connection stayed")
 	}
+	if shares, err := d2.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("after failed commit, SyncedShares still lists removed share: %+v, %v", shares, err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
+		t.Fatalf("after failed commit, OpenSyncedShare err = %v, want %v", err, errShareGone)
+	}
 	if err := os.RemoveAll(blocker); err != nil {
 		t.Fatal(err)
 	}
@@ -1802,5 +1808,83 @@ func TestBoundAcceptReportsRemovedWhenSyncDropsGrant(t *testing.T) {
 				t.Fatalf("grants after removed accept: %+v, %v; want none", grants, err)
 			}
 		})
+	}
+}
+
+// When readback drops a deleted share's local grant and saving the updated
+// sync state then fails, the stale on-disk mirror must not let SyncedShares
+// list that share or let OpenSyncedShare recreate its grant and connect.
+func TestFailedReadbackSaveKeepsRemovedShareGone(t *testing.T) {
+	w, srv, relay, _, _, access := acceptBound(t)
+	id := relay.HostID() + "/" + access.GuestID
+	d2 := shareDevice(t, srv)
+	ctx := context.Background()
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	connected := func() bool {
+		d2.mu.Lock()
+		defer d2.mu.Unlock()
+		return d2.link != nil && d2.link.guest != nil
+	}
+	waitFor(t, "the opened share connected", connected)
+
+	// Queue an unrelated local prompt on d2 so the next sync pushes a change
+	// and enters the readback path after d1 deletes the share.
+	if _, err := d2.SavePrompt(SavedPrompt{Nickname: "note", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	// Delete the share on the server after d2's push lands, so d2's readback
+	// observes the tombstone, calls dropGoneShares, and then hits the
+	// writeState failure before committing the updated mirror.
+	w.mu.Lock()
+	w.afterPush = func() {
+		w.afterPush = nil
+		w.tombstone(id)
+	}
+	w.mu.Unlock()
+	d2.accountSync.writeState = func(path string, raw []byte) error {
+		var state syncState
+		if err := json.Unmarshal(raw, &state); err == nil && slices.Contains(state.SharesGone, id) {
+			return errors.New("disk full after readback dropGoneShares")
+		}
+		return writeFileAtomic(path, raw)
+	}
+	if err := d2.SyncMachines(ctx); err == nil {
+		t.Fatal("readback whose sync-state save failed succeeded")
+	}
+	if grants, err := d2.guestStore.List(); err != nil || len(grants) != 0 {
+		t.Fatalf("local grant survived readback drop: %+v, %v", grants, err)
+	}
+	if connected() {
+		t.Fatal("connection stayed open after readback drop")
+	}
+	if shares, err := d2.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("SyncedShares listed removed share after failed readback save: %+v, %v", shares, err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
+		t.Fatalf("OpenSyncedShare after failed readback save = %v, want %v", err, errShareGone)
+	}
+	if grants, err := d2.guestStore.List(); err != nil || len(grants) != 0 {
+		t.Fatalf("OpenSyncedShare recreated removed grant: %+v, %v", grants, err)
+	}
+	if connected() {
+		t.Fatal("OpenSyncedShare reconnected removed share")
+	}
+
+	// Once disk writes recover, the next sync commits the mirror and the
+	// share remains absent.
+	d2.accountSync.writeState = nil
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatalf("recovery sync failed: %v", err)
+	}
+	if shares, err := d2.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("SyncedShares after recovery: %+v, %v", shares, err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
+		t.Fatalf("OpenSyncedShare after recovery = %v, want %v", err, errShareGone)
 	}
 }

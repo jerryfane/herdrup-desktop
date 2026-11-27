@@ -561,6 +561,12 @@ type accountSync struct {
 	// writeState writes account-sync.json for storeSyncState; nil is
 	// writeFileAtomic. Tests make it fail. Set before any sync.
 	writeState func(path string, raw []byte) error
+	// goneShares are share ids whose deletion a sync observed and dropped
+	// locally (dropGoneShares) before the updated sync state committed to
+	// disk, by account. SyncedShares and OpenSyncedShare exclude them until
+	// a sync state for that account commits or a fresh accept replaces the
+	// share. Protected by d.storeMu.
+	goneShares map[string]map[string]bool
 	// background are the syncs syncMachinesSoon started that haven't
 	// ended: a caller that must see everything a change of its sent (a
 	// test counting an accept's pushes) waits for them.
@@ -1013,10 +1019,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// The record holds what the merge paid, even if a file failed.
 		d.accountSync.owed = nil
 		d.dropSendMarkers(state)
+		d.clearGoneSharesLocked(acct, nil)
 	}
 	if err != nil {
 		d.storeMu.Unlock()
 		d.finishGuests(ended)
+		if len(goneShares) > 0 {
+			d.announceShares()
+		}
 		return err
 	}
 	d.storeMu.Unlock()
@@ -1223,6 +1233,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// readback confirms that history (none after a restart), else at the
 	// next merge (confirmConflicts).
 	var turnedDownGone []account.Conflict
+	var readBackGoneShares map[string]bool
 	newTombstones := false
 	// proofsOwed is whether the full readback left a sent create whose
 	// landing only the service's history can rule out (Unproven): asked
@@ -1287,16 +1298,12 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			slices.ContainsFunc(state.ShareDeletes, func(op shareOp) bool { return op.Account == acct && pushed["shares/"+op.ID] })) {
 			unsent = errDeleteUndone // the round is incomplete until it goes
 		}
-		liveShares := map[string]bool{}
-		for _, s := range state.Mirror.Shares {
-			liveShares[s.ID] = true
-		}
 		// Deletes from other devices the readback passed: the local copies
 		// go next time, unless edited, instead of being uploaded again.
 		// After a restore, what the mirror held and the restored account
 		// doesn't is gone as well: a host or prompt except what this round
 		// just wrote (it goes up again), a share as below.
-		var goneHosts, gonePrompts, goneShares []string
+		var goneHosts, gonePrompts, goneShareCandidates []string
 		for id := range readGone.Hosts {
 			if !pushed["hosts/"+id] {
 				goneHosts = append(goneHosts, id)
@@ -1308,8 +1315,18 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			}
 		}
 		for id := range readGone.Shares {
-			if !pushed["shares/"+id] && !liveShares[id] {
-				goneShares = append(goneShares, id)
+			if !pushed["shares/"+id] {
+				goneShareCandidates = append(goneShareCandidates, id)
+			}
+		}
+		for _, c := range turnedDownGone {
+			switch c.Collection {
+			case "hosts":
+				goneHosts = append(goneHosts, c.ID)
+			case "prompts":
+				gonePrompts = append(gonePrompts, c.ID)
+			case "shares":
+				goneShareCandidates = append(goneShareCandidates, c.ID)
 			}
 		}
 		if readBack.Full {
@@ -1348,34 +1365,33 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				}
 			}
 			for _, id := range slices.Sorted(maps.Keys(was)) {
-				if key := "shares/" + id; !present[key] && !pushed[key] && !slices.Contains(goneShares, id) {
-					goneShares = append(goneShares, id)
+				if key := "shares/" + id; !present[key] && !pushed[key] {
+					goneShareCandidates = append(goneShareCandidates, id)
 				}
 			}
-			state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool {
-				return op.Account == acct && slices.Contains(goneShares, op.ID)
-			})
 		}
-		state.HostsGone, state.PromptsGone, state.SharesGone = goneHosts, gonePrompts, goneShares
-	}
-	for _, c := range turnedDownGone {
-		switch c.Collection {
-		case "hosts":
-			state.HostsGone = append(state.HostsGone, c.ID)
-		case "prompts":
-			state.PromptsGone = append(state.PromptsGone, c.ID)
-		case "shares":
-			state.SharesGone = append(state.SharesGone, c.ID)
-		}
-	}
-	if len(state.SharesGone) > 0 {
+		// Subtract the final live mirror shares once so every downstream
+		// step (retiring writes, recording SharesGone, dropping grants)
+		// acts on the exact same set of gone share ids.
 		liveShares := map[string]bool{}
 		for _, s := range state.Mirror.Shares {
 			liveShares[s.ID] = true
 		}
-		state.SharesGone = slices.DeleteFunc(state.SharesGone, func(id string) bool {
-			return liveShares[id]
-		})
+		var goneShares []string
+		goneShareSet := map[string]bool{}
+		for _, id := range goneShareCandidates {
+			if !liveShares[id] && !goneShareSet[id] {
+				goneShareSet[id] = true
+				goneShares = append(goneShares, id)
+			}
+		}
+		if readBack.Full && len(goneShareSet) > 0 {
+			state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool {
+				return op.Account == acct && goneShareSet[op.ID]
+			})
+		}
+		state.HostsGone, state.PromptsGone, state.SharesGone = goneHosts, gonePrompts, goneShares
+		readBackGoneShares = goneShareSet
 	}
 	state.PushFrom = pushFrom
 	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)
@@ -1408,21 +1424,24 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// first would forget them (SharesGone is this account's only), and
 	// the grants would stay.
 	var dropped []detached
-	if len(acked) > 0 {
-		gone := map[string]bool{}
-		for _, id := range state.SharesGone {
-			gone[id] = true
-		}
-		if dropped, err = d.dropGoneShares(acct, gone); err != nil {
+	if len(readBackGoneShares) > 0 {
+		if dropped, err = d.dropGoneShares(acct, readBackGoneShares); err != nil {
 			d.storeMu.Unlock()
 			d.finishGuests(dropped)
+			d.announceShares()
 			return err
 		}
 	}
 	err = d.storeSyncState(state)
+	if err == nil && len(acked) > 0 {
+		d.clearGoneSharesLocked(acct, nil)
+	}
 	d.storeMu.Unlock()
 	d.finishGuests(dropped)
 	if err != nil {
+		if len(readBackGoneShares) > 0 {
+			d.announceShares()
+		}
 		return err
 	}
 	publishSyncedMachines(unsavedHosts(st.Machines, state.Mirror.Hosts))

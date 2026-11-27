@@ -193,7 +193,63 @@ func (d *Desk) settleShareProofsLocked(still func() bool, acct string, proofs ma
 	if err != nil {
 		return ended, err
 	}
-	return ended, d.storeSyncState(state)
+	if err := d.storeSyncState(state); err != nil {
+		return ended, err
+	}
+	d.clearGoneSharesLocked(acct, gone)
+	return ended, nil
+}
+
+// noteGoneSharesLocked remembers share ids whose deletion this run observed
+// and dropped locally (dropGoneShares) until a sync state for acct commits.
+// d.storeMu must be held.
+func (d *Desk) noteGoneSharesLocked(acct string, gone map[string]bool) {
+	if acct == "" || len(gone) == 0 {
+		return
+	}
+	if d.accountSync.goneShares == nil {
+		d.accountSync.goneShares = map[string]map[string]bool{}
+	}
+	set := d.accountSync.goneShares[acct]
+	if set == nil {
+		set = map[string]bool{}
+		d.accountSync.goneShares[acct] = set
+	}
+	for id := range gone {
+		set[id] = true
+	}
+}
+
+// clearGoneSharesLocked clears uncommitted observed deletions for acct: all
+// of them when ids is nil (a fresh mirror for acct just committed), or only
+// ids (specific settled writes or a fresh local accept). d.storeMu must be held.
+func (d *Desk) clearGoneSharesLocked(acct string, ids map[string]bool) {
+	if acct == "" || d.accountSync.goneShares == nil {
+		return
+	}
+	if ids == nil {
+		delete(d.accountSync.goneShares, acct)
+		return
+	}
+	set := d.accountSync.goneShares[acct]
+	if len(set) == 0 {
+		return
+	}
+	for id := range ids {
+		delete(set, id)
+	}
+	if len(set) == 0 {
+		delete(d.accountSync.goneShares, acct)
+	}
+}
+
+// goneSharesLocked returns a copy of acct's uncommitted observed deletions.
+// d.storeMu must be held.
+func (d *Desk) goneSharesLocked(acct string) map[string]bool {
+	if acct == "" || d.accountSync.goneShares == nil {
+		return nil
+	}
+	return maps.Clone(d.accountSync.goneShares[acct])
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -209,6 +265,7 @@ func (d *Desk) SyncedShares() ([]SyncedShare, error) {
 	}
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
+	gone := d.goneSharesLocked(cur.AccountID)
 	d.storeMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -217,7 +274,7 @@ func (d *Desk) SyncedShares() ([]SyncedShare, error) {
 	if err != nil {
 		return nil, err
 	}
-	return syncedSharesOf(cur.AccountID, state, grants), nil
+	return syncedSharesOf(cur.AccountID, state, grants, gone), nil
 }
 
 // announceShares tells the page the shares now (SyncedShares).
@@ -228,9 +285,10 @@ func (d *Desk) announceShares() {
 }
 
 // syncedSharesOf lists account acct's shares: the mirror's (state's, when
-// it is acct's) but those left here, then the writes owed to acct. Local
-// marks those whose grant this device holds (grants).
-func syncedSharesOf(acct string, state syncState, grants []guest.Access) []SyncedShare {
+// it is acct's) but those left here or observed deleted before state saved
+// (gone), then the writes owed to acct. Local marks those whose grant this
+// device holds (grants).
+func syncedSharesOf(acct string, state syncState, grants []guest.Access, gone map[string]bool) []SyncedShare {
 	held := map[string]bool{}
 	for _, g := range grants {
 		held[g.ShareID()] = true
@@ -246,14 +304,14 @@ func syncedSharesOf(acct string, state syncState, grants []guest.Access) []Synce
 	listed := map[string]bool{}
 	if state.AccountID == acct {
 		for _, s := range state.Mirror.Shares {
-			if !owed(state.ShareDeletes, s.ID) {
+			if !gone[s.ID] && !owed(state.ShareDeletes, s.ID) {
 				add(s.ID, s.Body)
 				listed[s.ID] = true
 			}
 		}
 	}
 	for _, op := range state.ShareWrites {
-		if op.Account == acct && op.Body != nil && !listed[op.ID] {
+		if op.Account == acct && op.Body != nil && !gone[op.ID] && !listed[op.ID] {
 			add(op.ID, *op.Body)
 			listed[op.ID] = true
 		}
@@ -322,11 +380,19 @@ func (d *Desk) withAccountShares(list []guest.Access) ([]guest.Access, error) {
 	}
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
+	goneByAcct := map[string]map[string]bool{}
+	for acct, set := range d.accountSync.goneShares {
+		goneByAcct[acct] = maps.Clone(set)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	for i := range list {
+		if goneByAcct[list[i].Account][list[i].ShareID()] {
+			list[i].AccountShare, list[i].AccountShareProblem = "", ""
+			continue
+		}
 		list[i].AccountShare, list[i].AccountShareProblem = accountShareOf(state, list[i])
 	}
 	return list, nil
@@ -549,6 +615,9 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 			}
 		}
 		err = d.storeSyncState(state)
+		if err == nil && !leave && op.Account != "" {
+			d.clearGoneSharesLocked(op.Account, map[string]bool{op.ID: true})
+		}
 	}
 	d.storeMu.Unlock()
 	if err != nil {
@@ -656,6 +725,7 @@ func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]detached, er
 	if len(gone) == 0 {
 		return nil, nil
 	}
+	d.noteGoneSharesLocked(acct, gone)
 	grants, err := d.guestStore.List()
 	if err != nil {
 		return nil, err
@@ -707,18 +777,22 @@ func (d *Desk) OpenSyncedShare(ctx context.Context, id string) error {
 // sync after the save sees the grant and drops it on the share's
 // tombstone, since the save is ordered with the mirror it checked.
 func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Access, error) {
+	d.storeMu.Lock()
+	state, err := d.loadSyncState()
+	gone := d.goneSharesLocked(acct)
+	d.storeMu.Unlock()
+	if err != nil {
+		return guest.Access{}, err
+	}
+	if gone[id] {
+		return guest.Access{}, errShareGone
+	}
 	grants, err := d.guestStore.List()
 	if err != nil {
 		return guest.Access{}, err
 	}
 	if i := slices.IndexFunc(grants, func(g guest.Access) bool { return g.ShareID() == id }); i >= 0 {
 		return grants[i], nil
-	}
-	d.storeMu.Lock()
-	state, err := d.loadSyncState()
-	d.storeMu.Unlock()
-	if err != nil {
-		return guest.Access{}, err
 	}
 	body := liveShare(state, acct, id)
 	if body == nil {
@@ -747,7 +821,7 @@ func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Acce
 	if err != nil {
 		return guest.Access{}, err
 	}
-	if liveShare(state, access.Account, id) == nil {
+	if d.goneSharesLocked(access.Account)[id] || liveShare(state, access.Account, id) == nil {
 		return guest.Access{}, errShareGone
 	}
 	if err := d.guestStore.Save(access); err != nil {
