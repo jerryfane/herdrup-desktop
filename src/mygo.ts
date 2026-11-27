@@ -250,6 +250,11 @@ export interface AgentView {
    */
   askForm: boolean;
   /**
+   * TranscriptAgy: the host serves Antigravity CLI (agy) transcripts
+   * (capabilities.agent_transcript && capabilities.transcript_agy).
+   */
+  transcriptAgy?: boolean;
+  /**
    * TopicSessions: the topics the agent's session file already holds
    * (topic_sessions, read from disk): the page offers Topics before or
    * without a list answer (herdrup #745 topicsAvailable), and lists them
@@ -712,6 +717,7 @@ export interface GramUploadProgress {
 export interface GuestChat {
   available: boolean;
   ownerOrigin: boolean;
+  transcriptAgy?: boolean;
 }
 
 export interface GuestConnection {

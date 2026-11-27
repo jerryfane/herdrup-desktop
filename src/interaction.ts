@@ -37,7 +37,7 @@ import { animateHeight, cubicBezier, easeOut, motionMode, motionSeconds, SPEC } 
 import { changeTextSize, onTextSizeChanged, textSize, type TextSurface } from "./textSize";
 import { defaultChatMode, type ChatMode } from "./chatPreference";
 import { TopicsPane, type TopicComposer } from "./topicsView";
-import { foldKey, nextTopicsOffer, ompHarness, resolvedMode, sendNote, topicsShown, type TopicsOffer } from "./topicsModel";
+import { chatAvailableFor, chatHarness, foldKey, nextTopicsOffer, ompHarness, resolvedMode, sendNote, topicsShown, type TopicsOffer } from "./topicsModel";
 import { carriedText, dismissedText, inboxRows, settledLine, suggestionFromEntry, suggestionTitle, yieldSettled, type ChatSuggestion, type Settled, type SuggestionRow } from "./topicSuggestionsModel";
 import chatTextIcon from "../third_party/phosphor/web/chat-text.svg?url";
 import envelopeIcon from "../third_party/phosphor/web/envelope.svg?url";
@@ -783,7 +783,7 @@ class Detail {
    this.updateStatus(view.group, view.status, view.statusSinceUnixMs);
    void Desk.paneMuted(view.paneID).then(muted => this.showMuted(muted), () => undefined);
    // A failed check (null) is no answer: Refresh asks again (#584).
-   const chat = ompHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
+   const chat = chatHarness(view.harness) && view.guest ? await Desk.guestChatAvailable(this.token).catch(() => null) : undefined;
    if (this.disposed) return;
    this.attach.hidden = view.guest && !view.guestGram;
    if (view.guest) {
@@ -1587,16 +1587,16 @@ class Detail {
   *  skip them for an older prompt sent from the app (#575). A failed check has neither. */
  async acceptChat(view: AgentView, chat: GuestChat | null | undefined, modes: HTMLElement) {
   this.chatUnknown = chat === null;
-  const chatAvailable = ompHarness(view.harness) && (!view.guest || !!chat?.available);
+  const chatAvailable = chatAvailableFor(view.harness, view.guest, view.transcriptAgy, chat);
   this.chatAvailable = chatAvailable;
   this.jumpMine = !view.guest || !!chat?.ownerOrigin;
-  this.topicsCapable = chatAvailable && await Desk.topicsAvailable(this.token).catch(() => false);
+  this.topicsCapable = chatAvailable && ompHarness(view.harness) && await Desk.topicsAvailable(this.token).catch(() => false);
   if (this.disposed) return;
   if (this.topicsCapable) this.mountTopics(view);
   modes.hidden = !chatAvailable && !view.guestGram;
   if (view.guest) {
    this.guestChat = chatAvailable;
-   modes.replaceChildren(...(chatAvailable ? [this.topicsButton, this.chatButton] : []), this.terminalButton, ...(this.guestGramButton ? [this.guestGramButton] : []));
+   modes.replaceChildren(...(chatAvailable ? (ompHarness(view.harness) ? [this.topicsButton, this.chatButton] : [this.chatButton]) : []), this.terminalButton, ...(this.guestGramButton ? [this.guestGramButton] : []));
   }
   this.asked = chatAvailable ? (modeChoices.get(JSON.stringify(this.target)) ?? defaultChatMode()) : "terminal";
   this.topicsButton.hidden = !this.topicsAvailable();

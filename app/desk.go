@@ -361,6 +361,9 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
+	// transcriptAgy is capabilities.transcript_agy from the same ping
+	// (read outside the pinned herdr schema until the pin carries it).
+	transcriptAgy bool
 	// relabelUnsure is the connection (l.client) a guest relabel went
 	// unanswered on, which takes no more (desk_guest_relabel.go).
 	relabelUnsure *bridge.Client
@@ -1166,7 +1169,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		d.mu.Lock()
 		// A new watch, on a new connection or session, starts from a new
 		// baseline: what needs you as it connects is not news.
-		l.ctx, l.groups, l.agents, l.needing, l.caps = wctx, groups, nil, nil, nil
+		l.ctx, l.groups, l.agents, l.needing, l.caps, l.transcriptAgy = wctx, groups, nil, nil, nil, false
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
@@ -1201,7 +1204,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
-			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
+			l.agents, l.caps, l.transcriptAgy, d.peers = u.Agents, u.Pong.Capabilities, u.TranscriptAgy, peers
 			if first {
 				// A rename not yet sent to this herdr (desk_guest_relabel.go):
 				// its capabilities are known now.

@@ -92,9 +92,10 @@ type Client struct {
 	// app: the owner drives this client from the app (NewApp).
 	app bool
 
-	mu     sync.Mutex
-	probed bool // a ping has answered; pong is its result
-	pong   herdrapi.ResponseResultPong
+	mu            sync.Mutex
+	probed        bool // a ping has answered; pong is its result
+	pong          herdrapi.ResponseResultPong
+	transcriptAgy bool // capabilities.transcript_agy, until the herdr schema pin carries it
 }
 
 // New returns a client over t whose writes carry no input_source: a guest's,
@@ -245,6 +246,14 @@ func (c *Client) probe(ctx context.Context) (herdrapi.ResponseResultPong, error)
 // cached ping, probing once); known is false when that probe failed.
 func (c *Client) Supports(ctx context.Context, capability herdrapi.Capability) (ok, known bool) {
 	return c.supports(ctx, capability)
+}
+
+// CachedTranscriptAgy reports whether the last successful Ping advertised
+// capabilities.transcript_agy (not yet in the pinned herdr schema).
+func (c *Client) CachedTranscriptAgy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.probed && c.transcriptAgy
 }
 
 // gate refuses m when its capability is known to be missing.
