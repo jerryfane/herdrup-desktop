@@ -14,12 +14,18 @@ import (
 // the answer for capability checks. A failed ping leaves the cache as it
 // was.
 func (c *Client) Ping(ctx context.Context) (herdrapi.ResponseResultPong, error) {
-	pong, err := call[herdrapi.ResponseResultPong](ctx, c, "ping", herdrapi.PingParams{})
+	pong, raw, err := callRaw[herdrapi.ResponseResultPong](ctx, c, "ping", herdrapi.PingParams{})
 	if err != nil {
 		return pong, err
 	}
+	var extra struct {
+		Capabilities struct {
+			TranscriptAgy bool `json:"transcript_agy"`
+		} `json:"capabilities"`
+	}
+	_ = json.Unmarshal(raw, &extra)
 	c.mu.Lock()
-	c.probed, c.pong = true, pong
+	c.probed, c.pong, c.transcriptAgy = true, pong, extra.Capabilities.TranscriptAgy
 	c.mu.Unlock()
 	return pong, nil
 }

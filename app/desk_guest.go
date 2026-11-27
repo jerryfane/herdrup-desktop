@@ -348,8 +348,9 @@ func (d *Desk) guestRelabeled(id, label string) {
 // the same pong says herdr records the browser's prompts as the owner's
 // (src/web/desk.ts guestChatAvailable); a desktop guest's never has it.
 type GuestChat struct {
-	Available   bool `json:"available"`
-	OwnerOrigin bool `json:"ownerOrigin"`
+	Available     bool `json:"available"`
+	OwnerOrigin   bool `json:"ownerOrigin"`
+	TranscriptAgy bool `json:"transcriptAgy,omitempty"`
 }
 
 // GuestChatAvailable follows the authenticated host's transcript capability.
@@ -364,7 +365,11 @@ func (d *Desk) GuestChatAvailable(ctx context.Context, token string) (GuestChat,
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
 	pong, err := v.client.Ping(ctx)
-	return GuestChat{Available: err == nil && pong.Capabilities != nil && pong.Capabilities.AgentTranscript}, err
+	caps := pong.Capabilities
+	return GuestChat{
+		Available:     err == nil && caps != nil && caps.AgentTranscript,
+		TranscriptAgy: err == nil && caps != nil && caps.AgentTranscript && v.client.CachedTranscriptAgy(),
+	}, err
 }
 
 func (d *Desk) paneRecipient(v *interaction) (string, error) {
