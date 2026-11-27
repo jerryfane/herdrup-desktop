@@ -29,6 +29,7 @@ import {
   type GramAgent,
 } from "./gramMention";
 import * as model from "./gramModel";
+import { gramMarkdown, hasMarkdownTable } from "./gramMarkdown";
 import { agentName, foldToggleLabel, gramTextFolds, rowPreview, savedPreview, segments, type GramTextSegment } from "./gramText";
 import { guestGramView, type GuestGramView } from "./guestGramView";
 import type { GuestGramGrantInfo } from "./guestGramMerge";
@@ -1208,6 +1209,7 @@ function textPart(
 ): HTMLElement {
   const part = el("div", "gpart");
   const hasCode = segs.some((s) => s.kind === "code");
+  const hasTable = segs.some((s) => s.kind === "text" && hasMarkdownTable(s.text));
   const fill = mine ? "var(--gram-out-fill)" : "var(--color-surface-raised)";
   if (segs.length === 0 && hasCard) {
     const c = cardOf(false);
@@ -1231,6 +1233,7 @@ function textPart(
     else bubble.append(el("div", "gcard-end"));
     paintShape(bubble, { radius: 18, fill, clip: true });
   } else {
+    if (hasTable) part.classList.add("wide");
     bubble.classList.add("plain");
     segs.forEach((s, i) => {
       if (s.kind === "text") bubble.append(prose(id, s.text, i, mine));
@@ -1241,23 +1244,16 @@ function textPart(
   return part;
 }
 
-/** GramFoldingText: whole up to eight lines; past that the eighth ends in "…" and "Read more" /
- * "Show less" sits under it. The open segments are the page's, by message and segment. */
+/** GramFoldingText: single paragraphs show whole up to eight lines, rich Markdown blocks up to
+ *  the fold height cap; past that "Read more" / "Show less" sits under it. The open segments are
+ *  the page's, by message and segment. */
 function prose(id: string, text: string, index: number, mine: boolean): HTMLElement {
   const box = el("div", "gprose");
   box.dataset.fold = `${id}:${index}`;
   const open = expanded.get(id)?.has(index) ?? false;
-  const body = el("div", "gprose-text" + (open ? "" : " clamp"));
-  for (const run of model.linkRuns(text)) {
-    if (run.href === null) body.append(document.createTextNode(run.text));
-    else {
-      const a = el("a", "glink", run.text);
-      a.href = run.href;
-      a.target = "_blank";
-      a.rel = "noopener";
-      body.append(a);
-    }
-  }
+  const rendered = gramMarkdown(text);
+  const body = rendered.root;
+  if (!open) body.classList.add("clamp");
   const toggle = button("gfold", foldToggleLabel(open), () => {
     const set = expanded.get(id) ?? new Set<number>();
     if (open) set.delete(index);
@@ -1278,7 +1274,7 @@ function prose(id: string, text: string, index: number, mine: boolean): HTMLElem
   return box;
 }
 
-/** Shows "Read more" where the whole text is taller than eight lines of it, both measured at
+/** Shows "Read more" where the whole text is taller than the folded height, both measured at
  * the shown width. */
 function measureFolds(root: ParentNode) {
   for (const box of root.querySelectorAll<HTMLElement>(".gprose")) {
@@ -1290,7 +1286,9 @@ function measureFolds(root: ParentNode) {
     body.classList.remove("clamp");
     const full = body.getBoundingClientRect().height;
     if (!open) body.classList.add("clamp");
-    toggle.hidden = !gramTextFolds(full, folded);
+    const folds = gramTextFolds(full, folded);
+    body.classList.toggle("folds", folds && !open);
+    toggle.hidden = !folds;
   }
 }
 
