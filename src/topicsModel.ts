@@ -9,9 +9,32 @@ export type TopicInfo = AgentTopicInfo;
 export type { TopicsUpdate };
 
 /** desk_topics.go ompHarness: an omp agent, plain or a named build ("omp …", "omp-…"); only omp
- *  has Chat and Topics, and only omp's Topics switch. */
+ *  has Topics and omp's Topics switch. */
 export function ompHarness(harness: string): boolean {
  return /^omp(?:$| |-)/i.test(harness);
+}
+
+/** An Antigravity CLI (agy) agent, plain or a named build ("agy …", "agy-…"). */
+export function agyHarness(harness: string): boolean {
+ return /^agy(?:$| |-)/i.test(harness);
+}
+
+/** Whether a harness can use the Chat view when its server capability allows it. */
+export function chatHarness(harness: string): boolean {
+ return ompHarness(harness) || agyHarness(harness);
+}
+
+/** Whether Chat is available for a view: omp agents need the host's transcript support; agy agents
+ *  additionally require the server's `transcript_agy` capability. Topics remain omp-only. */
+export function chatAvailableFor(
+ harness: string,
+ guest: boolean,
+ transcriptAgy: boolean | undefined,
+ guestChat: { available: boolean; transcriptAgy?: boolean } | null | undefined,
+): boolean {
+ if (ompHarness(harness)) return !guest || !!guestChat?.available;
+ if (agyHarness(harness)) return guest ? (!!guestChat?.available && !!guestChat?.transcriptAgy) : !!transcriptAgy;
+ return false;
 }
 
 /** The mode a page shows for the one asked for (ChatPreference.resolved): Topics only where the

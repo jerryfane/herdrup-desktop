@@ -60,7 +60,6 @@ func (d *Desk) WebAccessLengths() []WebAccessLength {
 type WebAccessRequest struct {
 	ID          string `json:"id"`
 	BrowserName string `json:"browserName"`
-	CreatedMs   int64  `json:"createdMs"`
 	// Claimed is "no", "you" or "other" (another device is approving it).
 	Claimed   string `json:"claimed"`
 	ExpiresIn int64  `json:"expiresIn"`
@@ -192,36 +191,10 @@ func (d *Desk) nextWebSeq(approver []byte) (uint64, error) {
 	return next, nil
 }
 
-// WebAccessOffered reports whether the account service carries browser
-// approvals. An error means the service couldn't be asked; the page asks
-// again on its next look.
-func (d *Desk) WebAccessOffered(ctx context.Context) (bool, error) {
-	cur, err := d.account.Current()
-	if err != nil || cur == nil {
-		return false, errSignedOutHere(err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return d.account.WebApproveOffered(ctx)
-}
-
-// WebAccessRequests lists browsers waiting for approval on the account.
-func (d *Desk) WebAccessRequests(ctx context.Context) ([]WebAccessRequest, error) {
-	cur, err := d.account.Current()
-	if err != nil || cur == nil {
-		return []WebAccessRequest{}, errSignedOutHere(err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	list, err := d.account.Approvals(ctx, cur.AccountID)
-	if err != nil {
-		return []WebAccessRequest{}, err
-	}
-	out := make([]WebAccessRequest, 0, len(list))
-	for _, r := range list {
-		out = append(out, WebAccessRequest{ID: r.ID, BrowserName: r.Browser.Name, CreatedMs: r.Browser.CreatedMs, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn})
-	}
-	return out, nil
+// webAccessRequest is the sheet's view of a browser waiting for approval
+// (ApprovalRequests lists them).
+func webAccessRequest(r account.ApprovalRequest) WebAccessRequest {
+	return WebAccessRequest{ID: r.ID, BrowserName: r.Browser.Name, Claimed: r.Claimed, ExpiresIn: r.ExpiresIn}
 }
 
 // WebAccessMachines lists the saved machines the sheet offers.
@@ -682,20 +655,42 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	id := machineID(m)
-	d.mu.Lock()
-	if d.link != nil && d.link.id == id && d.link.client != nil {
-		c := d.link.client
-		d.mu.Unlock()
+	if c := d.liveBridge(m); c != nil {
 		return engine.New(engine.Bridge(c)), func() {}, nil
 	}
-	d.mu.Unlock()
-	if m.KeyPath == "" {
-		return nil, nil, errors.New("needs a key file")
+	c, done, err := d.dialMachine(ctx, m, d.pinsFor(m), nil)
+	if err != nil {
+		return nil, nil, err
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: d.pins}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
+	return engine.New(engine.Bridge(c)), done, nil
+}
+
+// errNeedsKey is a machine this computer can reach only with a password,
+// which it never keeps: it isn't the one connected now and has no key file.
+var errNeedsKey = errors.New("needs a key file")
+
+// liveBridge is the live connection when it is m's, else nil.
+func (d *Desk) liveBridge(m Machine) *bridge.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.link != nil && d.link.id == machineID(m) {
+		return d.link.client
+	}
+	return nil
+}
+
+// dialMachine is a short SSH session to m with its key file: this
+// computer's own, never a guest's. It checks the host key with pins,
+// negotiating it with algos, or as m was pinned when nil
+// (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
+// otherwise).
+func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore, algos []string) (*bridge.Client, func(), error) {
+	if m.KeyPath == "" {
+		return nil, nil, errNeedsKey
+	}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: algos}
+	if algos == nil {
+		cfg.HostKeyAlgorithms = hostKeyAlgorithms(m)
 	}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
@@ -707,7 +702,7 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 	if err != nil {
 		return nil, nil, err
 	}
-	return engine.New(engine.Bridge(c)), func() { c.Close() }, nil
+	return c, func() { c.Close() }, nil
 }
 
 // webEnvelope is the machine list sealed to the browser (WIRE-PLAN §2.3).

@@ -554,6 +554,20 @@ func (c *Client) holdsLocked(r Round) bool {
 	return c.saved != nil && c.saved.AccountID == r.Account && (!r.pinned || c.epoch == r.epoch)
 }
 
+// WhileHolds runs commit only while r's session is the current one, and
+// holds every session change (sign-in, sign-out, a refused refresh) off
+// until it returns: what commit writes belongs to r's session, never to the
+// one after it. It reports false, without running commit, once r's session
+// has gone. commit must not call back into c.
+func (c *Client) WhileHolds(r Round, commit func() error) (bool, error) {
+	c.writes.Lock()
+	defer c.writes.Unlock()
+	if !c.Holds(r) {
+		return false, nil
+	}
+	return true, commit()
+}
+
 // accessTokenFor is AccessToken, for r only: a token is returned only
 // while r's session is the current one, so work planned for one session
 // never reaches another.

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,40 @@ func TestHostIdentity(t *testing.T) {
 	}
 	if IdentityOf(HostBody{Username: "root", Host: "pi.local", Port: 2222}) == a {
 		t.Fatal("another port is another machine")
+	}
+}
+
+// Check holds a machine to the service's SCHEMAS.hosts: lengths in code
+// points, no control character, no white space in the host.
+func TestHostBodyCheckIsTheServicesHostsSchema(t *testing.T) {
+	ok := HostBody{Nickname: strings.Repeat("ñ", 64), Host: strings.Repeat("é", 253), Username: strings.Repeat("ü", 64),
+		Label: strings.Repeat("ß", 64), Port: 65535, AuthKind: "password"}
+	if err := ok.Check(); err != nil {
+		t.Fatalf("limits in code points: %v", err)
+	}
+	if err := (HostBody{Host: "pi", Username: "root"}).Check(); err != nil {
+		t.Fatalf("the least machine: %v", err)
+	}
+	for name, change := range map[string]func(b *HostBody){
+		"control in nickname": func(b *HostBody) { b.Nickname = "pi\x7f" },
+		"C1 in label":         func(b *HostBody) { b.Label = "a\u0085b" },
+		"space in host":       func(b *HostBody) { b.Host = "pi local" },
+		"nbsp in host":        func(b *HostBody) { b.Host = "pi\u00a0local" },
+		"bom in host":         func(b *HostBody) { b.Host = "\ufeffpi" },
+		"empty username":      func(b *HostBody) { b.Username = "" },
+		"empty host":          func(b *HostBody) { b.Host = "" },
+		"long host":           func(b *HostBody) { b.Host = strings.Repeat("h", 254) },
+		"long username":       func(b *HostBody) { b.Username = strings.Repeat("u", 65) },
+		"long nickname":       func(b *HostBody) { b.Nickname = strings.Repeat("n", 65) },
+		"bad UTF-8":           func(b *HostBody) { b.Username = "ro\xffot" },
+		"port":                func(b *HostBody) { b.Port = 65536 },
+		"auth kind":           func(b *HostBody) { b.AuthKind = "agent" },
+	} {
+		b := ok
+		change(&b)
+		if b.Check() == nil {
+			t.Errorf("%s: taken", name)
+		}
 	}
 }
 

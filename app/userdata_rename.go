@@ -55,7 +55,7 @@ func moveFormerUserData(config, current string) error {
 
 // movedKeyPaths points the saved machines whose private key the app keeps
 // in its own folder (a paired host's identities/herdr-pair-….key,
-// savePairedIdentity) at the moved folder (PR #100 review). A key kept
+// pairing.SaveIdentity) at the moved folder (PR #100 review). A key kept
 // anywhere else is the user's and keeps its path. Unknown fields are kept:
 // the file is rewritten from its own JSON, changing only keyPath values.
 func movedKeyPaths(machines, from, to string) error {

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo"
+	"github.com/jerryfane/herdrup-desktop/internal/bridge"
 	"github.com/jerryfane/herdrup-desktop/internal/pairing"
 	"golang.org/x/crypto/ssh"
 )
@@ -114,6 +114,55 @@ func (d *Desk) DiscardPairingLink(id string) {
 
 var pairingHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
 
+// pairHostKeyTypes are the host key types another device's approval may pin
+// (desk_pair_request.go), as pair-v1 allows: plain ed25519 and ECDSA keys,
+// never RSA, DSA or a certificate. Each maps to its certificate algorithm:
+// a server presenting only a certificate of the pinned key is that machine
+// (bridge's pinning checks the key it certifies).
+var pairHostKeyTypes = map[string]string{
+	ssh.KeyAlgoED25519:  ssh.CertAlgoED25519v01,
+	ssh.KeyAlgoECDSA256: ssh.CertAlgoECDSA256v01,
+	ssh.KeyAlgoECDSA384: ssh.CertAlgoECDSA384v01,
+	ssh.KeyAlgoECDSA521: ssh.CertAlgoECDSA521v01,
+}
+
+// hostKeyAlgorithms is what a connection to m offers for the host key: SSH's
+// defaults (nil) for a machine not paired; for one another device approved,
+// only the key type it pinned (one of pairHostKeyTypes), then that type's
+// certificate; else herdr pair's.
+func hostKeyAlgorithms(m Machine) []string {
+	switch {
+	case !m.Paired:
+		return nil
+	case m.HostKeyType != "":
+		if cert, ok := pairHostKeyTypes[m.HostKeyType]; ok {
+			return []string{m.HostKeyType, cert}
+		}
+		return []string{m.HostKeyType}
+	}
+	return pairingHostKeyAlgorithms
+}
+
+// profilePin is the pin a machine another device's approval paired keeps
+// in its profile (Machine.HostKeyPin): its connections check that key, and
+// never pin another on first use.
+type profilePin string
+
+func (p profilePin) Pin(string) (string, bool, error) { return string(p), true, nil }
+
+func (p profilePin) SetPin(string, string) error {
+	return errors.New("this machine keeps the host key its pairing pinned")
+}
+
+// pinsFor is the pin store a connection to m checks its host key with: the
+// profile's own pin when it has one, else the pins this computer keeps.
+func (d *Desk) pinsFor(m Machine) bridge.PinStore {
+	if m.HostKeyPin != "" {
+		return profilePin(m.HostKeyPin)
+	}
+	return d.pins
+}
+
 // PairMachine pins before redemption, then persists the private key and host.
 // It never connects or starts a process on the machine: Open it is a separate
 // user action. Cancelling the scanner stops capture, not an accepted redemption.
@@ -144,7 +193,10 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		machine = saved.Machines[index]
 		replacing = id
 	}
-	machine.Paired = true
+	// The QR's pin replaces the one before, so does its policy: herdr pair's
+	// host key algorithms and the pins kept here, not the type and pin
+	// another device's approval kept in the profile.
+	machine.Paired, machine.HostKeyType, machine.HostKeyPin = true, "", ""
 	// QR fingerprints use OpenSSH SHA256:base64; Parse normalizes them to the
 	// same hex digest that the real SSH host-key callback verifies.
 	if err := d.pins.SetPin(net.JoinHostPort(payload.Host, "22"), payload.Fingerprint); err != nil {
@@ -164,12 +216,12 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 	}
 	// Once acknowledged, finish saving even if the scanner has been dismissed.
 	// Otherwise its successful remote grant would silently lose its private key.
-	keyPath, err := d.savePairedIdentity(identity.PrivatePEM)
+	keyPath, err := pairing.SaveIdentity(d.dir, identity.PrivatePEM)
 	if err != nil {
 		return PairedMachine{}, errors.New("Your key was added to that computer, but this device couldn't save it. Remove the herdr-pair line from ~/.ssh/authorized_keys on that computer before pairing again.")
 	}
 	machine.KeyPath = keyPath
-	if err := d.SaveMachine(machine, replacing); err != nil {
+	if err := d.saveMachine(machine, replacing, false); err != nil {
 		// Keep the only copy of an already-authorized key. A failed config write must
 		// not turn recoverable local storage trouble into a lost remote credential.
 		return PairedMachine{}, fmt.Errorf("The computer accepted the key, but its saved host could not be written. The private key remains at %s; add that file manually, or remove the herdr-pair line on the computer before pairing again: %w", keyPath, err)
@@ -179,31 +231,4 @@ func (d *Desk) PairMachine(ctx context.Context, qrText string) (PairedMachine, e
 		label = machine.Host
 	}
 	return PairedMachine{ID: id, Label: label}, nil
-}
-
-func (d *Desk) savePairedIdentity(private []byte) (string, error) {
-	dir := filepath.Join(d.dir, "identities")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	file, err := os.CreateTemp(dir, "herdr-pair-*.key")
-	if err != nil {
-		return "", err
-	}
-	name := file.Name()
-	if _, err := file.Write(private); err != nil {
-		_ = file.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(name)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	return name, nil
 }
