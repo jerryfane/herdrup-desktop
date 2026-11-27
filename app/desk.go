@@ -718,14 +718,28 @@ func (d *Desk) saveMachine(m Machine, replacing string, fromPage bool) error {
 
 // keptKeys gives m, a machine as the page sent it, the host key fields
 // (Paired, HostKeyType, HostKeyPin) of old, the saved profile it replaces
-// (nil: none), never the page's: a profile at old's address keeps them;
-// one at another address, or a new one, has none, and its host is
+// (nil: none), never the page's: a profile at old's dialled address keeps
+// them; one at another address, or a new one, has none, and its host is
 // negotiated and pinned as any machine's is.
 func keptKeys(m *Machine, old *Machine) {
 	m.Paired, m.HostKeyType, m.HostKeyPin = false, "", ""
-	if old != nil && sameHostPort(*old, m.Host, m.Port) {
+	if old != nil && sameDialAddress(*old, *m) {
 		m.Paired, m.HostKeyType, m.HostKeyPin = old.Paired, old.HostKeyType, old.HostKeyPin
 	}
+}
+
+// sameDialAddress is whether a and b dial the same endpoint: the host as
+// SSH dials it, byte for byte ("pi" may resolve through a search domain,
+// "pi." doesn't; a scoped IPv6 zone's case may matter), and the port, 0
+// being 22. Account deduplication (sameHostPort) folds more than that.
+func sameDialAddress(a, b Machine) bool {
+	port := func(p int) int {
+		if p == 0 {
+			return 22
+		}
+		return p
+	}
+	return a.Host == b.Host && port(a.Port) == port(b.Port)
 }
 
 // saveMachineIf is saveMachine, only while the profile it replaces is the

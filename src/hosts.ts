@@ -2,7 +2,7 @@ import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
 import type { Machine, PairingOffer, PairOpenTarget, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { isOpenTarget, machineWrites, notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice } from "./pairing";
+import { isOpenTarget, machineWrites, notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice, type MachineAt } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
@@ -306,8 +306,12 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  events.pairingLinkOpened.on(() => { void openPendingPairing().catch(report); });
  void openPendingPairing().catch(report);
  let editing: SavedMachine | null = null;
- /** The result row an edit began from (machineWrites): its save is Go's checked one. */
- let editingVia: PairOpenTarget | null = null;
+ /** The profile an edit saves over (MachineAt): its address id, or the result row's target it
+  *  began from. "" saves a new one. */
+ let editingAt: MachineAt = "";
+ /** Edit's and Delete's writes; one refused for a result row whose profile changed since draws the
+  *  list again, so that row is no longer offered. */
+ const writes = machineWrites(() => void refresh());
  let saving = false;
  let connecting = false;
  // ConnectView #377: after a connect starts, the machine list stays up with that row
@@ -334,12 +338,13 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  };
  let menu: HTMLElement | null = null;
  const closeMenu = () => { menu?.remove(); menu = null; };
- /** A saved host's menu (Edit, Delete) at x, y: its SAVED row's, and its pairing result's (`via`,
-  *  whose Edit and Delete Go makes only while the profile is still the row's). */
- const openMachineMenu = (machine: SavedMachine, x: number, y: number, via: PairOpenTarget | null = null) => {
+ /** A saved host's menu (Edit, Delete) at x, y: its SAVED row's (`at` its address id), and its
+  *  pairing result's (`at` the row's target, whose Edit and Delete Go makes only while the profile
+  *  is still the row's). */
+ const openMachineMenu = (machine: SavedMachine, x: number, y: number, at: MachineAt = machine.id) => {
   closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
-  const editButton = action("Edit", () => edit(machine, undefined, via)); editButton.setAttribute("role", "menuitem");
-  const deleteButton = action("Delete", () => remove(machine, via)); deleteButton.setAttribute("role", "menuitem");
+  const editButton = action("Edit", () => edit(machine, undefined, at)); editButton.setAttribute("role", "menuitem");
+  const deleteButton = action("Delete", () => remove(machine, at)); deleteButton.setAttribute("role", "menuitem");
   menu.append(editButton, deleteButton); document.body.append(menu);
   menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`; editButton.focus();
@@ -348,8 +353,8 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMenu(); });
  sheet.addEventListener("close", () => { (form.elements.namedItem("password") as HTMLInputElement).value = ""; });
  /** `prefill`: a new host's fields, as an account machine to pair (1B) brings them. */
- function edit(machine?: SavedMachine, prefill?: Partial<Machine>, via: PairOpenTarget | null = null) {
-  editing = machine ?? null; editingVia = machine ? via : null; error.hidden = true;
+ function edit(machine?: SavedMachine, prefill?: Partial<Machine>, at: MachineAt = machine?.id ?? "") {
+  editing = machine ?? null; editingAt = machine ? at : ""; error.hidden = true;
   const from: Partial<Machine> = machine ?? prefill ?? {};
   for (const key of ["nickname", "host", "port", "user", "keyPath", "session", "password"]) {
    const input = form.elements.namedItem(key);
@@ -368,7 +373,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   try {
    if (!editing && !machine.keyPath && !String(data.get("password") ?? "")) throw new Error("Add a private key file or password.");
    if (connect) { beginAttempt(); await Desk.connect(machine, String(data.get("password") ?? "")); }
-   else await machineWrites(editingVia).save(machine, editing?.id ?? "");
+   else await writes.save(machine, editingAt);
    sheet.close(); await refresh();
   } catch (failure) { error.textContent = String(failure); error.hidden = false; }
   finally { saving = false; submit.disabled = false; saveOnly.disabled = false; }
@@ -387,14 +392,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   dialog.addEventListener("close", () => { resolve(dialog.returnValue === "connect" ? input.value : null); input.value = ""; dialog.remove(); }, { once: true });
   dialog.showModal(); input.focus(); return promise;
  }
- function remove(machine: SavedMachine, via: PairOpenTarget | null = null) {
+ function remove(machine: SavedMachine, at: MachineAt = machine.id) {
   const dialog = element("dialog", "host-password");
   const question = element("p", "", `Remove ${machine.nickname || machine.host}?${machine.active ? " This disconnects the active host." : ""} Remote data is not deleted.`);
   const controls = element("form", ""); controls.method = "dialog";
   const cancel = element("button", "", "Cancel");
   const confirm = element("button", "", "Remove host"); confirm.value = "remove"; controls.append(cancel, confirm);
   dialog.append(question, controls); document.body.append(dialog);
-  dialog.addEventListener("close", () => { if (dialog.returnValue === "remove") void machineWrites(via).remove(machine.id).catch(report).finally(refresh); dialog.remove(); }, { once: true });
+  dialog.addEventListener("close", () => { if (dialog.returnValue === "remove") void writes.remove(at).then(refresh).catch(report); dialog.remove(); }, { once: true });
   dialog.showModal();
  }
  let version = 0;

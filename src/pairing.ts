@@ -333,14 +333,25 @@ export function isOpenTarget(s: SavedMachine, target: PairOpenTarget): boolean {
 /** What Edit and Delete say when the profile a result row drew changed or was replaced since. */
 export const pairRowChanged = "This machine changed since it was shown here. Open it again from the list.";
 
-/** The writes a saved host's Edit and Delete make. From a result row's menu (`target`), Go makes
- *  them only while the profile is still the row's (Desk.savePairedMachine, removePairedMachine),
- *  as Open opens it, else throws pairRowChanged; from its SAVED row, SaveMachine and RemoveMachine. */
-export function machineWrites(target: PairOpenTarget | null, desk: Pick<typeof Desk, "saveMachine" | "removeMachine" | "savePairedMachine" | "removePairedMachine"> = Desk) {
-  if (!target) return { save: (m: Machine, replacing: string) => desk.saveMachine(m, replacing), remove: (id: string) => desk.removeMachine(id) };
+/** The saved profile Edit and Delete write: a SAVED row's address id ("" saves a new one), or a
+ *  result row's target, which Go writes only while the profile is still the row's, as Open opens it. */
+export type MachineAt = string | PairOpenTarget;
+
+/** The writes Edit and Delete make: SaveMachine and RemoveMachine for an address id,
+ *  Desk.savePairedMachine and removePairedMachine for a result row's target. A target whose profile
+ *  changed or was replaced since is refused: `changed` runs (the page draws its list again), then
+ *  pairRowChanged is thrown. Any other failure is thrown as it came, without `changed`. */
+export function machineWrites(changed: () => void, desk: Pick<typeof Desk, "saveMachine" | "removeMachine" | "savePairedMachine" | "removePairedMachine"> = Desk) {
+  const refused = () => { changed(); return new Error(pairRowChanged); };
   return {
-    save: async (m: Machine, _replacing: string) => { if (!await desk.savePairedMachine(m, target)) throw new Error(pairRowChanged); },
-    remove: async (_id: string) => { if (!await desk.removePairedMachine(target)) throw new Error(pairRowChanged); },
+    save: async (m: Machine, at: MachineAt) => {
+      if (typeof at === "string") return desk.saveMachine(m, at);
+      if (!await desk.savePairedMachine(m, at)) throw refused();
+    },
+    remove: async (at: MachineAt) => {
+      if (typeof at === "string") return desk.removeMachine(at);
+      if (!await desk.removePairedMachine(at)) throw refused();
+    },
   };
 }
 

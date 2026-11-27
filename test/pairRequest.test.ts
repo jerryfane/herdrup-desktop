@@ -223,30 +223,42 @@ test("the request's problem shows without a card even when the list had no machi
  expect(pairProblemNote(view({ phase: "failed", problem: "The approved list didn't open on this Mac." }))).toBeNull();
 });
 
-test("Edit and Delete from a result row's menu go through Go's check of the row's profile; from SAVED, as before", async () => {
+test("Edit and Delete write the one profile they're given: a result row's through Go's check, a SAVED row's by its id; only a refused one redraws", async () => {
  const calls: string[] = [];
- let still = true;
+ let still = true, broken = false, redraws = 0;
+ const fail = () => { if (broken) throw new Error("couldn't write machines.json"); };
  const desk = {
-  saveMachine: async (m: Machine, replacing: string) => { calls.push(`save ${m.nickname} over ${replacing}`); },
-  removeMachine: async (id: string) => { calls.push(`remove ${id}`); },
-  savePairedMachine: async (m: Machine, t: PairOpenTarget) => { calls.push(`save ${m.nickname} over ${t.id} if ${t.profileId}`); return still; },
-  removePairedMachine: async (t: PairOpenTarget) => { calls.push(`remove ${t.id} if ${t.profileId}`); return still; },
+  saveMachine: async (m: Machine, replacing: string) => { fail(); calls.push(`save ${m.nickname} over ${replacing}`); },
+  removeMachine: async (id: string) => { fail(); calls.push(`remove ${id}`); },
+  savePairedMachine: async (m: Machine, t: PairOpenTarget) => { fail(); calls.push(`save ${m.nickname} over ${t.id} if ${t.profileId}`); return still; },
+  removePairedMachine: async (t: PairOpenTarget) => { fail(); calls.push(`remove ${t.id} if ${t.profileId}`); return still; },
  };
+ const writes = machineWrites(() => redraws++, desk);
  const target = { id: "jerry@studio.lan:22", profileId: "p-studio", user: "jerry", host: "studio.lan", port: 22 };
  const edited: Machine = { nickname: "Studio", host: "studio.lan", port: 22, user: "jerry", keyPath: "/k", session: "" };
- await machineWrites(target, desk).save(edited, "jerry@studio.lan:22");
- await machineWrites(target, desk).remove("jerry@studio.lan:22");
- await machineWrites(null, desk).save(edited, "jerry@studio.lan:22");
- await machineWrites(null, desk).remove("jerry@studio.lan:22");
+ await writes.save(edited, target);
+ await writes.remove(target);
+ await writes.save(edited, "jerry@studio.lan:22");
+ await writes.remove("jerry@studio.lan:22");
+ await writes.save(edited, "");
  expect(calls).toEqual([
   "save Studio over jerry@studio.lan:22 if p-studio", "remove jerry@studio.lan:22 if p-studio",
-  "save Studio over jerry@studio.lan:22", "remove jerry@studio.lan:22",
+  "save Studio over jerry@studio.lan:22", "remove jerry@studio.lan:22", "save Studio over ",
  ]);
- // The profile was replaced at the same address since the row was drawn: Go changes nothing, and
- // the page says it changed.
- still = false;
- await expect(machineWrites(target, desk).save(edited, "jerry@studio.lan:22")).rejects.toThrow(pairRowChanged);
- await expect(machineWrites(target, desk).remove("jerry@studio.lan:22")).rejects.toThrow(pairRowChanged);
+ expect(redraws).toBe(0);
+ // Any other failure is the write's own and is thrown as it came: no redraw, the row isn't stale.
+ broken = true;
+ await expect(writes.save(edited, target)).rejects.toThrow("couldn't write machines.json");
+ await expect(writes.remove(target)).rejects.toThrow("couldn't write machines.json");
+ await expect(writes.save(edited, "jerry@studio.lan:22")).rejects.toThrow("couldn't write machines.json");
+ expect(redraws).toBe(0);
+ // The profile was replaced at the same address since the row was drawn: Go changes nothing, the
+ // page says it changed and draws its list again (a Save refused, then Cancel, leaves no stale row).
+ broken = false; still = false;
+ await expect(writes.save(edited, target)).rejects.toThrow(pairRowChanged);
+ expect(redraws).toBe(1);
+ await expect(writes.remove(target)).rejects.toThrow(pairRowChanged);
+ expect(redraws).toBe(2);
 });
 
 test("the page tries saved machines, then reads, never at once, and stops once settled", () => {

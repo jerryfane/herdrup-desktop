@@ -1486,6 +1486,54 @@ func TestPairRequestSettlesARemovedMachine(t *testing.T) {
 	}
 }
 
+// A paired machine's host key fields stay only with the address it dials,
+// as SSH dials it: a host with a trailing dot, or a scoped IPv6 address
+// whose zone differs only in case, is another one, and the fields go. Only
+// the default port is the same written either way (0 or 22).
+func TestPairKeyFieldsFollowTheDialledAddress(t *testing.T) {
+	paired := func(host string, port int) Machine {
+		return Machine{Nickname: "box", Host: host, Port: port, User: "jerry", KeyPath: "/k", Paired: true, HostKeyType: ssh.KeyAlgoED25519, HostKeyPin: "00ff"}
+	}
+	for _, c := range []struct {
+		old, host string
+		oldPort   int
+		port      int
+		kept      bool
+	}{
+		{"pi", "pi.", 22, 22, false},
+		{"pi.", "pi", 22, 22, false},
+		{"fe80::1%eth0", "fe80::1%ETH0", 22, 22, false},
+		{"pi", "pi", 22, 0, true},
+		{"pi", "pi", 0, 22, true},
+		{"pi", "pi", 22, 2222, false},
+	} {
+		t.Run(fmt.Sprintf("%s:%d to %s:%d", c.old, c.oldPort, c.host, c.port), func(t *testing.T) {
+			d := newDesk(t.TempDir())
+			old := paired(c.old, c.oldPort)
+			d.storeMu.Lock()
+			err := d.store(machineStore{Machines: []Machine{old}})
+			d.storeMu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The page sends the fields it drew: never taken.
+			if err := d.SaveMachine(paired(c.host, c.port), machineID(old)); err != nil {
+				t.Fatal(err)
+			}
+			d.storeMu.Lock()
+			st, err := d.load()
+			d.storeMu.Unlock()
+			if err != nil || len(st.Machines) != 1 {
+				t.Fatalf("%+v, %v", st.Machines, err)
+			}
+			got := st.Machines[0]
+			if kept := got.Paired || got.HostKeyType != "" || got.HostKeyPin != ""; kept != c.kept || (c.kept && (!got.Paired || got.HostKeyType != ssh.KeyAlgoED25519 || got.HostKeyPin != "00ff")) {
+				t.Fatalf("saved %+v, want kept %v", got, c.kept)
+			}
+		})
+	}
+}
+
 // Another device moving a paired machine to another address takes its
 // host key fields with the old address: at the new one it is no paired
 // machine, and a host serving only an RSA key is negotiated and connects,
@@ -1550,7 +1598,9 @@ func TestPairKeyFieldsStayWithTheAddressThroughSync(t *testing.T) {
 		keys string
 	}{
 		{Machine{Nickname: "Pi", Host: "pi", User: "root", KeyPath: "/m"}, "root@pi:22", keys(Machine{Paired: true, HostKeyType: ssh.KeyAlgoED25519, HostKeyPin: "00ff"})},
-		{Machine{Nickname: "Pi", Host: rsaOnly.host, Port: rsaOnly.port, User: "root", KeyPath: "/m"}, "root@pi:22", keys(Machine{})},
+		// "pi." is another address to dial than "pi" (no search domain).
+		{Machine{Nickname: "Pi", Host: "pi.", User: "root", KeyPath: "/m"}, "root@pi:22", keys(Machine{})},
+		{Machine{Nickname: "Pi", Host: rsaOnly.host, Port: rsaOnly.port, User: "root", KeyPath: "/m"}, "root@pi.:22", keys(Machine{})},
 	} {
 		if err := mac.SaveMachine(c.m, c.was); err != nil {
 			t.Fatal(err)
