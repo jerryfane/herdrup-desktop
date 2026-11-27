@@ -478,7 +478,12 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    } catch (error) {
     for (const s of sent) taken.add(writeKey(s));
     if (!(error instanceof AccountServiceError && error.status === 400)) { failed ??= { error }; return sent.length; }
-    if (sent.length === 1) { refusedAlone.set(writeKey(sent[0]!), error); await settle([], null, sent); }
+    if (sent.length === 1) {
+     // Only a put can be terminally discarded on a singleton 400 (e.g. an unstorable label);
+     // never drop a refused delete, which must stay queued and surface LeaveUnsent for retry.
+     if (sent[0]!.deleted) { failed ??= { error }; }
+     else { refusedAlone.set(writeKey(sent[0]!), error); await settle([], null, sent); }
+    }
     else for (const w of sent) await push(r => still(r, w));
     return sent.length;
    }
@@ -495,8 +500,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   /** Lazily yields queued writes of the given kind (deletes or puts) whose share has none
    *  journaled and none taken yet this round so firstBatch stops examining and serializing
    *  entries as soon as the first batch fills. */
-  function* eligible(r: SharesRecord, deletes: boolean): Iterable<SentWrite> {
-   const held = new Set((r.sent ?? []).map(e => e.id));
+  function* eligible(r: SharesRecord, deletes: boolean, held: Set<string>): Iterable<SentWrite> {
    for (const p of r.pending) {
     if (Boolean(p.deleted) !== deletes) continue;
     if (held.has(p.id)) continue;
@@ -507,8 +511,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   // Push quota-reducing deletes in their own batches before puts so blocked/over-quota puts can
   // never roll back or starve an unrelated Leave.
   const next = (r: SharesRecord) => {
-   const deletes = firstBatch(eligible(r, true), change);
-   return deletes.length > 0 ? deletes : firstBatch(eligible(r, false), change);
+   const held = new Set((r.sent ?? []).map(e => e.id));
+   const deletes = firstBatch(eligible(r, true, held), change);
+   return deletes.length > 0 ? deletes : firstBatch(eligible(r, false, held), change);
   };
   // Cancelled, or another sign-in now: nothing more goes for this one.
   while (await push(next) > 0 && !signal.aborted && account.generation === generation);
