@@ -6,33 +6,79 @@ import { Marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
-import { prepareMarkdownTables } from "./markdownTable";
+import { MESSAGE_SANITIZE_CONFIG, prepareMarkdownTables } from "./markdownTable";
+
+const escapeHTML = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const gramMarked = new Marked({ gfm: true, breaks: true });
 gramMarked.use({
+  // Replace Marked's case-sensitive, entity-decoding GFM autolink with a case-insensitive bare
+  // URL tokenizer so `WWW.Example.com/Runbook` stays clickable, `www.` upgrades to `https://`,
+  // literal query strings like `?q=1&copy;more` are never entity-decoded, and explicit Markdown
+  // links like `[www.example.com](http://www.example.com)` keep their authored scheme.
+  tokenizer: {
+    url() {
+      return undefined;
+    },
+  },
+  extensions: [
+    {
+      name: "bareUrl",
+      level: "inline",
+      start(src: string) {
+        const match = /(?:^|[\s(\[{])(?:https?:\/\/|www\.)/i.exec(src);
+        if (!match) return undefined;
+        return match.index + (match[0].length - match[0].replace(/^[\s(\[{]/, "").length);
+      },
+      tokenizer(src: string, tokens) {
+        if (this.lexer.state.inLink) return undefined;
+        const prev = tokens.at(-1);
+        if (prev && /[A-Za-z0-9]$/.test(prev.raw)) return undefined;
+        const cap = /^((?:https?:\/\/|www\.)[^\s<>"]+)/i.exec(src);
+        if (!cap) return undefined;
+        let raw = cap[1]!;
+        for (;;) {
+          const tail = raw[raw.length - 1]!;
+          if ("?!.,;:*_~'\"".includes(tail)) {
+            raw = raw.slice(0, -1);
+            continue;
+          }
+          const pair = ({ ")": "(", "]": "[", "}": "{" } as Record<string, string>)[tail];
+          if (pair && raw.split(tail).length > raw.split(pair).length) {
+            raw = raw.slice(0, -1);
+            continue;
+          }
+          break;
+        }
+        if (/^(?:www\.|https?:\/\/)$/i.test(raw)) return undefined;
+        const href = /^www\./i.test(raw) ? `https://${raw}` : raw;
+        return { type: "bareUrl", raw, text: raw, href };
+      },
+      renderer(token) {
+        return `<a href="${escapeHTML(String(token.href))}">${escapeHTML(String(token.text))}</a>`;
+      },
+    },
+  ],
   renderer: {
     checkbox({ checked }: Tokens.Checkbox) {
       const state = checked ? "checked" : "unchecked";
       const label = checked ? "Checked" : "Unchecked";
       return `<span class="gcheck ${state}" aria-label="${label}">${checked ? "☑" : "☐"}</span> `;
     },
-    link(token: Tokens.Link) {
-      // Bare GFM `www.` autolinks have `raw` starting with `www.` and default to `http://`;
-      // upgrade only the scheme on bare autolinks and let Marked's default renderer escape
-      // the destination and label (preserving query entities and explicit http:// links).
-      if (/^www\./i.test(token.raw) && token.href.toLowerCase() === `http://${token.raw.toLowerCase()}`) {
-        token.href = "https://" + token.href.slice("http://".length);
-      }
-      return false;
+    // Render unsupported raw HTML syntax (e.g. `<environment>`) literally instead of letting
+    // DOMPurify drop unknown tags and erase message text.
+    html({ raw }: Tokens.HTML | Tokens.Tag) {
+      return escapeHTML(raw);
+    },
+    // Keep remote images disabled without turning image-only Markdown messages into empty
+    // bubbles: preserve the label and destination as a safe link or plain text.
+    image({ href, text }: Tokens.Image) {
+      const label = escapeHTML(text || href || "");
+      return href ? `<a href="${escapeHTML(href)}">${label}</a>` : label;
     },
   },
 });
-
-const SANITIZE_CONFIG = {
-  USE_PROFILES: { html: true },
-  FORBID_TAGS: ["img", "video", "audio", "iframe", "style", "form", "input"],
-  FORBID_ATTR: ["style"],
-};
 
 function tokenHasTable(token: Token): boolean {
   if (token.type === "table") return true;
@@ -126,7 +172,7 @@ export function parseGramMessage(text: string): GramMarkdownBlock[] {
 export function renderGramMarkdown(block: Extract<GramMarkdownBlock, { kind: "markdown" }>): HTMLElement {
   const body = document.createElement("div");
   body.className = block.rich ? "gprose-md" : "gprose-text";
-  body.innerHTML = DOMPurify.sanitize(block.html, SANITIZE_CONFIG);
+  body.innerHTML = DOMPurify.sanitize(block.html, MESSAGE_SANITIZE_CONFIG);
 
   // Single-paragraph runs keep their inline nodes directly inside `.gprose-text` so
   // `-webkit-line-clamp: 8` clamps cleanly across WebKit/Blink without block wrapper quirks.

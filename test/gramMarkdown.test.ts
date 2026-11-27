@@ -130,14 +130,32 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
   expect(refBlocks[1]).toEqual({ kind: "code", code: "make", language: "sh" });
 });
 
-test("bare www autolinks upgrade to https while preserving query entities and explicit http destinations", () => {
-  const msg = "Bare www.example.com and query www.example.test/path?x=1&amp;y=2 vs explicit [www.example.com](http://www.example.com) and <http://www.example.com>.";
+test("bare www autolinks upgrade to https while preserving case, query entities, and explicit http destinations", () => {
+  const msg = "Bare WWW.Example.com/Runbook and query www.example.com/?q=1&copy;more and www.example.test/path?x=1&amp;y=2 vs explicit [www.example.com](http://www.example.com) and <http://www.example.com>.";
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
   if (blocks[0]!.kind !== "markdown") return;
-  expect(blocks[0]!.html).toContain('Bare <a href="https://www.example.com">www.example.com</a>');
-  expect(blocks[0]!.html).toContain('query <a href="https://www.example.test/path?x=1&amp;amp;y=2">www.example.test/path?x=1&amp;amp;y=2</a>');
+  expect(blocks[0]!.html).toContain('Bare <a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>');
+  expect(blocks[0]!.html).toContain('query <a href="https://www.example.com/?q=1&amp;copy;more">www.example.com/?q=1&amp;copy;more</a>');
+  expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/path?x=1&amp;amp;y=2">www.example.test/path?x=1&amp;amp;y=2</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
+});
+
+test("raw angle-bracket placeholders and Markdown images preserve readable text instead of disappearing", () => {
+  const placeholder = parseGramMessage("Deploy using <environment> before 5pm.");
+  expect(placeholder).toHaveLength(1);
+  expect(placeholder[0]!.kind).toBe("markdown");
+  if (placeholder[0]!.kind === "markdown") {
+    expect(placeholder[0]!.html).toContain("Deploy using &lt;environment&gt; before 5pm.");
+  }
+
+  const imageOnly = parseGramMessage("![Chart](https://example.com/chart.png)");
+  expect(imageOnly).toHaveLength(1);
+  expect(imageOnly[0]!.kind).toBe("markdown");
+  if (imageOnly[0]!.kind === "markdown") {
+    expect(imageOnly[0]!.html).not.toContain("<img");
+    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png">Chart</a>');
+  }
 });

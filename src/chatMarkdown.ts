@@ -2,7 +2,7 @@ import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
-import { prepareMarkdownTables } from "./markdownTable";
+import { MESSAGE_SANITIZE_CONFIG, prepareMarkdownTables } from "./markdownTable";
 import { accessibilityLabel, diagramKind, sanitizeSVG, svgVariables } from "./svgDiagram";
 
 type Mermaid = { initialize(options: object): void; render(id: string, text: string): Promise<{ svg: string }> };
@@ -36,10 +36,7 @@ function mermaid(): Promise<Mermaid> {
 }
 export function markdown(text: string): HTMLElement {
  const body = document.createElement("div"); body.className = "chat-markdown";
- body.innerHTML = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, {
-  USE_PROFILES: { html: true }, FORBID_TAGS: ["img", "video", "audio", "iframe", "style", "form", "input"],
-  FORBID_ATTR: ["style"],
- });
+ body.innerHTML = DOMPurify.sanitize(marked.parse(text, { async: false }) as string, MESSAGE_SANITIZE_CONFIG);
  body.addEventListener("click", (e) => {
   const link = (e.target as HTMLElement).closest("a");
   if (!link) return;
