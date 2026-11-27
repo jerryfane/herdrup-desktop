@@ -2,23 +2,29 @@
 // tests it: when the approval sheet opens on its own, what the typed code may be, and what an
 // approval's result says.
 
-/** One browser waiting for approval (Desk.webAccessRequests). */
+/** One browser waiting for approval (Desk.approvalRequests). */
 export interface WebAccessRequestView { id: string; browserName: string; claimed: string; expiresIn: number }
 
-/** The request the sheet should open for, or null: the oldest one nobody is approving that the user
+/** A request waiting for approval, as each kind's sheet reads it. */
+interface Waiting { id: string; claimed: string; expiresIn: number }
+
+/** The request the sheet should open for, or null: the first, in the service's order
+ *  (Desk.approvalRequests), of a kind the service offers, that nobody is approving and the user
  *  hasn't closed on this computer. "you" is this computer's own claim (the sheet is already open). */
-export function nextRequest(requests: readonly WebAccessRequestView[], closed: ReadonlySet<string>): WebAccessRequestView | null {
- return requests.find(r => r.claimed === "no" && r.expiresIn > 0 && !closed.has(r.id)) ?? null;
+export function nextRequest<R extends { kind: string; browser?: Waiting; pair?: Waiting }>(requests: readonly R[], offers: { browsers: boolean; pairs: boolean }, closed: ReadonlySet<string>): R | null {
+ const waiting = (r: R): Waiting | undefined => r.kind === "pair" ? (offers.pairs ? r.pair : undefined) : r.kind === "browser" && offers.browsers ? r.browser : undefined;
+ return requests.find(r => { const w = waiting(r); return w !== undefined && w.claimed === "no" && w.expiresIn > 0 && !closed.has(w.id); }) ?? null;
 }
 
 /** How long a "not offered" answer from the account service holds before the page asks again, so a
  *  rollout is seen without signing in again. */
 export const OFFERED_RECHECK_MS = 10 * 60_000;
 
-/** Whether to ask the service if it offers browser approval: never asked (or the answer was an
- *  error, which the page doesn't keep), or "no" asked long enough ago. */
-export function askOffered(last: { offered: boolean; at: number } | null, now: number): boolean {
- return last === null || (!last.offered && now - last.at >= OFFERED_RECHECK_MS);
+/** Whether to ask the service which approvals it offers: never answered, or some kind "no", asked
+ *  long enough ago. A refresh that fails keeps the last answer (the page polls the kinds it knows
+ *  are offered) and is tried again OFFERED_RECHECK_MS later. */
+export function askOffered(last: { browsers: boolean; pairs: boolean; at: number } | null, now: number): boolean {
+ return last === null || (!(last.browsers && last.pairs) && now - last.at >= OFFERED_RECHECK_MS);
 }
 
 /** The code box keeps digits only, at most 4. */
@@ -135,10 +141,11 @@ export function resultLines(r: WebAccessResultView): { done: boolean; unsure: bo
  return { done: r.granted.length > 0, unsure: false, lines };
 }
 
-/** A wrong code as the computer counted it (Desk.webAccessCheckCode): left more may be typed; at 0
- *  this computer won't approve, and denied says the browser was told (else problem says why not). */
-export function wrongCode(c: { left: number; denied: boolean; problem?: string }): string {
- if (c.left > 0) return `That code doesn't match the browser's. ${c.left} ${c.left === 1 ? "try" : "tries"} left.`;
+/** A wrong code as the computer counted it (Desk.webAccessCheckCode, Desk.pairApproveCheckCode):
+ *  left more may be typed; at 0 this computer won't approve, and denied says the requester (party,
+ *  "the browser" or the new device's name) was told (else problem says why not). */
+export function wrongCode(c: { left: number; denied: boolean; problem?: string }, party = "the browser"): string {
+ if (c.left > 0) return `That code doesn't match ${party}'s. ${c.left} ${c.left === 1 ? "try" : "tries"} left.`;
  if (c.denied) return "Too many wrong codes. The request was denied.";
- return `Too many wrong codes, so this computer won't approve it. Telling the browser failed${c.problem ? ` (${c.problem})` : ""}: Deny to try again.`;
+ return `Too many wrong codes, so this computer won't approve it. Telling ${party} failed${c.problem ? ` (${c.problem})` : ""}: Deny to try again.`;
 }

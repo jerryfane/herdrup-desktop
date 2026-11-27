@@ -43,6 +43,16 @@ type Machine struct {
 	// Paired hosts prefer the plain ed25519/RSA keys advertised by herdr pair,
 	// rather than an unrelated ECDSA key or certificate served by the same sshd.
 	Paired bool `json:"paired,omitempty"`
+	// HostKeyType is the type of a Paired machine's pinned host key when
+	// another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+	// connection offers only that type and its certificate form
+	// (hostKeyAlgorithms). "" is herdr pair's own key.
+	HostKeyType string `json:"hostKeyType,omitempty"`
+	// HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+	// kept in the profile rather than with the pins this computer trusts
+	// on first use: the machine's connections check it (pinsFor), and it is
+	// saved with the profile in one write.
+	HostKeyPin string `json:"hostKeyPin,omitempty"`
 	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
@@ -196,9 +206,14 @@ func (l *storeLock) LockBestEffort(ctx context.Context) bool {
 type Desk struct {
 	dir string // per-user data directory
 
-	storeMu       storeLock // serialises reads and writes of the desk's files
-	notifications notificationSettings
-	pairingMu     sync.Mutex
+	storeMu storeLock // serialises reads and writes of the desk's files
+	// stageMachines writes machines.json's next content beside it
+	// (stageFile), and commitMachines puts that in place (commitFile); nil
+	// is the default. Replaced in tests.
+	stageMachines  func(path string, data []byte) (tmp string, err error)
+	commitMachines func(tmp, path string) (published bool, err error)
+	notifications  notificationSettings
+	pairingMu      sync.Mutex
 
 	// relabeling is the guest relabels being sent, by profile (LocalID): at
 	// most one at a time each; true asks the one sending to send again once
@@ -227,6 +242,15 @@ type Desk struct {
 	// webApproval is the browser approval this computer is running (web
 	// owner access, desk_web_access.go); guarded by mu.
 	webApproval *webApproval
+	// pairApproval is the pair request from another device this computer
+	// is approving (desk_pair_approve.go); guarded by mu.
+	pairApproval *pairApproval
+	// pairRequest is this computer's request to be paired from another
+	// device (desk_pair_request.go); guarded by mu.
+	pairRequest *pairRequest
+	// pairStartMu holds one PairRequestStart's ask to the service and its
+	// install here at a time, so they are in the service's order.
+	pairStartMu sync.Mutex
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 	// publishTopics sends a Topics update to the page (broadcastTopics); a
@@ -358,6 +382,9 @@ type link struct {
 	// the first list: the agent menus' agent_avatar and
 	// agent_session_transfer (desk_agent_actions.go).
 	caps *herdrapi.ServerCapabilities
+	// transcriptAgy is capabilities.transcript_agy from the same ping
+	// (read outside the pinned herdr schema until the pin carries it).
+	transcriptAgy bool
 	// relabelUnsure is the connection (l.client) a guest relabel went
 	// unanswered on, which takes no more (desk_guest_relabel.go).
 	relabelUnsure *bridge.Client
@@ -535,7 +562,30 @@ func (d *Desk) store(st machineStore) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(d.machinesPath(), data)
+	tmp, err := d.stageMachinesFile(data)
+	if err != nil {
+		return err
+	}
+	_, err = d.commitMachinesFile(tmp)
+	return err
+}
+
+// stageMachinesFile is stageFile for machines.json (stageMachines).
+func (d *Desk) stageMachinesFile(data []byte) (tmp string, err error) {
+	stage := d.stageMachines
+	if stage == nil {
+		stage = stageFile
+	}
+	return stage(d.machinesPath(), data)
+}
+
+// commitMachinesFile is commitFile for machines.json (commitMachines).
+func (d *Desk) commitMachinesFile(tmp string) (published bool, err error) {
+	commit := d.commitMachines
+	if commit == nil {
+		commit = commitFile
+	}
+	return commit(tmp, d.machinesPath())
 }
 
 // encodeMachines is machines.json's content for st.
@@ -546,20 +596,29 @@ func encodeMachines(st machineStore) ([]byte, error) {
 	return json.MarshalIndent(st, "", "  ")
 }
 
-// writeFileAtomic replaces path with data: a temp file beside it, synced,
-// renamed over it, and the folder synced (syncDir). A reader finds the old
-// file or the new one, never a torn one; a failure before the rename
-// leaves the old one. An error after it (the folder's sync) means the new
-// file is in place but may not outlive a crash.
+// writeFileAtomic replaces path with data: stageFile, then commitFile. A
+// reader finds the old file or the new one, never a torn one; a failure
+// before the rename leaves the old one. An error after it (the folder's
+// sync) means the new file is in place but may not outlive a crash.
 func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	tmp, err := stageFile(path, data)
 	if err != nil {
 		return err
+	}
+	_, err = commitFile(tmp, path)
+	return err
+}
+
+// stageFile writes data to a temp file beside path, synced, for
+// commitFile: path is untouched. On an error nothing is left behind.
+func stageFile(path string, data []byte) (tmp string, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	tmp = path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", err
 	}
 	_, err = f.Write(data)
 	if err == nil {
@@ -568,14 +627,24 @@ func writeFileAtomic(path string, data []byte) error {
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
 	if err != nil {
 		_ = os.Remove(tmp)
-		return err
+		return "", err
 	}
-	return syncDir(dir)
+	return tmp, nil
+}
+
+// commitFile renames tmp (stageFile's) over path and syncs the folder
+// (syncDir). published is whether the rename was done: a failure before it
+// leaves the old file (and removes tmp), and an error after it (the
+// folder's sync) means the new file is in place but may not outlive a
+// crash.
+func commitFile(tmp, path string) (published bool, err error) {
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return false, err
+	}
+	return true, syncDir(filepath.Dir(path))
 }
 
 // syncDir makes the names written in dir durable (an fsync of the folder).
@@ -639,6 +708,47 @@ func (d *Desk) Machines() ([]SavedMachine, error) {
 // SaveMachine updates the saved profile without opening a connection. A running
 // connection keeps its existing credentials until the user reconnects.
 func (d *Desk) SaveMachine(m Machine, replacing string) error {
+	return d.saveMachine(m, replacing, true)
+}
+
+// saveMachine is SaveMachine. fromPage: m is the page's, which may set
+// none of the host key fields (keptKeys); a QR re-pairing, which pins
+// anew, passes false.
+func (d *Desk) saveMachine(m Machine, replacing string, fromPage bool) error {
+	_, err := d.saveMachineIf(m, replacing, fromPage, nil)
+	return err
+}
+
+// keptKeys gives m, a machine as the page sent it, the host key fields
+// (Paired, HostKeyType, HostKeyPin) of old, the saved profile it replaces
+// (nil: none), never the page's: a profile at old's dialled address keeps
+// them; one at another address, or a new one, has none, and its host is
+// negotiated and pinned as any machine's is.
+func keptKeys(m *Machine, old *Machine) {
+	m.Paired, m.HostKeyType, m.HostKeyPin = false, "", ""
+	if old != nil && sameDialAddress(*old, *m) {
+		m.Paired, m.HostKeyType, m.HostKeyPin = old.Paired, old.HostKeyType, old.HostKeyPin
+	}
+}
+
+// sameDialAddress is whether a and b dial the same endpoint: the host as
+// SSH dials it, byte for byte ("pi" may resolve through a search domain,
+// "pi." doesn't; a scoped IPv6 zone's case may matter), and the port, 0
+// being 22. Account deduplication (sameHostPort) folds more than that.
+func sameDialAddress(a, b Machine) bool {
+	port := func(p int) int {
+		if p == 0 {
+			return 22
+		}
+		return p
+	}
+	return a.Host == b.Host && port(a.Port) == port(b.Port)
+}
+
+// saveMachineIf is saveMachine, only while the profile it replaces is the
+// one want accepts (nil: any, else replacing must name one), checked under
+// d.storeMu: saved is false, and nothing changes, when it isn't.
+func (d *Desk) saveMachineIf(m Machine, replacing string, fromPage bool, want func(Machine) bool) (saved bool, err error) {
 	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
 	m.User = strings.TrimSpace(m.User)
@@ -647,36 +757,45 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		m.Port = 22
 	}
 	if m.Host == "" || m.User == "" {
-		return errors.New("host and user are required")
+		return false, errors.New("host and user are required")
 	}
 	if !bridge.ValidSession(m.Session) {
-		return fmt.Errorf("invalid herdr session name %q", m.Session)
+		return false, fmt.Errorf("invalid herdr session name %q", m.Session)
 	}
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
 	st, err := d.load()
 	if err != nil {
-		return err
+		return false, err
 	}
 	id := machineID(m)
 	index := st.find(replacing)
+	if want != nil && (index < 0 || !want(st.Machines[index])) {
+		return false, nil
+	}
 	if replacing != "" && index < 0 {
-		return errors.New("the saved host no longer exists")
+		return false, errors.New("the saved host no longer exists")
 	}
 	if duplicate := st.find(id); duplicate >= 0 && duplicate != index {
-		return errors.New("that host and user are already saved")
+		return false, errors.New("that host and user are already saved")
 	}
 	relabel := ""
 	if index < 0 {
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision.
 		m.LocalID, m.LabelRev = "", 0
+		if fromPage {
+			keptKeys(&m, nil)
+		}
 		st.Machines = append(st.Machines, m)
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's, its
 		// local id and its label revision.
 		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
+		if fromPage {
+			keptKeys(&m, &old)
+		}
 		// A rename names the machine anew to its existing shares' guests
 		// (desk_guest_relabel.go), queued under the profile's local id at a
 		// new label revision.
@@ -693,7 +812,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		}
 	}
 	if err := d.store(st); err != nil {
-		return err
+		return false, err
 	}
 	if relabel != "" {
 		// The rename stands whatever happens to its relabel.
@@ -718,7 +837,7 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 	}
 	d.boards.allow(id)
 	d.syncMachinesSoon()
-	return nil
+	return true, nil
 }
 
 // SelectMachine makes a saved machine the active one and connects to it,
@@ -727,21 +846,33 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 // (ActivateAgent needed this password) connects to its session, saved as
 // ActivateAgent would have.
 func (d *Desk) SelectMachine(id, password string) error {
+	_, err := d.selectMachine(id, password, nil)
+	return err
+}
+
+// selectMachine is SelectMachine, only while the saved machine is still
+// the one want accepts (nil: any), checked under d.storeMu: selected is
+// false, and nothing changes, when it isn't.
+func (d *Desk) selectMachine(id, password string, want func(Machine) bool) (selected bool, err error) {
 	d.storeMu.Lock()
 	st, err := d.load()
 	if err != nil {
 		d.storeMu.Unlock()
-		return err
+		return false, err
 	}
 	i := st.find(id)
+	if want != nil && (i < 0 || !want(st.Machines[i])) {
+		d.storeMu.Unlock()
+		return false, nil
+	}
 	if i < 0 {
 		d.storeMu.Unlock()
-		return fmt.Errorf("no saved machine %q", id)
+		return false, fmt.Errorf("no saved machine %q", id)
 	}
 	m := st.Machines[i]
 	if m.KeyPath == "" && password == "" {
 		d.storeMu.Unlock()
-		return errors.New("a password is required")
+		return false, errors.New("a password is required")
 	}
 	d.mu.Lock()
 	if p := d.pendingAgent; p != nil && p.MachineID == id {
@@ -753,25 +884,34 @@ func (d *Desk) SelectMachine(id, password string) error {
 	err = d.store(st)
 	d.storeMu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.start(m, password)
-	return nil
+	return true, nil
 }
 
 // RemoveMachine forgets a saved machine. Removing the active machine
 // disconnects it and leaves no machine active.
 func (d *Desk) RemoveMachine(id string) error {
+	_, err := d.removeMachine(id, nil)
+	return err
+}
+
+// removeMachine is RemoveMachine, only while the saved machine is the one
+// want accepts (nil: any), checked under d.storeMu: removed is false, and
+// nothing changes, when it isn't (or, with want nil, when id is saved no
+// more).
+func (d *Desk) removeMachine(id string, want func(Machine) bool) (removed bool, err error) {
 	d.storeMu.Lock()
 	st, err := d.load()
 	if err != nil {
 		d.storeMu.Unlock()
-		return err
+		return false, err
 	}
 	i := st.find(id)
-	if i < 0 {
+	if i < 0 || (want != nil && !want(st.Machines[i])) {
 		d.storeMu.Unlock()
-		return nil
+		return false, nil
 	}
 	syncID, localID := st.Machines[i].SyncID, st.Machines[i].LocalID
 	if syncID != "" {
@@ -781,13 +921,13 @@ func (d *Desk) RemoveMachine(id string) error {
 		state, err := d.loadSyncState()
 		if err != nil {
 			d.storeMu.Unlock()
-			return err
+			return false, err
 		}
 		if !slices.Contains(state.Deletes, syncID) {
 			state.Deletes = append(state.Deletes, syncID)
 			if err := d.storeSyncState(state); err != nil {
 				d.storeMu.Unlock()
-				return err
+				return false, err
 			}
 		}
 	}
@@ -808,7 +948,7 @@ func (d *Desk) RemoveMachine(id string) error {
 	}
 	d.storeMu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.mu.Lock()
 	connected := d.link != nil && d.link.id == id
@@ -819,7 +959,7 @@ func (d *Desk) RemoveMachine(id string) error {
 	if syncID != "" {
 		d.syncMachinesSoon()
 	}
-	return nil
+	return true, nil
 }
 
 // Sessions lists the herdr sessions on the connected machine. A herdr
@@ -1117,10 +1257,7 @@ func (d *Desk) run(ctx context.Context, l *link, m Machine, password string) {
 func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label string) (listed bool, err error) {
 	cfg := bridge.Config{
 		Host: m.Host, Port: m.Port, User: m.User, Session: m.Session,
-		Pins: d.pins,
-	}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
+		Pins: d.pinsFor(m), HostKeyAlgorithms: hostKeyAlgorithms(m),
 	}
 	if m.KeyPath != "" {
 		if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
@@ -1163,7 +1300,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 		d.mu.Lock()
 		// A new watch, on a new connection or session, starts from a new
 		// baseline: what needs you as it connects is not news.
-		l.ctx, l.groups, l.agents, l.needing, l.caps = wctx, groups, nil, nil, nil
+		l.ctx, l.groups, l.agents, l.needing, l.caps, l.transcriptAgy = wctx, groups, nil, nil, nil, false
 		d.mu.Unlock()
 		shown := false
 		err = live.Watch(wctx, ec, live.DefaultTiming, func(u live.Update) {
@@ -1198,7 +1335,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 				d.mu.Unlock()
 				return
 			}
-			l.agents, l.caps, d.peers = u.Agents, u.Pong.Capabilities, peers
+			l.agents, l.caps, l.transcriptAgy, d.peers = u.Agents, u.Pong.Capabilities, u.TranscriptAgy, peers
 			if first {
 				// A rename not yet sent to this herdr (desk_guest_relabel.go):
 				// its capabilities are known now.

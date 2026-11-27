@@ -831,7 +831,12 @@ export function createGuestDesk(env: DeskEnv) {
   async guestChatAvailable(token: string): Promise<GuestChat> {
    const v = viewOf(token);
    const pong = await v.active.client.ping(within(v));
-   return { available: pong.capabilities?.agent_transcript === true, ownerOrigin: !!v.active.owner && pong.capabilities?.[OWNER_BROWSER_ORIGIN] === true };
+   const caps = pong.capabilities;
+   return {
+    available: caps?.agent_transcript === true,
+    ownerOrigin: !!v.active.owner && caps?.[OWNER_BROWSER_ORIGIN] === true,
+    ...(caps?.transcript_agy === true ? { transcriptAgy: true } : {}),
+   };
   },
 
   // ---- Chat (desk_interaction.go, desk_guest_answers.go) ----

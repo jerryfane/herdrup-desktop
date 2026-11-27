@@ -131,3 +131,16 @@ body.host-home-visible > .sidebar { display:none; }
 .host-home-synced-row { display: flex; align-items: center; gap: 12px; cursor: default; }
 .host-home-synced-row .host-home-lines { flex: 1; min-width: 0; }
 .host-home-pair-synced { flex: none; height: 34px; padding: 0 14px; border: 1px solid var(--color-hairline); border-radius: 99px; background: var(--color-surface-raised); color: var(--color-text); font: 600 14px var(--font-app); cursor: pointer; }
+/* Pair from another device (pairing.ts pairRequestCard, pairResultSection): while a request waits
+   or is approved, the card stands alone on the home; the account's machines and the host actions
+   come back once it ended. A result row opens its machine from its body; a dimmed one says why,
+   with Use herdr pair beside it. */
+.host-home.host-home-pairing .host-home-synced, .host-home.host-home-pairing .host-empty,
+.host-home.host-home-pairing .host-pair, .host-home.host-home-pairing .host-add, .host-home.host-home-pairing .host-invite-actions,
+.host-home.host-home-pairing .host-owner-setup { display:none; }
+.host-home .host-home-pair-request { display:contents; }
+.host-home .host-home-paired-row { cursor:default; }
+.host-home .host-home-paired-row:active { background:none; }
+.host-home .host-home-paired-body { display:flex; align-items:center; gap:14px; flex:1; min-width:0; margin:-10px 0; padding:10px 0; border:0; border-radius:0; background:none; color:inherit; font:inherit; font-weight:400; text-align:left; }
+button.host-home-paired-body { cursor:pointer; }
+.host-home-paired-body.host-home-row-off { opacity:.55; }

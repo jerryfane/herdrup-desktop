@@ -125,6 +125,11 @@ type conn struct {
 	seq  atomic.Uint64
 	done chan struct{}
 	pool pool
+	// hostKey is the key the server proved it holds in the first
+	// handshake, after it matched the pin kept under hostAddr (the exact
+	// "host:port" dialled), or was pinned there. A rekey never changes it.
+	hostKey  ssh.PublicKey
+	hostAddr string
 }
 
 // Dial connects and authenticates. The host key is pinned on first contact
@@ -158,10 +163,23 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	deadline, _ := dctx.Deadline()
 	_ = tcp.SetDeadline(deadline)
+	// The first key that passed the pin check is the one the server then
+	// proved it holds: the handshake fails after the callback otherwise.
+	// A rekey runs the check again but leaves the record as it was.
+	pinned := pinningCallback(cfg.Pins)
+	var first sync.Once
+	var hostKey ssh.PublicKey
+	var hostAddr string
 	sc, chans, reqs, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
-		User:              cfg.User,
-		Auth:              auth,
-		HostKeyCallback:   pinningCallback(cfg.Pins),
+		User: cfg.User,
+		Auth: auth,
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			if err := pinned(hostname, remote, key); err != nil {
+				return err
+			}
+			first.Do(func() { hostKey, hostAddr = key, hostname })
+			return nil
+		},
 		HostKeyAlgorithms: cfg.HostKeyAlgorithms,
 	})
 	if err != nil {
@@ -170,9 +188,11 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	_ = tcp.SetDeadline(time.Time{})
 	c := &Client{cfg: cfg, conn: &conn{
-		ssh:  ssh.NewClient(sc, chans, reqs),
-		done: make(chan struct{}),
-		pool: pool{openRetryAfter: defaultOpenRetryAfter},
+		ssh:      ssh.NewClient(sc, chans, reqs),
+		hostKey:  hostKey,
+		hostAddr: hostAddr,
+		done:     make(chan struct{}),
+		pool:     pool{openRetryAfter: defaultOpenRetryAfter},
 	}}
 	go func() {
 		_ = c.ssh.Wait()
@@ -253,6 +273,13 @@ func (c *Client) Close() error { return c.ssh.Close() }
 // Session returns the herdr session this client addresses; "" is the
 // default session.
 func (c *Client) Session() string { return c.cfg.Session }
+
+// HostKey is the machine's host key as this connection's first handshake
+// verified it, and addr the exact "host:port" dialled, which its pin is
+// kept under (PinStore): the key that matched that pin (or was pinned on
+// first contact) and that the server proved it holds. A rekey leaves both
+// as they were; every session view has the same.
+func (c *Client) HostKey() (key ssh.PublicKey, addr string) { return c.hostKey, c.hostAddr }
 
 // ForSession returns a client for another herdr session on the same
 // machine. It shares this client's SSH connection, so switching costs no

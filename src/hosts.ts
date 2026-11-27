@@ -1,8 +1,8 @@
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
-import type { Machine, PairingOffer, SavedMachine, SyncedMachine, SyncedShare } from "./mygo";
+import type { Machine, PairingOffer, PairOpenTarget, PairRequestView, SavedMachine, SyncedMachine, SyncedShare } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { showPairing } from "./pairing";
+import { isOpenTarget, machineWrites, notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice, type MachineAt } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import { sharedMachines, sharedSection, syncedSharesNow } from "./sharedWithYou";
@@ -67,9 +67,15 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  const { root: synced, rows: syncedRows } = hostSection("FROM YOUR ACCOUNT", "host-home-synced"); synced.hidden = true;
  let syncedMachines: SyncedMachine[] = [];
  let accountHint: string | null = null; // null: signed out
- const pairSynced = (m: SyncedMachine) => {
-  // A key machine pairs with `herdr pair` (its key is made here); a password one is added with
-  // its fields filled, and the password typed here.
+ const pairSynced = async (m: SyncedMachine) => {
+  // pair-v1 (option B): with the service offering it, the choice between another device's
+  // approval and herdr pair (n2); without it (or signed out), the way it always was: a key
+  // machine pairs with `herdr pair` (its key is made here); a password one is added with its
+  // fields filled, and the password typed here.
+  if (accountHint !== null && await Desk.pairRequestOffered().catch(() => false)) {
+   showPairChoice({ count: syncedMachines.length, password: syncedMachines.some(s => !s.key), here, approve: () => void startRequest(), qr: () => startPairing() }, qrGlyph(16));
+   return;
+  }
   if (m.key) startPairing();
   else edit(undefined, { nickname: m.nickname ?? "", host: m.host, port: m.port, user: m.user, keyPath: "", session: "" });
  };
@@ -77,13 +83,112 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   synced.hidden = accountHint === null || syncedMachines.length === 0;
   syncedRows.replaceChildren(...syncedMachines.map(m => {
    const row = element("div", "host-home-row host-home-synced-row");
-   const lines = hostRowLines(m.nickname?.trim() || m.host, `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
-   const pairButton = action("Pair this device", () => pairSynced(m)); pairButton.className = "host-home-pair-synced";
+   // A machine the other device couldn't add the key to says why, and keeps its button.
+   const failed = pairView?.phase === "done" ? pairView.machines.find(r => r.result === "failed" && r.syncedId === m.id) : undefined;
+   const lines = hostRowLines(m.nickname?.trim() || m.host, failed ? notAddedLine(pairView!, failed)
+    : `${m.user}@${m.host}${m.port !== 22 ? `:${m.port}` : ""} · synced from your account`);
+   const pairButton = action("Pair this device", () => void pairSynced(m)); pairButton.className = "host-home-pair-synced";
    row.append(lines, pairButton);
    return row;
   }));
   drawIdentity(accountHint !== null && syncedMachines.length > 0);
+  // The results leave out a failed machine the account lists (its row here says why).
+  drawPair();
  };
+ // ---- Pair from another device (pair-v1), this computer asking ----
+ // The request lives in Go (Desk.pairRequest*); the page reads it on a timer while it shows
+ // (pairReadDelay), so the reads stop with the page. The card (n3/n5) sits under the header; the
+ // machines it saved (n4) list under "PAIRED BY …" in place of their SAVED rows.
+ const here = thisDevice(navigator.platform);
+ const pairBox = element("div", "host-home-pair-request");
+ let pairView: PairRequestView | null = null;
+ // The machines saved here, as the last refresh read them (null before it): a result whose
+ // machine is gone says so, and the rest have the saved host's menu.
+ let savedList: SavedMachine[] | null = null;
+ let pairStarted = 0, pairExpiresAt = 0, pairFailures = 0, pairTimer: ReturnType<typeof setTimeout> | undefined;
+ const rowGlyphs: { icon: Node | null; chevron: Node | null } = { icon: null, chevron: null };
+ void hostGlyph(symbol, "desktopcomputer", desktopIcon).then(icon => { rowGlyphs.icon = icon; drawPair(); });
+ void symbol("chevron.right", 13, "semibold").then(chevron => { rowGlyphs.chevron = chevron; drawPair(); });
+ const glyphs = {
+  machine: () => (rowGlyphs.icon?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
+  chevron: () => (rowGlyphs.chevron?.cloneNode(true) as HTMLElement | undefined) ?? element("span", ""),
+ };
+ function qrGlyph(size: number): HTMLElement {
+  if (appleSymbols()) { const slot = element("span", "pairing-choice-glyph"); void symbol("qrcode.viewfinder", size, "semibold").then(icon => slot.append(icon)); return slot; }
+  const icon = element("span", "host-action-glyph"); icon.style.width = icon.style.height = `${size}px`; icon.style.setProperty("--host-icon", `url("${qrIcon}")`); return icon;
+ }
+ /** The saved machines the results list shows as rows to open (joined by profile, pairResultTarget):
+  *  their SAVED rows step aside. A profile saved since at a result's address keeps its row. */
+ const pairShown = () => new Set(pairView && pairLayout(pairView).results ? pairView.machines.flatMap(m => { const id = pairResultTarget(m, savedList); return id ? [id] : []; }) : []);
+ function drawPair() {
+  const view = pairView, layout = view ? pairLayout(view) : null;
+  home.classList.toggle("host-home-pairing", !!layout?.card && layout.card !== "ended");
+  if (!view || !layout) { pairBox.replaceChildren(); return; }
+  const parts: HTMLElement[] = [];
+  if (layout.card) parts.push(...pairRequestCard(view, here, accountHint ?? "", spinner, pairExpiresAt, {
+   cancel: () => void cancelRequest(), again: () => void startRequest(), qr: () => startPairing(),
+  }));
+  if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, savedList, glyphs, spinner, {
+   open: target => void openPaired(target), qr: () => startPairing(),
+   // The row's profile as it drew it: one changed since gets the redrawn list, not a menu.
+   menu: (target, x, y) => { const machine = savedList?.find(m => isOpenTarget(m, target)); if (machine) openMachineMenu(machine, x, y, target); else void refresh(); },
+  }));
+  const problem = pairProblemNote(view); if (problem) parts.push(problem);
+  pairBox.replaceChildren(...parts);
+ }
+ function showRequest(view: PairRequestView | null) {
+  const before = pairView;
+  pairView = view;
+  if (view && view.id !== before?.id) { pairStarted = Date.now(); pairFailures = 0; }
+  if (view && (view.phase === "waiting" || view.phase === "claimed")) pairExpiresAt = Date.now() + view.expiresIn * 1000;
+  drawSynced();
+  // A list saved machines, one is gone, or the results took their rows: SAVED and the account's list redraw.
+  const shown = (v: PairRequestView | null) => `${v?.machines.filter(m => m.profileId && m.reach !== "removed").length ?? 0}:${!!v && pairLayout(v).results}`;
+  if (shown(view) !== shown(before)) void refresh();
+  schedulePair();
+ }
+ function schedulePair() {
+  clearTimeout(pairTimer);
+  const view = pairView; if (!view) return;
+  const next = pairNextStep(view, Date.now() - pairStarted, pairFailures); if (!next) return;
+  pairTimer = setTimeout(() => void (next.connect ? connectPaired(view.id) : readRequest(view.id)), next.wait);
+ }
+ async function readRequest(id: string) {
+  try { const view = await Desk.pairRequestRead(id); if (pairView?.id === id) { pairFailures = pairFailuresAfter(view, pairFailures); message.hidden = true; showRequest(view); } }
+  catch (failure) {
+   if (pairView?.id !== id) return;
+   // Gone here (another window asked again): show what Go has now; else say why and read again
+   // later, the request as it was meanwhile.
+   const now = await Desk.pairRequestCurrent().catch(() => undefined);
+   if (pairView?.id !== id) return;
+   if (now !== undefined && now?.id !== id) { showRequest(now); return; }
+   report(failure); pairFailures++; schedulePair();
+  }
+ }
+ async function connectPaired(id: string) {
+  try { const view = await Desk.pairRequestConnect(id); if (pairView?.id === id) { pairFailures = 0; showRequest(view); } }
+  catch (failure) { if (pairView?.id === id) { pairFailures++; report(failure); schedulePair(); } }
+ }
+ async function startRequest() {
+  message.hidden = true;
+  try { showRequest(await Desk.pairRequestStart()); } catch (failure) { report(failure); }
+ }
+ async function cancelRequest() {
+  const view = pairView; if (!view) return;
+  clearTimeout(pairTimer); pairView = null; drawSynced();
+  try { await Desk.pairRequestCancel(view.id); } catch (failure) { report(failure); }
+ }
+ /** Opens a result row's profile only while it is the one the row drew (Go checks again as it
+  *  selects it); one changed or replaced since redraws the list instead. */
+ async function openPaired(target: PairOpenTarget) {
+  message.hidden = true;
+  try {
+   const machine = (await Desk.machines()).find(m => isOpenTarget(m, target)); if (!machine) { void refresh(); return; }
+   const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return;
+   beginAttempt(); if (!await Desk.selectPairedMachine(target, secret)) void refresh();
+  } catch (failure) { report(failure); }
+ }
+ void Desk.pairRequestCurrent().then(view => { if (view) showRequest(view); }, () => undefined);
  // accountVersion: an older refresh still waiting on the service never draws over a newer one.
  let accountVersion = 0;
  const refreshAccount = async () => {
@@ -183,7 +288,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   if (hasShared && pair.parentElement !== ownerBody) { ownerBody.append(empty, pair, add); shared.after(ownerSetup); }
   else if (!hasShared && pair.parentElement !== home) { ownerSetup.remove(); shared.after(empty, pair, add); ownerSetup.open = false; }
  };
- home.append(header.root, section, synced, shared, empty, pair, add, inviteActions, message);
+ home.append(header.root, pairBox, section, synced, shared, empty, pair, add, inviteActions, message);
  // The first-launch sign-in (1B) stands in front of the host home until it is answered. (The
  // browser has its own host home, web/hosts.ts.)
  const welcome = new AccountWelcome(() => { home.hidden = false; });
@@ -207,6 +312,12 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  events.pairingLinkOpened.on(() => { void openPendingPairing().catch(report); });
  void openPendingPairing().catch(report);
  let editing: SavedMachine | null = null;
+ /** The profile an edit saves over (MachineAt): its address id, or the result row's target it
+  *  began from. "" saves a new one. */
+ let editingAt: MachineAt = "";
+ /** Edit's and Delete's writes; one refused for a result row whose profile changed since draws the
+  *  list again, so that row is no longer offered. */
+ const writes = machineWrites(() => void refresh());
  let saving = false;
  let connecting = false;
  // ConnectView #377: after a connect starts, the machine list stays up with that row
@@ -233,12 +344,23 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  };
  let menu: HTMLElement | null = null;
  const closeMenu = () => { menu?.remove(); menu = null; };
+ /** A saved host's menu (Edit, Delete) at x, y: its SAVED row's (`at` its address id), and its
+  *  pairing result's (`at` the row's target, whose Edit and Delete Go makes only while the profile
+  *  is still the row's). */
+ const openMachineMenu = (machine: SavedMachine, x: number, y: number, at: MachineAt = machine.id) => {
+  closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
+  const editButton = action("Edit", () => edit(machine, undefined, at)); editButton.setAttribute("role", "menuitem");
+  const deleteButton = action("Delete", () => remove(machine, at)); deleteButton.setAttribute("role", "menuitem");
+  menu.append(editButton, deleteButton); document.body.append(menu);
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`; editButton.focus();
+ };
  document.addEventListener("click", closeMenu);
  document.addEventListener("keydown", event => { if (event.key === "Escape") closeMenu(); });
  sheet.addEventListener("close", () => { (form.elements.namedItem("password") as HTMLInputElement).value = ""; });
  /** `prefill`: a new host's fields, as an account machine to pair (1B) brings them. */
- function edit(machine?: SavedMachine, prefill?: Partial<Machine>) {
-  editing = machine ?? null; error.hidden = true;
+ function edit(machine?: SavedMachine, prefill?: Partial<Machine>, at: MachineAt = machine?.id ?? "") {
+  editing = machine ?? null; editingAt = machine ? at : ""; error.hidden = true;
   const from: Partial<Machine> = machine ?? prefill ?? {};
   for (const key of ["nickname", "host", "port", "user", "keyPath", "session", "password"]) {
    const input = form.elements.namedItem(key);
@@ -253,11 +375,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   saving = true; submit.disabled = true; saveOnly.disabled = true; error.hidden = true;
   const data = new FormData(form), get = (key: string) => String(data.get(key) ?? "").trim();
   const machine: Machine = { nickname: get("nickname"), host: get("host"), port: Number(get("port")) || 22, user: get("user"), keyPath: get("keyPath"), session: get("session") };
+  // The host key fields (paired, its key type and pin) are the saved profile's, kept by Go (keptKeys).
   try {
-  if (editing?.paired && machine.host === editing.host && machine.port === editing.port) machine.paired = true;
    if (!editing && !machine.keyPath && !String(data.get("password") ?? "")) throw new Error("Add a private key file or password.");
    if (connect) { beginAttempt(); await Desk.connect(machine, String(data.get("password") ?? "")); }
-   else await Desk.saveMachine(machine, editing?.id ?? "");
+   else await writes.save(machine, editingAt);
    sheet.close(); await refresh();
   } catch (failure) { error.textContent = String(failure); error.hidden = false; }
   finally { saving = false; submit.disabled = false; saveOnly.disabled = false; }
@@ -276,14 +398,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   dialog.addEventListener("close", () => { resolve(dialog.returnValue === "connect" ? input.value : null); input.value = ""; dialog.remove(); }, { once: true });
   dialog.showModal(); input.focus(); return promise;
  }
- function remove(machine: SavedMachine) {
+ function remove(machine: SavedMachine, at: MachineAt = machine.id) {
   const dialog = element("dialog", "host-password");
   const question = element("p", "", `Remove ${machine.nickname || machine.host}?${machine.active ? " This disconnects the active host." : ""} Remote data is not deleted.`);
   const controls = element("form", ""); controls.method = "dialog";
   const cancel = element("button", "", "Cancel");
   const confirm = element("button", "", "Remove host"); confirm.value = "remove"; controls.append(cancel, confirm);
   dialog.append(question, controls); document.body.append(dialog);
-  dialog.addEventListener("close", () => { if (dialog.returnValue === "remove") void Desk.removeMachine(machine.id).then(refresh).catch(report); dialog.remove(); }, { once: true });
+  dialog.addEventListener("close", () => { if (dialog.returnValue === "remove") void writes.remove(at).then(refresh).catch(report); dialog.remove(); }, { once: true });
   dialog.showModal();
  }
  let version = 0;
@@ -292,6 +414,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   void refreshPaste();
   try {
    const [machines, shares] = await Promise.all([Desk.machines(), Desk.sharedConnections()]); if (generation !== version) return;
+   savedList = machines; drawPair();
    if (accountHint !== null) void Desk.syncedMachines().then(list => { syncedMachines = list; drawSynced(); }, () => undefined);
    const welcomed = await welcome.decide(machines.length === 0 && shares.length === 0);
    // Only the newest refresh decides: an older lookup answering late changes nothing. The
@@ -307,9 +430,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    // One row per machine. Several grants on one machine would open Swift's combined machine
    // home, which needs simultaneous guest connections; until then its row opens the first.
    if (!await sharedList.draw(sharedNow) || generation !== version) return;
-   section.hidden = machines.length === 0;
+   const paired = pairShown();
+   const listed = machines.filter(machine => !paired.has(machine.id));
+   section.hidden = listed.length === 0;
    const next: HTMLElement[] = [];
-   for (const machine of machines) {
+   for (const machine of listed) {
     const row = action("", () => { void (async () => {
      row.disabled = true; message.hidden = true;
      try { const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return; beginAttempt(); await Desk.selectMachine(machine.id, secret); }
@@ -329,14 +454,7 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
     const lines = hostRowLines(nickname || machine.host, busy ? "Connecting…" : nickname ? `${machine.user}@${machine.host}` : machine.user);
     const chevron = busy ? hostRowChevron(null, spinner) : hostRowChevron(await symbol("chevron.right", 13, "semibold"));
     row.append(icon, lines, chevron);
-    const openMenu = (x: number, y: number) => {
-     closeMenu(); menu = element("div", "host-context-menu"); menu.setAttribute("role", "menu");
-     const editButton = action("Edit", () => edit(machine)); editButton.setAttribute("role", "menuitem");
-     const deleteButton = action("Delete", () => remove(machine)); deleteButton.setAttribute("role", "menuitem");
-     menu.append(editButton, deleteButton); document.body.append(menu);
-     menu.style.left = `${Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
-     menu.style.top = `${Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8))}px`; editButton.focus();
-    };
+    const openMenu = (x: number, y: number) => openMachineMenu(machine, x, y);
     row.oncontextmenu = event => { event.preventDefault(); openMenu(event.clientX, event.clientY); };
     row.onkeydown = event => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); const rect = row.getBoundingClientRect(); openMenu(rect.left + 20, rect.bottom); } };
     next.push(row);

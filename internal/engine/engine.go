@@ -92,9 +92,10 @@ type Client struct {
 	// app: the owner drives this client from the app (NewApp).
 	app bool
 
-	mu     sync.Mutex
-	probed bool // a ping has answered; pong is its result
-	pong   herdrapi.ResponseResultPong
+	mu            sync.Mutex
+	probed        bool // a ping has answered; pong is its result
+	pong          herdrapi.ResponseResultPong
+	transcriptAgy bool // capabilities.transcript_agy, until the herdr schema pin carries it
 }
 
 // New returns a client over t whose writes carry no input_source: a guest's,
@@ -247,6 +248,14 @@ func (c *Client) Supports(ctx context.Context, capability herdrapi.Capability) (
 	return c.supports(ctx, capability)
 }
 
+// CachedTranscriptAgy reports whether the last successful Ping advertised
+// capabilities.transcript_agy (not yet in the pinned herdr schema).
+func (c *Client) CachedTranscriptAgy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.probed && c.transcriptAgy
+}
+
 // gate refuses m when its capability is known to be missing.
 func (c *Client) gate(ctx context.Context, m herdrapi.Method) error {
 	if m.Capability == herdrapi.CapabilityNone {
@@ -300,17 +309,24 @@ func (c *Client) doRaw(ctx context.Context, name string, params any) (herdrapi.R
 
 // call is do for a method with one result type.
 func call[R herdrapi.ResponseResultVariant](ctx context.Context, c *Client, name string, params any) (R, error) {
+	r, _, err := callRaw[R](ctx, c, name, params)
+	return r, err
+}
+
+// callRaw is call that also returns the result as herdr sent it, for
+// fields the generated type can't tell missing from zero.
+func callRaw[R herdrapi.ResponseResultVariant](ctx context.Context, c *Client, name string, params any) (R, json.RawMessage, error) {
 	var zero R
-	v, err := c.do(ctx, name, params)
+	v, raw, err := c.doRaw(ctx, name, params)
 	if err != nil {
-		return zero, err
+		return zero, nil, err
 	}
 	r, ok := v.(R)
 	if !ok {
 		// The table lists the tag but this package expects another type.
-		return zero, fmt.Errorf("engine: %s result decoded as %T, want %T", name, v, zero)
+		return zero, nil, fmt.Errorf("engine: %s result decoded as %T, want %T", name, v, zero)
 	}
-	return r, nil
+	return r, raw, nil
 }
 
 // decodeAck reads the first line of a stream: m's acknowledgement, or the

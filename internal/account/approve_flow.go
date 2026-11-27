@@ -55,12 +55,24 @@ const approvalBackoffMax = 30 * time.Second
 // the commit seen before claiming, and approve only once the user has typed the
 // browser's code.
 type Approval struct {
-	c       *Client
-	acct    string
-	key     DeviceKey
+	*approvalRun
 	request ApprovalRequest
+}
 
-	browserPub, commit, nonceT []byte
+// approvalRun is what the approving device runs for one request of either
+// protocol (approve-v1, pair-v1): the claim, the reveal check, the typed
+// code and the finish's outcome. Approval and PairApproval add the request
+// and how its approval is sent.
+type approvalRun struct {
+	c     *Client
+	acct  string
+	key   DeviceKey
+	id    string
+	proto protocol
+	// party names the requester in errors ("the browser").
+	party string
+
+	requesterPub, sshPub, commit, nonceT []byte
 
 	mu      sync.Mutex
 	code    string
@@ -85,22 +97,36 @@ type Approval struct {
 // StartApproval claims req for this device (key is its enrolled device key).
 // The browser key and commit are the ones in req, read before nonce_t exists.
 func (c *Client) StartApproval(ctx context.Context, acct string, key DeviceKey, req ApprovalRequest) (*Approval, error) {
-	browserPub, err := base64.RawURLEncoding.DecodeString(req.Browser.DevicePub)
-	if err != nil || len(browserPub) != approveKeySize {
+	run, err := c.claim(ctx, acct, key, approveV1, req.ID, req.Browser.DevicePub, req.Commit, nil)
+	if err != nil {
+		return nil, err
+	}
+	run.party = "the browser"
+	return &Approval{approvalRun: run, request: req}, nil
+}
+
+// claim checks a listed request's keys and commit, then claims it with a
+// fresh nonce_t.
+func (c *Client) claim(ctx context.Context, acct string, key DeviceKey, p protocol, id, requesterPub64, commit64 string, sshPub []byte) (*approvalRun, error) {
+	requesterPub, err := base64.RawURLEncoding.DecodeString(requesterPub64)
+	if err != nil || len(requesterPub) != approveKeySize {
 		return nil, ErrApproveTampered
 	}
-	commit, err := base64.RawURLEncoding.DecodeString(req.Commit)
+	commit, err := base64.RawURLEncoding.DecodeString(commit64)
 	if err != nil || len(commit) != sha256.Size {
+		return nil, ErrApproveTampered
+	}
+	if _, err := p.bound(sshPub); err != nil {
 		return nil, ErrApproveTampered
 	}
 	nonceT, err := NewApproveNonce()
 	if err != nil {
 		return nil, err
 	}
-	if err := c.ClaimApproval(ctx, acct, req.ID, nonceT); err != nil {
+	if err := c.ClaimApproval(ctx, acct, id, nonceT); err != nil {
 		return nil, err
 	}
-	return &Approval{c: c, acct: acct, key: key, request: req, browserPub: browserPub, commit: commit, nonceT: nonceT}, nil
+	return &approvalRun{c: c, acct: acct, key: key, id: id, proto: p, requesterPub: requesterPub, sshPub: sshPub, commit: commit, nonceT: nonceT}, nil
 }
 
 // Request is the browser request this approval answers.
@@ -126,12 +152,12 @@ func transient(err error) bool {
 // AwaitReveal waits for the browser's nonce_b and checks it. A nonce that
 // doesn't open the commit denies the request and returns ErrApproveTampered.
 // A busy or unreachable service is read again, more slowly, until ctx ends.
-func (a *Approval) AwaitReveal(ctx context.Context) error {
+func (a *approvalRun) AwaitReveal(ctx context.Context) error {
 	start := a.c.now()
 	failures := 0
 	for {
 		wait := approvalPoll(a.c.now().Sub(start))
-		st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
+		st, err := a.c.ApprovalState(ctx, a.acct, a.id)
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return ctx.Err()
@@ -161,16 +187,16 @@ func (a *Approval) AwaitReveal(ctx context.Context) error {
 	}
 }
 
-func (a *Approval) revealed(ctx context.Context, nonceB64 string) error {
+func (a *approvalRun) revealed(ctx context.Context, nonceB64 string) error {
 	nonceB, err := base64.RawURLEncoding.DecodeString(nonceB64)
 	if err == nil {
-		err = ApproveOpen(a.browserPub, a.commit, nonceB)
+		err = a.proto.open(a.requesterPub, a.sshPub, a.commit, nonceB)
 	}
 	if err != nil {
 		_ = a.Deny(ctx)
 		return ErrApproveTampered
 	}
-	code, err := ApproveCode(a.browserPub, a.key.PublicKey(), nonceB, a.nonceT)
+	code, err := a.proto.code(a.requesterPub, a.sshPub, a.key.PublicKey(), nonceB, a.nonceT)
 	if err != nil {
 		return err
 	}
@@ -180,7 +206,7 @@ func (a *Approval) revealed(ctx context.Context, nonceB64 string) error {
 	return nil
 }
 
-func (a *Approval) end() {
+func (a *approvalRun) end() {
 	a.mu.Lock()
 	a.locked, a.done = true, true
 	a.mu.Unlock()
@@ -198,7 +224,7 @@ type CodeCheck struct {
 
 // CheckCode compares the code the user typed with this device's. The last
 // wrong code locks the approval and denies the request.
-func (a *Approval) CheckCode(ctx context.Context, typed string) (CodeCheck, error) {
+func (a *approvalRun) CheckCode(ctx context.Context, typed string) (CodeCheck, error) {
 	a.mu.Lock()
 	switch {
 	case a.locked || a.done:
@@ -229,7 +255,7 @@ func (a *Approval) CheckCode(ctx context.Context, typed string) (CodeCheck, erro
 
 // Ready says whether grants may be made for this request now: the user typed
 // the browser's code and nothing ended or locked the approval.
-func (a *Approval) Ready() error {
+func (a *approvalRun) Ready() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	switch {
@@ -246,12 +272,12 @@ func (a *Approval) Ready() error {
 // machine gets a grant the service would then refuse to record. It returns
 // the request's deadline, counted from before the read (the service rounds
 // the time left up to a second, so one second less).
-func (a *Approval) Live(ctx context.Context, min time.Duration) (time.Time, error) {
+func (a *approvalRun) Live(ctx context.Context, min time.Duration) (time.Time, error) {
 	if err := a.Ready(); err != nil {
 		return time.Time{}, err
 	}
 	start := time.Now()
-	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
+	st, err := a.c.ApprovalState(ctx, a.acct, a.id)
 	switch {
 	case requestGone(err):
 		a.end()
@@ -276,16 +302,34 @@ func (a *Approval) Live(ctx context.Context, min time.Duration) (time.Time, erro
 // other error when that can't be told. Sent again after an unknown outcome,
 // it reports what the service has.
 func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, seq uint64, envelope []byte) error {
+	return a.finish(ctx, seq, envelope, func(sealed string) error {
+		return a.c.ApproveBrowser(ctx, a.acct, a.id, ApprovalGrant{Scope: scope, ExpiresMs: expiresMs, Seq: seq, Sealed: sealed})
+	})
+}
+
+// seal seals plaintext to the requester at seq, bound for pair-v1 to the
+// request's SSH key and id.
+func (a *approvalRun) seal(seq uint64, plaintext []byte) (string, error) {
+	id := ""
+	if a.proto.ssh {
+		id = a.id
+	}
+	return a.proto.seal(a.key, a.requesterPub, a.sshPub, id, seq, plaintext)
+}
+
+// finish seals envelope to the requester at seq and sends it with send,
+// with Approve's outcomes.
+func (a *approvalRun) finish(ctx context.Context, seq uint64, envelope []byte, send func(sealed string) error) error {
 	if err := a.Ready(); err != nil {
 		// Locked or over since an earlier report: only the service knows
 		// whether that report was recorded.
 		return a.settle(ctx, err)
 	}
-	sealed, err := SealEnvelope(a.key, a.browserPub, seq, envelope)
+	sealed, err := a.seal(seq, envelope)
 	if err != nil {
 		return &NotApprovedError{err}
 	}
-	if err := a.c.ApproveBrowser(ctx, a.acct, a.request.ID, ApprovalGrant{Scope: scope, ExpiresMs: expiresMs, Seq: seq, Sealed: sealed}); err != nil {
+	if err := send(sealed); err != nil {
 		// The service answering with a refusal (a 4xx other than 429: the
 		// finish is one transaction, herdrup #792) didn't record this
 		// finish; anything else may yet be recorded.
@@ -309,10 +353,11 @@ func (a *Approval) Approve(ctx context.Context, scope string, expiresMs int64, s
 
 // settle decides what the finishes this device sent did, from the
 // request's state: approved means one went through (only the claimant
-// finishes); denied means none can be; expired means none can be only when
-// none had an unknown outcome. Still revealed proves nothing, since a sent
-// finish may yet be applied; anything else stays unknown.
-func (a *Approval) settle(ctx context.Context, finishErr error) error {
+// finishes); denied, or a stored cancellation, means none can be; expired
+// means none can be only when none had an unknown outcome. Still revealed
+// proves nothing, since a sent finish may yet be applied; anything else
+// stays unknown.
+func (a *approvalRun) settle(ctx context.Context, finishErr error) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 	state, final, err := a.Outcome(ctx)
@@ -325,17 +370,20 @@ func (a *Approval) settle(ctx context.Context, finishErr error) error {
 		a.end()
 		return &NotApprovedError{finishErr}
 	}
-	return fmt.Errorf("couldn't tell whether the browser was approved: %w", finishErr)
+	return fmt.Errorf("couldn't tell whether %s was approved: %w", a.party, finishErr)
 }
 
 // Outcome reads the request's state as the service has it now. final says
 // it is the request's outcome for this device: approved, denied, or expired
 // when no finish of this device has an unknown outcome or this very read
 // says the expiry is stored (outcome_stored: a Worker version that doesn't
-// store it never says so, whatever /v1/health lists). A request the service
-// no longer knows is an error (its outcome can't be told).
-func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
-	st, err := a.c.ApprovalState(ctx, a.acct, a.request.ID)
+// store it never says so, whatever /v1/health lists); cancelled (a pair
+// request its new device cancelled) when stored, as the service stores a
+// cancel only on a request no finish landed on, and takes none after it.
+// A request the service no longer knows is an error (its outcome can't be
+// told).
+func (a *approvalRun) Outcome(ctx context.Context) (string, bool, error) {
+	st, err := a.c.ApprovalState(ctx, a.acct, a.id)
 	if err != nil {
 		return "", false, err
 	}
@@ -346,6 +394,8 @@ func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		return st.State, !a.unsure || st.OutcomeStored, nil
+	case ApprovalCancelled:
+		return st.State, st.OutcomeStored, nil
 	}
 	return st.State, false, nil
 }
@@ -354,7 +404,7 @@ func (a *Approval) Outcome(ctx context.Context) (string, bool, error) {
 // reports success only when the service took this device's denial (now or
 // on an earlier Deny); ErrApprovalEnded when the request was already over
 // some other way (nothing is sent then).
-func (a *Approval) Deny(ctx context.Context) error {
+func (a *approvalRun) Deny(ctx context.Context) error {
 	a.mu.Lock()
 	a.locked = true
 	done, denied := a.done, a.denied
@@ -365,7 +415,7 @@ func (a *Approval) Deny(ctx context.Context) error {
 	case done:
 		return ErrApprovalEnded
 	}
-	err := a.c.DenyBrowser(ctx, a.acct, a.request.ID)
+	err := a.c.DenyApproval(ctx, a.acct, a.id)
 	var api *APIError
 	if requestGone(err) || errors.As(err, &api) && api.Status == http.StatusConflict {
 		err = ErrApprovalEnded

@@ -44,6 +44,9 @@ type AgentView struct {
 	// A guest's gate advertises no capabilities, so for a guest herdr's
 	// form_answerable on the pending ask decides alone.
 	AskForm bool `json:"askForm"`
+	// TranscriptAgy: the host serves Antigravity CLI (agy) transcripts
+	// (capabilities.agent_transcript && capabilities.transcript_agy).
+	TranscriptAgy bool `json:"transcriptAgy,omitempty"`
 	// TopicSessions: the topics the agent's session file already holds
 	// (topic_sessions, read from disk): the page offers Topics before or
 	// without a list answer (herdrup #745 topicsAvailable), and lists them
@@ -171,7 +174,10 @@ func (d *Desk) OpenAgentView(target AgentTarget, token string) (AgentView, error
 			StatusSinceUnixMs: agent.StatusSinceUnixMs,
 			Guest:             l.guest != nil, GuestGram: l.guest != nil && l.guest.Features().Gram,
 			GuestOwner: guestOwner(l), GuestSelf: guestSelf(l),
-			AskForm:       l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			AskForm: l.guest != nil || herdrapi.CapabilityAskForm.Supported(l.caps),
+			TranscriptAgy: l.guest == nil &&
+				herdrapi.CapabilityAgentTranscript.Supported(l.caps) &&
+				l.transcriptAgy,
 			TopicSessions: topicSessions(agent.TopicSessions),
 		},
 		at: at, ctx: ctx, cancel: cancel, client: client,

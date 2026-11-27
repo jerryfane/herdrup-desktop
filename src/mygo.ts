@@ -274,6 +274,11 @@ export interface AgentView {
    */
   askForm: boolean;
   /**
+   * TranscriptAgy: the host serves Antigravity CLI (agy) transcripts
+   * (capabilities.agent_transcript && capabilities.transcript_agy).
+   */
+  transcriptAgy?: boolean;
+  /**
    * TopicSessions: the topics the agent's session file already holds
    * (topic_sessions, read from disk): the page offers Topics before or
    * without a list answer (herdrup #745 topicsAvailable), and lists them
@@ -315,6 +320,28 @@ export interface AppUpdateState {
    * never.
    */
   checkedAt: number;
+}
+
+/**
+ * ApprovalOffers says which approval requests the account service
+ * carries: browsers' (web_approve) and new devices' (pair_v1).
+ */
+export interface ApprovalOffers {
+  browsers: boolean;
+  pairs: boolean;
+}
+
+/**
+ * ApprovalRequest is one request waiting for approval on the account, in
+ * the list ApprovalRequests reads (GET /v1/approvals?kind=any) in the
+ * service's order: Kind "browser" (Browser) or "pair" (Pair). The page
+ * polls this one list, not a list per kind, so pair requests cost the
+ * account's approval rate nothing over browser ones.
+ */
+export interface ApprovalRequest {
+  kind: string;
+  browser?: WebAccessRequest;
+  pair?: PairApproveRequest;
 }
 
 /** One answered field, copied from the ask result's `details.answers`. */
@@ -714,6 +741,7 @@ export interface GramUploadProgress {
 export interface GuestChat {
   available: boolean;
   ownerOrigin: boolean;
+  transcriptAgy?: boolean;
 }
 
 export interface GuestConnection {
@@ -842,6 +870,20 @@ export interface Machine {
    */
   paired?: boolean;
   /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
+  /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
    */
@@ -892,6 +934,167 @@ export interface NotificationSettings {
    * Without it "Only my requests" alerts every finished turn.
    */
   turnOrigin: boolean | null;
+}
+
+/**
+ * PairApproveProgress is one machine's step while keys are added:
+ * "adding", then "added", "already" or "failed" (Reason says why).
+ * KeyLabel is the label herdr stored the key under.
+ */
+export interface PairApproveProgress {
+  id: string;
+  machineId: string;
+  status: string;
+  reason?: string;
+  keyLabel?: string;
+}
+
+/**
+ * PairApproveRequest is one new device waiting for a pair approval, for
+ * the sheet.
+ */
+export interface PairApproveRequest {
+  id: string;
+  deviceName: string;
+  /** Platform is the new device's (macos, windows, linux, ios, ipados). */
+  platform: string;
+  /** Claimed is "no", "you" or "other" (another device is approving it). */
+  claimed: string;
+  expiresIn: number;
+}
+
+/**
+ * PairApproveResult is what an approval, or a retry, did. Sent: the new
+ * device has a list from here. Unsure: the service's answer was lost
+ * (Problem says how); Approve sends the same list again. Ended: the request
+ * ended, or retries did (Problem says so). Unsent: a retry's list didn't
+ * reach the service; Try again sends it.
+ */
+export interface PairApproveResult {
+  machines: PairApproveRow[];
+  sent: boolean;
+  unsure?: boolean;
+  ended?: boolean;
+  unsent?: boolean;
+  problem?: string;
+}
+
+/**
+ * PairApproveRow is one ticked machine's outcome: "added", "already" or
+ * "failed" (Reason). KeyLabel is the label herdr stored the key under.
+ * Retryable: a failed machine Try again may mend (PairApproveRetry tries
+ * no other).
+ */
+export interface PairApproveRow {
+  id: string;
+  label: string;
+  status: string;
+  reason?: string;
+  keyLabel?: string;
+  retryable?: boolean;
+}
+
+/**
+ * PairApproveUpdate tells the page where a pair approval stands: "ready"
+ * (the new device shows its code; type it), "tampered" (denied) or "ended".
+ */
+export interface PairApproveUpdate {
+  id: string;
+  state: string;
+  problem?: string;
+}
+
+/**
+ * PairOpenTarget is the saved profile a result row opens, edits or
+ * removes, as the page drew it: its id, and the profile id and address the
+ * row joined it by.
+ */
+export interface PairOpenTarget {
+  id: string;
+  profileId: string;
+  user: string;
+  host: string;
+  port: number;
+}
+
+/**
+ * PairProbe is what the sheet learns of one machine before the user ticks
+ * it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
+ * "needs_update" (Version is its herdr's, when it said), "needs_key" (a
+ * password machine not connected now), "needs_pin" (never opened from
+ * this computer, so no host key is kept for it) or "unsendable" (it can't
+ * be shared now: the list the new device gets can't carry it, or its host
+ * key can't be checked here; Reason says why).
+ */
+export interface PairProbe {
+  state: string;
+  version?: string;
+  reason?: string;
+}
+
+/**
+ * PairRequestMachine is one machine of the approver's list and what became
+ * of it here.
+ */
+export interface PairRequestMachine {
+  /** ID is the saved machine's id (user@host:port) when saved or kept. */
+  id?: string;
+  /**
+   * ProfileID is that saved profile's own id (Machine.LocalID, never
+   * reused): a profile saved later at the same address is another one.
+   */
+  profileId?: string;
+  label: string;
+  /**
+   * Host, Port and User: the profile's address as saved (or kept) here,
+   * else the list's.
+   */
+  host: string;
+  port: number;
+  user: string;
+  /**
+   * SyncedID is the account's record of the machine (SyncedMachine.ID)
+   * when the account lists it.
+   */
+  syncedId?: string;
+  /** Result is PairSaved, PairKept, PairPinDiffers or PairNotAdded. */
+  result: string;
+  /** Reason is the approver's, for PairNotAdded. */
+  reason?: string;
+  /**
+   * Reach is a saved machine's connection try: "" until tried, then
+   * PairOnline, PairUnreachable, PairRefused (Problem), PairRemoved or
+   * PairChanged.
+   */
+  reach?: string;
+  problem?: string;
+}
+
+/** PairRequestView is a pair request as the page draws it. */
+export interface PairRequestView {
+  id: string;
+  phase: string;
+  /** ExpiresIn is the seconds the request had at the last read. */
+  expiresIn: number;
+  /** Device is this computer's name as the account lists it. */
+  device: string;
+  /** Approver is the device that opened the request, once one has. */
+  approver?: string;
+  /** Code is the 4 digits to type on the approver, once it opened it. */
+  code?: string;
+  machines: PairRequestMachine[];
+  /**
+   * RetryOpen: the approver may still send a retry's list, so the page
+   * keeps reading.
+   */
+  retryOpen: boolean;
+  /**
+   * SaveFailed: the last list couldn't be saved here (Problem says why);
+   * it is read and saved again until the retry window ends. The page
+   * backs off as for a failed read.
+   */
+  saveFailed?: boolean;
+  problem?: string;
 }
 
 export interface PairedMachine {
@@ -1135,6 +1338,20 @@ export interface SavedMachine {
    * rather than an unrelated ECDSA key or certificate served by the same sshd.
    */
   paired?: boolean;
+  /**
+   * HostKeyType is the type of a Paired machine's pinned host key when
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
+   * (hostKeyAlgorithms). "" is herdr pair's own key.
+   */
+  hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
@@ -1456,7 +1673,6 @@ export interface WebAccessMachine {
 export interface WebAccessRequest {
   id: string;
   browserName: string;
-  createdMs: number;
   /** Claimed is "no", "you" or "other" (another device is approving it). */
   claimed: string;
   expiresIn: number;
@@ -1659,6 +1875,20 @@ export const Desk = {
    */
   applySettingsServerUpdate(token: string, buildID: string, restartLater: boolean): Promise<void> {
     return call("Desk.ApplySettingsServerUpdate", token, buildID, restartLater);
+  },
+  /**
+   * ApprovalRequests lists the browsers and new devices waiting for
+   * approval, in the service's order, which the page opens them in.
+   */
+  approvalRequests(): Promise<ApprovalRequest[]> {
+    return call("Desk.ApprovalRequests");
+  },
+  /**
+   * ApprovalsOffered reads both from one /v1/health answer. An error means
+   * the service couldn't be asked; the page asks again on its next look.
+   */
+  approvalsOffered(): Promise<ApprovalOffers> {
+    return call("Desk.ApprovalsOffered");
   },
   /**
    * ArchiveAgent archives the agent, attributed to herdrup
@@ -2135,6 +2365,60 @@ export const Desk = {
     return call("Desk.OpenTerminalView", target, token);
   },
   /**
+   * PairApproveAdd adds the new device's key on each chosen machine, one at a
+   * time (progress goes to the page as each starts and ends), then sends it
+   * the sealed list of those machines. A machine that fails is in the list as
+   * failed, for Try again. After a lost answer it sends the same list again,
+   * whatever was chosen.
+   */
+  pairApproveAdd(id: string, machineIDs: string[]): Promise<PairApproveResult> {
+    return call("Desk.PairApproveAdd", id, machineIDs);
+  },
+  /**
+   * PairApproveCheckCode compares the code the user typed with the new
+   * device's (3 tries; the last wrong one denies the request).
+   */
+  pairApproveCheckCode(id: string, typed: string): Promise<WebAccessCheck> {
+    return call("Desk.PairApproveCheckCode", id, typed);
+  },
+  /**
+   * PairApproveDeny denies request id. On an error the page keeps the
+   * request open so Deny can be tried again. Once the new device has a
+   * machine list from here there is nothing to deny.
+   */
+  pairApproveDeny(id: string): Promise<void> {
+    return call("Desk.PairApproveDeny", id);
+  },
+  /**
+   * PairApproveProbe connects to saved machine machineID for pair request
+   * id, briefly and at most a few machines at a time, and says whether a key
+   * can be added there. Only once the typed code matched: before, no
+   * machine is reached at all. It adds nothing, and pins nothing. The host
+   * key it verified is kept for sizing the list (PairApproveAdd); a machine
+   * whose entry alone can't fit is "unsendable".
+   */
+  pairApproveProbe(id: string, machineID: string): Promise<PairProbe> {
+    return call("Desk.PairApproveProbe", id, machineID);
+  },
+  /**
+   * PairApproveRetry adds the key again on machines that failed in a way a
+   * retry may mend (Retryable), then sends the new device the whole list
+   * again at the next seq. The service takes it for 10 minutes after the
+   * approval; a list the service didn't take goes again until then, a key is
+   * added only with time left to add it and report.
+   */
+  pairApproveRetry(id: string, machineIDs: string[]): Promise<PairApproveResult> {
+    return call("Desk.PairApproveRetry", id, machineIDs);
+  },
+  /**
+   * PairApproveStart claims pair request id for this computer and waits (in
+   * the background, until the request expires) for the new device to show
+   * its code. One pair approval at a time: a new one replaces the last.
+   */
+  pairApproveStart(id: string): Promise<void> {
+    return call("Desk.PairApproveStart", id);
+  },
+  /**
    * PairMachine pins before redemption, then persists the private key and host.
    * It never connects or starts a process on the machine: Open it is a separate
    * user action. Cancelling the scanner stops capture, not an accepted redemption.
@@ -2145,6 +2429,58 @@ export const Desk = {
   /** PairOpenedLink pairs the opened link the page confirmed (Connect), once. */
   pairOpenedLink(id: string): Promise<PairedMachine> {
     return call("Desk.PairOpenedLink", id);
+  },
+  /**
+   * PairRequestCancel ends request id: the service cancels it, so no device
+   * can approve it any more. It is fenced here first (it reveals nothing more,
+   * opens no list and saves nothing, a read in flight included), so when the
+   * service can't be told it still ends here.
+   */
+  pairRequestCancel(id: string): Promise<void> {
+    return call("Desk.PairRequestCancel", id);
+  },
+  /**
+   * PairRequestConnect tries each machine saved by request id that hasn't
+   * been tried: online, unreachable from here, or refused (why).
+   */
+  pairRequestConnect(id: string): Promise<PairRequestView> {
+    return call("Desk.PairRequestConnect", id);
+  },
+  /**
+   * PairRequestCurrent is the request this computer runs, as last read; nil
+   * when there is none. A page opened again shows it.
+   */
+  pairRequestCurrent(): Promise<PairRequestView | null> {
+    return call("Desk.PairRequestCurrent");
+  },
+  /**
+   * PairRequestOffered reports whether this computer can ask another device
+   * to pair it: signed in, and the account service offers pair_v1.
+   */
+  pairRequestOffered(): Promise<boolean> {
+    return call("Desk.PairRequestOffered");
+  },
+  /**
+   * PairRequestRead reads request id once and moves it on: the code once a
+   * device opened it, and, once approved, the approver's machine list, saved
+   * here (the save rules in app/desk_pair_request.go). A list sent again at a
+   * higher seq is saved too, while RetryOpen. A list that couldn't be saved
+   * is the view's Problem (SaveFailed), and is read and saved again until
+   * the retry window ends; then the problem is final. An error is a read
+   * that failed (no answer); the page reads again.
+   */
+  pairRequestRead(id: string): Promise<PairRequestView> {
+    return call("Desk.PairRequestRead", id);
+  },
+  /**
+   * PairRequestStart asks the account's other devices to pair this computer,
+   * with a new key S. It replaces this computer's earlier request, here and
+   * at the service. One Start asks and installs its request at a time
+   * (d.pairStartMu): a later one asks only once the earlier one is installed,
+   * so the request installed here is always the service's newest.
+   */
+  pairRequestStart(): Promise<PairRequestView> {
+    return call("Desk.PairRequestStart");
   },
   /** PaneAttachFiles uses the same staging path as the picker for native file drops. */
   paneAttachFiles(token: string, paths: string[]): Promise<void> {
@@ -2233,6 +2569,14 @@ export const Desk = {
   removeMachine(id: string): Promise<void> {
     return call("Desk.RemoveMachine", id);
   },
+  /**
+   * RemovePairedMachine is RemoveMachine for a result row's menu: it removes
+   * target.ID only while that profile is still the row's. removed is false,
+   * and nothing changes, when it isn't.
+   */
+  removePairedMachine(target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.RemovePairedMachine", target);
+  },
   removeSettingsAccount(token: string, id: string): Promise<string> {
     return call("Desk.RemoveSettingsAccount", token, id);
   },
@@ -2286,6 +2630,15 @@ export const Desk = {
     return call("Desk.SaveMachine", m, replacing);
   },
   /**
+   * SavePairedMachine is SaveMachine for an edit begun from a result row's
+   * menu: it saves m over target.ID only while that profile is still the
+   * row's, as SelectPairedMachine opens it. saved is false, and nothing
+   * changes, when it isn't.
+   */
+  savePairedMachine(m: Machine, target: PairOpenTarget): Promise<boolean> {
+    return call("Desk.SavePairedMachine", m, target);
+  },
+  /**
    * SavePrompt adds p (ID "") at the end, or replaces the saved prompt with
    * its ID in place, and returns the saved prompts.
    */
@@ -2316,6 +2669,16 @@ export const Desk = {
    */
   selectMachine(id: string, password: string): Promise<void> {
     return call("Desk.SelectMachine", id, password);
+  },
+  /**
+   * SelectPairedMachine is SelectMachine for a result row: it opens
+   * target.ID only while that saved profile is still the row's (its profile
+   * id and address), checked under the store lock. opened is false, and
+   * nothing changes, when it isn't (removed, edited or replaced since): the
+   * page draws its rows again.
+   */
+  selectPairedMachine(target: PairOpenTarget, password: string): Promise<boolean> {
+    return call("Desk.SelectPairedMachine", target, password);
   },
   /**
    * SelectSession switches the active machine to another herdr session and
@@ -2678,18 +3041,6 @@ export const Desk = {
     return call("Desk.WebAccessMachines");
   },
   /**
-   * WebAccessOffered reports whether the account service carries browser
-   * approvals. An error means the service couldn't be asked; the page asks
-   * again on its next look.
-   */
-  webAccessOffered(): Promise<boolean> {
-    return call("Desk.WebAccessOffered");
-  },
-  /** WebAccessRequests lists browsers waiting for approval on the account. */
-  webAccessRequests(): Promise<WebAccessRequest[]> {
-    return call("Desk.WebAccessRequests");
-  },
-  /**
    * WebAccessStart claims request id for this computer and waits (in the
    * background, until the request expires) for the browser to show its code.
    * One approval at a time: a new one replaces the last.
@@ -2789,6 +3140,8 @@ export const events = {
   terminalChanged: event<TerminalEvent>("terminal:changed"),
   chatMenu: event<ChatMenuChoice>("chat:menu"),
   paneAttachments: event<PaneAttachments>("pane:attachments"),
+  pairApproveUpdate: event<PairApproveUpdate>("pair-approve:update"),
+  pairApproveProgress: event<PairApproveProgress>("pair-approve:progress"),
   /**
    * PairingLinkOpened is sent when the system opens a herdrup://pair# link with
    * the app; the page takes it with TakePairingLink and asks before pairing.

@@ -82,8 +82,11 @@ export const events: { [K in EventName]: GoEvent<Payload<K>> } = {
  topicsChanged: event("topicsChanged"),
  accountChanged: event("accountChanged"),
  accountDeleted: event("accountDeleted"),
- // The approving side of web owner access is desktop only (webAccess.ts); the page never emits it.
+ // The approving side of web owner access and of pair requests is desktop only (webAccess.ts,
+ // pairApproval.ts); the page never emits them.
  webAccessUpdate: event("webAccessUpdate"),
+ pairApproveUpdate: event("pairApproveUpdate"),
+ pairApproveProgress: event("pairApproveProgress"),
  syncedMachinesChanged: event("syncedMachinesChanged"),
  syncedSharesChanged: event("syncedSharesChanged"),
  savedPromptsChanged: event("savedPromptsChanged"),

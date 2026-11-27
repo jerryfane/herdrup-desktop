@@ -4,11 +4,60 @@ import (
 	"cmp"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+// The hosts collection's limits, in code points (AccountService
+// src/sync.ts SCHEMAS.hosts, design §5.1).
+const (
+	maxHostNickname = 64
+	maxHostHost     = 253
+	maxHostUsername = 64
+	maxHostLabel    = 64
+)
+
+// Check reports whether the service takes b as a hosts item, by its rules:
+// every text valid UTF-8 without a control character (Cc); nickname and
+// label at most 64 code points; host 1–253 with no white space; username
+// 1–64; port none (0) or 1–65535; auth kind none, key or password. Host
+// sync and pair-v1's machine list both hold machines to it.
+func (b HostBody) Check() error {
+	text := func(field, s string, required bool, max int) error {
+		switch {
+		case !utf8.ValidString(s) || strings.ContainsFunc(s, unicode.IsControl):
+			return fmt.Errorf("machine %s %q has a control character", field, s)
+		case required && s == "":
+			return fmt.Errorf("machine %s is empty", field)
+		case utf8.RuneCountInString(s) > max:
+			return fmt.Errorf("machine %s is over %d characters", field, max)
+		}
+		return nil
+	}
+	return errors.Join(
+		text("nickname", b.Nickname, false, maxHostNickname),
+		text("host", b.Host, true, maxHostHost),
+		text("username", b.Username, true, maxHostUsername),
+		text("label", b.Label, false, maxHostLabel),
+		func() error {
+			switch {
+			case strings.ContainsFunc(b.Host, func(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }):
+				// JavaScript's \s, which the service tests, has U+FEFF too.
+				return fmt.Errorf("machine host %q has a space", b.Host)
+			case b.Port < 0 || b.Port > 65535:
+				return fmt.Errorf("machine port %d", b.Port)
+			case b.AuthKind != "" && b.AuthKind != "key" && b.AuthKind != "password":
+				return fmt.Errorf("machine auth kind %q", b.AuthKind)
+			}
+			return nil
+		}(),
+	)
+}
 
 // HostIdentity is what makes two saved machines the same machine across
 // devices (design #698 §5.5, the rule iOS uses too): the username exactly as
@@ -253,11 +302,11 @@ func NewHostID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// hostRow reads a live hosts item; one without a host or username is none
-// the service would hold.
+// hostRow reads a live hosts item; one the service wouldn't hold (Check)
+// is none.
 func hostRow(it Item) (RemoteHost, bool) {
 	var b HostBody
-	if json.Unmarshal(it.Body, &b) != nil || b.Host == "" || b.Username == "" {
+	if json.Unmarshal(it.Body, &b) != nil || b.Check() != nil {
 		return RemoteHost{}, false
 	}
 	return RemoteHost{ID: it.ID, Rev: it.Rev, Body: b}, true
