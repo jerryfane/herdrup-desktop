@@ -658,7 +658,7 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 	if c := d.liveBridge(m); c != nil {
 		return engine.New(engine.Bridge(c)), func() {}, nil
 	}
-	c, done, err := d.dialMachine(ctx, m, d.pins)
+	c, done, err := d.dialMachine(ctx, m, d.pins, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -680,15 +680,16 @@ func (d *Desk) liveBridge(m Machine) *bridge.Client {
 }
 
 // dialMachine is a short SSH session to m with its key file: this
-// computer's own, never a guest's. It negotiates the host key as m was
-// pinned (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
-// otherwise) and checks it with pins.
-func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
+// computer's own, never a guest's. It checks the host key with pins,
+// negotiating it with algos, or as m was pinned when nil
+// (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
+// otherwise).
+func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore, algos []string) (*bridge.Client, func(), error) {
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
-	if m.Paired {
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: algos}
+	if algos == nil && m.Paired {
 		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
 	}
 	var err error

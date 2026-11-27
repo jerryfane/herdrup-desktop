@@ -278,27 +278,68 @@ func (p *pairPins) SetPin(string, string) error {
 
 // pairBridge is this computer's own SSH session to m for a pair approval.
 // The live connection is used, however it signed in (a password machine
-// is usable only then), while its host key is the one pinned here now.
-// Otherwise a new session (dialMachine) negotiates as the machine was
-// pinned, as the live one did, so the host shows the key this computer
-// trusts, much as OpenSSH offers a host's known_hosts type first: the pin
-// holds a fingerprint only, and any other key fails it. A machine without
-// a pin is errNoPin, never pinned. That key is sent if the new device
-// checks its type (verifiedHostKey); no other type is tried.
+// is usable only then), while its host key is the one pinned here now; a
+// pin store not read is its error. Otherwise a new session (dialMachine)
+// negotiates as the machine was pinned, as the live one did, so the host
+// shows the key this computer trusts. The pin holds a fingerprint only:
+// when that session's key isn't the pinned one (a host pinned by its
+// ed25519 key that offers ECDSA since, which SSH's defaults prefer), one
+// session per type the new device checks, in pairHostKeyTypes' order,
+// looks for it, and the first whose key is the pinned one is used. None:
+// the host key changed. A machine without a pin is errNoPin; nothing is
+// ever pinned. The key is sent if the new device checks its type
+// (verifiedHostKey).
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
 	if c := d.liveBridge(m); c != nil {
 		if key, addr := c.HostKey(); key != nil {
-			if pin, ok, err := d.pins.Pin(addr); err == nil && ok && pin == bridge.Fingerprint(key) {
+			switch err := d.pinnedKey(key, addr); {
+			case err == nil:
 				return c, func() {}, nil
+			case !errors.Is(err, errNotPinned):
+				return nil, nil, err
 			}
 		}
 	}
 	pins := &pairPins{PinStore: d.pins}
-	c, done, err := d.dialMachine(ctx, m, pins)
-	if err != nil && pins.missing.Load() {
+	c, done, err := d.dialMachine(ctx, m, pins, nil)
+	var changed *bridge.HostKeyChangedError
+	switch {
+	case err != nil && pins.missing.Load():
 		return nil, nil, errNoPin
+	case errors.As(err, &changed):
+		for _, algo := range pairHostKeyTypes {
+			tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
+			var other *bridge.HostKeyChangedError
+			var none *ssh.AlgorithmNegotiationError
+			switch {
+			case terr == nil:
+				return tc, tdone, nil
+			case errors.As(terr, &other), errors.As(terr, &none):
+				continue
+			}
+			// The key was the pinned one; the session failed after (its
+			// sign-in, say), and says why.
+			return nil, nil, terr
+		}
 	}
 	return c, done, err
+}
+
+// errNotPinned is a host key other than the one pinned here.
+var errNotPinned = errors.New("its host key doesn't match the one pinned here")
+
+// pinnedKey says whether key, from a session to addr, is the one pinned
+// here: nil when it is, errNotPinned when not (or no pin), and a pin
+// store not read as its own error.
+func (d *Desk) pinnedKey(key ssh.PublicKey, addr string) error {
+	pin, ok, err := d.pins.Pin(addr)
+	switch {
+	case err != nil:
+		return fmt.Errorf("couldn't read the host keys pinned here (%w)", err)
+	case !ok || pin != bridge.Fingerprint(key):
+		return errNotPinned
+	}
+	return nil
 }
 
 // pairHostKeyTypes are the host keys the new device checks (pair-v1
@@ -967,12 +1008,8 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	if key == nil {
 		return "", errors.New("no host key from this connection")
 	}
-	pin, ok, err := d.pins.Pin(addr)
-	switch {
-	case err != nil:
+	if err := d.pinnedKey(key, addr); err != nil {
 		return "", err
-	case !ok || pin != bridge.Fingerprint(key):
-		return "", errors.New("its host key doesn't match the one pinned here")
 	}
 	if cert, isCert := key.(*ssh.Certificate); isCert {
 		key = cert.Key

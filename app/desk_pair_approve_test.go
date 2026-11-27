@@ -239,9 +239,7 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-// newPairWorld builds the world; studioHostKey, when given, is studio's
-// host key (an ed25519 key otherwise).
-func newPairWorld(t *testing.T, studioHostKey ...ssh.Signer) *pairWorld {
+func newPairWorld(t *testing.T) *pairWorld {
 	t.Helper()
 	quietSync(t)
 	w := &pairWorld{svc: fakeaccount.New(), machines: map[string]*pairHerdr{}, ids: map[string]string{}}
@@ -273,9 +271,6 @@ func newPairWorld(t *testing.T, studioHostKey ...ssh.Signer) *pairWorld {
 	studio := &pairHerdr{}
 	d, s := federatedDeskAs(t, "studio", func(s *fakeherdr.Server) {
 		s.Handle = studio.handle(true, s.Handle)
-		if len(studioHostKey) > 0 {
-			s.HostKey = studioHostKey[0]
-		}
 	})
 	studio.srv, studio.hostKey = s, s.HostKey.PublicKey()
 	w.d = d
@@ -1082,25 +1077,89 @@ func TestPairApproveSendsTheECDSAKeyAStockHostIsPinnedBy(t *testing.T) {
 	}
 }
 
-// The live connection, signed in with a password (no key file saved) to
-// a host pinned by its ECDSA key, is the session the key is added over,
-// and its ECDSA key is sent.
-func TestPairApproveUsesALivePasswordConnection(t *testing.T) {
+// connectByPassword makes "pw", a herdr that takes only a password and
+// has an ECDSA host key, the live connection, signed in with the
+// password and no key file (the connection pins its key), and returns
+// that key.
+func (w *pairWorld) connectByPassword(t *testing.T) ssh.Signer {
+	t.Helper()
 	ec := ecdsaHostKey(t)
-	w := newPairWorld(t, ec)
-	m, err := w.d.savedMachine(w.ids["studio"])
+	h := &pairHerdr{hostKey: ec.PublicKey()}
+	h.srv = &fakeherdr.Server{HostKey: ec, Password: "secret", Handle: h.handle(true, w.machines["studio"].srv.Handle)}
+	addr, err := h.srv.Listen("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.KeyPath = ""
-	if err := w.d.SaveMachine(m, w.ids["studio"]); err != nil {
+	t.Cleanup(func() { h.srv.Close() })
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+	m := Machine{Nickname: "pw", Host: host, Port: port, User: "dev"}
+	if err := w.d.Connect(m, "secret"); err != nil {
 		t.Fatal(err)
 	}
-	if got := w.approveAlone(t, "studio"); got != hostKeyLine(ec.PublicKey()) {
+	waitFor(t, "the password connection", func() bool { return w.d.liveBridge(m) != nil })
+	w.ids["pw"], w.machines["pw"] = machineID(m), h
+	if saved, err := w.d.savedMachine(w.ids["pw"]); err != nil || saved.KeyPath != "" {
+		t.Fatalf("saved %+v, %v: want no key file", saved, err)
+	}
+	return ec
+}
+
+// The live connection, signed in with a password to a host pinned by its
+// ECDSA key, is the session the key is added over, and its ECDSA key is
+// sent.
+func TestPairApproveUsesALivePasswordConnection(t *testing.T) {
+	w := newPairWorld(t)
+	ec := w.connectByPassword(t)
+	if got := w.approveAlone(t, "pw"); got != hostKeyLine(ec.PublicKey()) {
 		t.Fatalf("sent host key %q, want the live connection's ECDSA key", got)
 	}
-	if n := w.machines["studio"].adds.Load(); n != 1 {
-		t.Fatalf("%d adds on studio, want 1", n)
+	if n := w.machines["pw"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on pw, want 1", n)
+	}
+}
+
+// A pin store that can't be read is said as itself: the live password
+// connection isn't passed over for a new session that needs a key file.
+func TestPairApproveSaysAnUnreadPinStore(t *testing.T) {
+	w := newPairWorld(t)
+	w.connectByPassword(t)
+	id := w.start(t)
+	w.typeCode(t, id)
+	if err := os.WriteFile(filepath.Join(w.d.dir, "host-keys.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := w.d.PairApproveAdd(context.Background(), id, []string{w.ids["studio"], w.ids["pw"]})
+	pw := rowsByLabel(res)["pw"]
+	if err != nil || pw.Status != account.PairFailed || !strings.HasPrefix(pw.Reason, "couldn't read the host keys pinned here") {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["pw"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds with the pins unread", n)
+	}
+}
+
+// A host pinned here while it offered only its ed25519 key, which offers
+// an ECDSA key too since (SSH's defaults prefer it): the session that
+// gets the ECDSA key doesn't match the pin, so one session per type finds
+// the pinned ed25519 key, which gets the new device's key and is sent.
+// The pin stays as it was.
+func TestPairApproveFindsThePinnedKeyTypeOfAHostThatGrewAnother(t *testing.T) {
+	w := newPairWorld(t)
+	ed := ed25519HostKey(t)
+	w.keyMachineWith(t, "grown", ed, true, true, ecdsaHostKey(t))
+	if got := w.approveAlone(t, "grown"); got != hostKeyLine(ed.PublicKey()) {
+		t.Fatalf("sent host key %q, want the pinned ed25519 key", got)
+	}
+	if n := w.machines["grown"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on the grown host, want 1", n)
+	}
+	m, err := w.d.savedMachine(w.ids["grown"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port))); err != nil || !ok || pin != bridge.Fingerprint(ed.PublicKey()) {
+		t.Fatalf("pin %q %v %v: want the ed25519 key's, as it was", pin, ok, err)
 	}
 }
 
