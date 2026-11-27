@@ -44,10 +44,15 @@ type Machine struct {
 	// rather than an unrelated ECDSA key or certificate served by the same sshd.
 	Paired bool `json:"paired,omitempty"`
 	// HostKeyType is the type of a Paired machine's pinned host key when
-	// another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
-	// whichever the approver saw. A connection offers only that type
+	// another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+	// connection offers only that type and its certificate form
 	// (hostKeyAlgorithms). "" is herdr pair's own key.
 	HostKeyType string `json:"hostKeyType,omitempty"`
+	// HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+	// kept in the profile rather than with the pins this computer trusts
+	// on first use: the machine's connections check it (pinsFor), and it is
+	// saved with the profile in one write.
+	HostKeyPin string `json:"hostKeyPin,omitempty"`
 	// SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
 	// UUID), "" until it first synced (desk_account_sync.go).
 	SyncID string `json:"syncId,omitempty"`
@@ -243,6 +248,9 @@ type Desk struct {
 	// pairRequest is this computer's request to be paired from another
 	// device (desk_pair_request.go); guarded by mu.
 	pairRequest *pairRequest
+	// pairStartMu holds one PairRequestStart's ask to the service and its
+	// install here at a time, so they are in the service's order.
+	pairStartMu sync.Mutex
 	// openBrowser opens a URL in the system browser; replaced in tests.
 	openBrowser func(string) error
 	// publishTopics sends a Topics update to the page (broadcastTopics); a
@@ -701,8 +709,9 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 }
 
 // saveMachine is SaveMachine. keepKeyType: a paired machine edited at its
-// address keeps the pinned host key's type (an edit from the page, which
-// doesn't hold it); a QR re-pairing, which pins anew, passes false.
+// address keeps the pinned host key's type and pin (an edit from the page,
+// which holds neither; nor can it set them); a QR re-pairing, which pins
+// anew, passes false.
 func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error {
 	m.Nickname = strings.TrimSpace(m.Nickname)
 	m.Host = strings.TrimSpace(m.Host)
@@ -736,16 +745,23 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 		// A new profile never takes another's id, even one the page held,
 		// nor a label revision.
 		m.LocalID, m.LabelRev = "", 0
+		if keepKeyType {
+			m.HostKeyPin = ""
+		}
 		st.Machines = append(st.Machines, m)
 	} else {
 		// The page doesn't hold the sync id: an edit keeps the machine's, its
 		// local id and its label revision.
 		old := st.Machines[index]
 		m.SyncID, m.LocalID, m.LabelRev = old.SyncID, old.LocalID, old.LabelRev
-		// The page doesn't hold the pinned key's type either: a paired
-		// machine edited at its address keeps it.
-		if keepKeyType && m.Paired && sameHostPort(old, m.Host, m.Port) {
-			m.HostKeyType = old.HostKeyType
+		// The page doesn't hold the pinned key's type and pin either: a
+		// paired machine edited at its address keeps them, one moved to
+		// another address has no pin of its own any more.
+		if keepKeyType {
+			m.HostKeyPin = ""
+			if m.Paired && sameHostPort(old, m.Host, m.Port) {
+				m.HostKeyType, m.HostKeyPin = old.HostKeyType, old.HostKeyPin
+			}
 		}
 		// A rename names the machine anew to its existing shares' guests
 		// (desk_guest_relabel.go), queued under the profile's local id at a
@@ -797,21 +813,33 @@ func (d *Desk) saveMachine(m Machine, replacing string, keepKeyType bool) error 
 // (ActivateAgent needed this password) connects to its session, saved as
 // ActivateAgent would have.
 func (d *Desk) SelectMachine(id, password string) error {
+	_, err := d.selectMachine(id, password, nil)
+	return err
+}
+
+// selectMachine is SelectMachine, only while the saved machine is still
+// the one want accepts (nil: any), checked under d.storeMu: selected is
+// false, and nothing changes, when it isn't.
+func (d *Desk) selectMachine(id, password string, want func(Machine) bool) (selected bool, err error) {
 	d.storeMu.Lock()
 	st, err := d.load()
 	if err != nil {
 		d.storeMu.Unlock()
-		return err
+		return false, err
 	}
 	i := st.find(id)
+	if want != nil && (i < 0 || !want(st.Machines[i])) {
+		d.storeMu.Unlock()
+		return false, nil
+	}
 	if i < 0 {
 		d.storeMu.Unlock()
-		return fmt.Errorf("no saved machine %q", id)
+		return false, fmt.Errorf("no saved machine %q", id)
 	}
 	m := st.Machines[i]
 	if m.KeyPath == "" && password == "" {
 		d.storeMu.Unlock()
-		return errors.New("a password is required")
+		return false, errors.New("a password is required")
 	}
 	d.mu.Lock()
 	if p := d.pendingAgent; p != nil && p.MachineID == id {
@@ -823,10 +851,10 @@ func (d *Desk) SelectMachine(id, password string) error {
 	err = d.store(st)
 	d.storeMu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.start(m, password)
-	return nil
+	return true, nil
 }
 
 // RemoveMachine forgets a saved machine. Removing the active machine
@@ -1187,7 +1215,7 @@ func (d *Desk) run(ctx context.Context, l *link, m Machine, password string) {
 func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label string) (listed bool, err error) {
 	cfg := bridge.Config{
 		Host: m.Host, Port: m.Port, User: m.User, Session: m.Session,
-		Pins: d.pins, HostKeyAlgorithms: hostKeyAlgorithms(m),
+		Pins: d.pinsFor(m), HostKeyAlgorithms: hostKeyAlgorithms(m),
 	}
 	if m.KeyPath != "" {
 		if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {

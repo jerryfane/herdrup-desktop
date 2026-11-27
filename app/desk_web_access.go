@@ -655,7 +655,7 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	c, done, err := d.ownerBridge(ctx, m, d.pins)
+	c, done, err := d.ownerBridge(ctx, m, d.pinsFor(m))
 	if err != nil {
 		return nil, nil, err
 	}

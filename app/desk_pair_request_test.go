@@ -297,7 +297,9 @@ func TestPairRequestSavesTheApprovedMachinesWithItsKeyAndPins(t *testing.T) {
 	if listed, err := w.d.SyncedMachines(); err != nil || len(listed) != 0 {
 		t.Fatalf("to pair after: %+v, %v", listed, err)
 	}
-	// S is the key file, and each pin is the iPhone's host key.
+	// S is the key file, and each profile's pin is the iPhone's host key,
+	// kept in the profile, not with the pins this computer trusts on first
+	// use (which a later connection doesn't add to either).
 	pem, err := os.ReadFile(keys[0])
 	if err != nil {
 		t.Fatal(err)
@@ -306,11 +308,18 @@ func TestPairRequestSavesTheApprovedMachinesWithItsKeyAndPins(t *testing.T) {
 	if err != nil || !bytes.Equal(signer.PublicKey().Marshal(), s.Marshal()) {
 		t.Fatalf("key file isn't S: %v", err)
 	}
-	for _, m := range []pairMachine{studio, offnet} {
-		if pin, ok, _ := w.d.pins.Pin(net.JoinHostPort(m.host, strconv.Itoa(m.port))); !ok || pin != bridge.Fingerprint(m.hostKey) {
-			t.Fatalf("pin of %d = %q, %v", m.port, pin, ok)
+	for i, m := range []pairMachine{studio, offnet} {
+		if pin := saved[i].HostKeyPin; pin != bridge.Fingerprint(m.hostKey) {
+			t.Fatalf("pin of %d = %q", m.port, pin)
 		}
 	}
+	defer func() {
+		for _, m := range []pairMachine{studio, offnet} {
+			if pin, ok, _ := w.d.pins.Pin(net.JoinHostPort(m.host, strconv.Itoa(m.port))); ok {
+				t.Errorf("pinned at %d with the first-use pins: %s", m.port, pin)
+			}
+		}
+	}()
 
 	v, err = w.d.PairRequestConnect(ctx, v.ID)
 	if err != nil {
@@ -685,15 +694,15 @@ func TestHostKeyAlgorithmsFollowThePinnedType(t *testing.T) {
 	}{
 		{Machine{}, nil},
 		{Machine{Paired: true}, pairingHostKeyAlgorithms},
-		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoED25519}, []string{ssh.KeyAlgoED25519}},
-		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoECDSA384}, []string{ssh.KeyAlgoECDSA384}},
+		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoED25519}, []string{ssh.KeyAlgoED25519, ssh.CertAlgoED25519v01}},
+		{Machine{Paired: true, HostKeyType: ssh.KeyAlgoECDSA384}, []string{ssh.KeyAlgoECDSA384, ssh.CertAlgoECDSA384v01}},
 	} {
 		if got := hostKeyAlgorithms(c.m); fmt.Sprint(got) != fmt.Sprint(c.want) {
 			t.Errorf("%+v: %v, want %v", c.m, got, c.want)
 		}
 	}
 	// A profile another device's approval paired (pair-v1) never offers RSA.
-	for _, keyType := range pairHostKeyTypes {
+	for keyType := range pairHostKeyTypes {
 		for _, algo := range hostKeyAlgorithms(Machine{Paired: true, HostKeyType: keyType}) {
 			if strings.HasPrefix(algo, "rsa-") || algo == ssh.KeyAlgoRSA {
 				t.Errorf("%s offers %s", keyType, algo)
@@ -702,15 +711,16 @@ func TestHostKeyAlgorithmsFollowThePinnedType(t *testing.T) {
 	}
 }
 
-// When saving the machines fails (their pins or the machine list), nothing
-// is saved: the key file written for them is removed again, and so are the
-// pins new for them (a pin that was there before stays). The view says so
-// while the list is read again, and the next read saves them with a new key.
-func TestPairRequestRemovesItsKeyAndNewPinsWhenSavingFails(t *testing.T) {
+// When saving the machines fails (staging the list or renaming it into
+// place), nothing is saved: the key file written for them is removed again,
+// and the pins this computer keeps are as they were (a pin that was there
+// before stays; the save adds none). The view says so while the list is
+// read again, and the next read saves them with a new key.
+func TestPairRequestRemovesItsKeyWhenSavingFails(t *testing.T) {
 	for _, c := range []struct {
 		blocked string // a file whose write fails, or "rename": machines.json's rename does
 		pinned  bool   // the machine's host key was pinned here already
-	}{{"host-keys.json.tmp", false}, {"machines.json.tmp", false}, {"machines.json.tmp", true}, {"rename", false}} {
+	}{{"machines.json.tmp", false}, {"machines.json.tmp", true}, {"rename", false}} {
 		t.Run(fmt.Sprintf("%s pinned=%v", c.blocked, c.pinned), func(t *testing.T) {
 			w := newAskWorld(t)
 			ctx := context.Background()
@@ -789,8 +799,8 @@ func TestPairRequestKeepsItsKeyOnceTheMachinesAreWritten(t *testing.T) {
 	if v.Phase != PairDone || resultOf(v, "studio").Result != PairSaved || len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
 		t.Fatalf("view %+v, keys %v, saved %+v", v, keys, saved)
 	}
-	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || !ok || pin != bridge.Fingerprint(studio.hostKey) {
-		t.Fatalf("pin %q %v %v", pin, ok, err)
+	if pin := saved[0].HostKeyPin; pin != bridge.Fingerprint(studio.hostKey) {
+		t.Fatalf("pin %q", pin)
 	}
 }
 
@@ -856,35 +866,239 @@ func TestPairRequestLeavesAPinItFoundWhenSavingFails(t *testing.T) {
 	}
 }
 
-// Another writer's pin waits for the save's commit, and a failed commit
-// takes its own pin back before that one is written: the other writer's
-// pin is there after.
-func TestPairRequestLeavesAPinSetDuringItsFailedCommit(t *testing.T) {
+// The save publishes in one write, machines.json, each pin in its profile:
+// a commit that fails leaves no pin anywhere, and has nothing to take back
+// from the pins this computer keeps, which it never holds or writes.
+func TestPairRequestFailedCommitLeavesNoPin(t *testing.T) {
 	w := newAskWorld(t)
 	id, studio := w.approved(t)
-	at := net.JoinHostPort(studio.host, strconv.Itoa(studio.port))
-	other, _ := newHostKey(t)
-	since := bridge.Fingerprint(other.PublicKey())
-	set := make(chan error, 1)
 	w.failCommit(func() {
-		go func() { set <- w.d.pins.SetPin(at, since) }()
-		select {
-		case err := <-set:
-			t.Errorf("a pin was set during the commit (%v)", err)
-		case <-time.After(50 * time.Millisecond):
+		if err := w.d.pins.SetPin("elsewhere.lan:22", "ab"); err != nil {
+			t.Errorf("the pins were held during the commit: %v", err)
 		}
 	})
 	if v := w.read(t, id); v.Phase != PairApproved || !v.SaveFailed {
 		t.Fatalf("view %+v", v)
 	}
-	if err := <-set; err != nil {
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || ok {
+		t.Fatalf("pin %q %v %v", pin, ok, err)
+	}
+	if keys, saved := w.identities(t), w.machines(t); len(keys) != 0 || len(saved) != 0 {
+		t.Fatalf("keys %v, saved %+v", keys, saved)
+	}
+}
+
+// approveList is a request approved with list, not read yet.
+func (w *askWorld) approveList(t *testing.T, list func(s ssh.PublicKey) []account.PairMachine) string {
+	t.Helper()
+	ctx := context.Background()
+	v := w.start(t)
+	a, s, code := w.claim(t, v.ID)
+	if c, err := a.CheckCode(ctx, code); err != nil || !c.Ok {
+		t.Fatal(c, err)
+	}
+	if err := a.Approve(ctx, 1, pairEnvelope(list(s)...)); err != nil {
 		t.Fatal(err)
 	}
-	if pin, ok, err := w.d.pins.Pin(at); err != nil || !ok || pin != since {
-		t.Fatalf("pin %q %v %v, want the one set during the commit", pin, ok, err)
+	return v.ID
+}
+
+// Three SSH users at one host and port: the first's key differs from the
+// one this computer pins there, the second's matches it and is saved, the
+// third's matches too and keeps the second's profile (one per address).
+// At an address pinned nowhere, a second user with another key than the
+// first's differs from it. Each gets its result.
+func TestPairRequestDecidesEachUserAtAnAddressByItsPin(t *testing.T) {
+	w := newAskWorld(t)
+	var studio pairMachine
+	_, otherLine := newHostKey(t)
+	id := w.approveList(t, func(s ssh.PublicKey) []account.PairMachine {
+		studio = servedMachine(t, s)
+		if err := w.d.pins.SetPin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port)), bridge.Fingerprint(studio.hostKey)); err != nil {
+			t.Fatal(err)
+		}
+		alice := studio.entry("alice-box", account.PairAdded, "")
+		alice.User, alice.HostKey = "alice", otherLine
+		bob := studio.entry("bob-box", account.PairAdded, "")
+		bob.User = "bob"
+		nas := servedMachine(t, s)
+		erin := nas.entry("erin-nas", account.PairAdded, "")
+		erin.User, erin.HostKey = "erin", otherLine
+		return []account.PairMachine{alice, studio.entry("jerry-box", account.PairAdded, ""), bob, nas.entry("jerry-nas", account.PairAdded, ""), erin}
+	})
+	v := w.read(t, id)
+	jerry := resultOf(v, "jerry-box")
+	if v.Phase != PairDone || len(v.Machines) != 5 || resultOf(v, "alice-box").Result != PairPinDiffers || jerry.Result != PairSaved ||
+		resultOf(v, "jerry-nas").Result != PairSaved || resultOf(v, "erin-nas").Result != PairPinDiffers {
+		t.Fatalf("view %+v", v)
 	}
-	if keys := w.identities(t); len(keys) != 0 {
-		t.Fatalf("key files left %v", keys)
+	if bob := resultOf(v, "bob-box"); bob.Result != PairKept || bob.ProfileID != jerry.ProfileID || bob.User != "jerry" {
+		t.Fatalf("bob %+v", bob)
+	}
+	if saved := w.machines(t); len(saved) != 2 || saved[0].User != "jerry" || saved[0].LocalID != jerry.ProfileID || saved[1].User != "jerry" {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+// A list that saves no machine writes no key at all: one whose pin differs
+// here and one saved here already (which only gets its profile id) say so,
+// even where S couldn't be written.
+func TestPairRequestWritesNoKeyForAListItSavesNothingFrom(t *testing.T) {
+	w := newAskWorld(t)
+	if err := os.WriteFile(filepath.Join(w.d.dir, "identities"), []byte("not a folder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := w.approveList(t, func(s ssh.PublicKey) []account.PairMachine {
+		studio, mini := servedMachine(t, s), servedMachine(t, s)
+		if err := w.d.pins.SetPin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port)), "00ff"); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.d.SaveMachine(Machine{Host: mini.host, Port: mini.port, User: "jerry", KeyPath: "/k"}, ""); err != nil {
+			t.Fatal(err)
+		}
+		return []account.PairMachine{studio.entry("studio", account.PairAdded, ""), mini.entry("mini", account.PairAdded, "")}
+	})
+	v := w.read(t, id)
+	if v.Phase != PairDone || v.SaveFailed || resultOf(v, "studio").Result != PairPinDiffers || resultOf(v, "mini").Result != PairKept {
+		t.Fatalf("view %+v", v)
+	}
+	if saved := w.machines(t); len(saved) != 1 || saved[0].LocalID == "" || saved[0].KeyPath != "/k" {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+// A server that presents only a host certificate of the key the approver
+// pinned: the machine is saved with that plain key and connects, offering
+// the key's type and its certificate form, never RSA.
+func TestPairRequestConnectsToACertificateOnlyServer(t *testing.T) {
+	for _, name := range []string{"ed25519", "ecdsa"} {
+		t.Run(name, func(t *testing.T) {
+			w := newAskWorld(t)
+			ctx := context.Background()
+			var host ssh.Signer
+			if name == "ed25519" {
+				_, priv, _ := ed25519.GenerateKey(rand.Reader)
+				host, _ = ssh.NewSignerFromKey(priv)
+			} else {
+				priv, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+				host, _ = ssh.NewSignerFromKey(priv)
+			}
+			_, caPriv, _ := ed25519.GenerateKey(rand.Reader)
+			ca, _ := ssh.NewSignerFromKey(caPriv)
+			cert := &ssh.Certificate{Key: host.PublicKey(), CertType: ssh.HostCert, ValidPrincipals: []string{"127.0.0.1"}, ValidBefore: ssh.CertTimeInfinity}
+			if err := cert.SignCert(rand.Reader, ca); err != nil {
+				t.Fatal(err)
+			}
+			certOnly, err := ssh.NewCertSigner(cert, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := w.approveList(t, func(s ssh.PublicKey) []account.PairMachine {
+				box := servedMachineKeys(t, s, certOnly)
+				entry := box.entry("box", account.PairAdded, "")
+				entry.HostKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(host.PublicKey())))
+				return []account.PairMachine{entry}
+			})
+			if v := w.read(t, id); resultOf(v, "box").Result != PairSaved {
+				t.Fatalf("view %+v", v)
+			}
+			saved := w.machines(t)
+			if len(saved) != 1 || saved[0].HostKeyType != host.PublicKey().Type() || saved[0].HostKeyPin != bridge.Fingerprint(host.PublicKey()) {
+				t.Fatalf("saved %+v", saved)
+			}
+			v, err := w.d.PairRequestConnect(ctx, id)
+			if err != nil || resultOf(v, "box").Reach != PairOnline {
+				t.Fatalf("connect %+v, %v", v, err)
+			}
+		})
+	}
+}
+
+// A second Start waits for the first to be installed before it asks: the
+// first's reply held, the second asks nothing; released, the second's
+// request is the one here, live (the service's newest).
+func TestPairRequestStartsOneAtATime(t *testing.T) {
+	w := newAskWorld(t)
+	ctx := context.Background()
+	var asks atomic.Int32
+	arrive, rel := make(chan struct{}), make(chan struct{})
+	hold := func(_ http.ResponseWriter, r *http.Request) bool {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/approvals" && asks.Add(1) == 1 {
+			close(arrive)
+			<-rel
+		}
+		return false
+	}
+	w.intercept.Store(&hold)
+	type started struct {
+		v   PairRequestView
+		err error
+	}
+	first, second := make(chan started, 1), make(chan started, 1)
+	go func() { v, err := w.d.PairRequestStart(ctx); first <- started{v, err} }()
+	<-arrive
+	go func() { v, err := w.d.PairRequestStart(ctx); second <- started{v, err} }()
+	time.Sleep(50 * time.Millisecond)
+	if n := asks.Load(); n != 1 {
+		t.Fatalf("%d asks while the first was held", n)
+	}
+	close(rel)
+	a, b := <-first, <-second
+	if a.err != nil || b.err != nil || a.v.ID == b.v.ID {
+		t.Fatalf("first %+v, second %+v", a, b)
+	}
+	if cur := w.d.PairRequestCurrent(); cur == nil || cur.ID != b.v.ID {
+		t.Fatalf("current %+v, want %s", cur, b.v.ID)
+	}
+	if v := w.read(t, b.v.ID); v.Phase != PairWaiting {
+		t.Fatalf("second %+v", v)
+	}
+}
+
+// A result row opens its profile only while it is still that profile (its
+// profile id and address): one edited to another address since, or another
+// profile saved at the same id, is not opened, and nothing is selected.
+func TestPairRequestOpensOnlyTheProfileItSaved(t *testing.T) {
+	w := newAskWorld(t)
+	id, _ := w.approved(t)
+	r := resultOf(w.read(t, id), "studio")
+	target := PairOpenTarget{ID: r.ID, ProfileID: r.ProfileID, User: r.User, Host: r.Host, Port: r.Port}
+	active := func() string {
+		t.Helper()
+		w.d.storeMu.Lock()
+		defer w.d.storeMu.Unlock()
+		st, err := w.d.load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Active
+	}
+	setStore := func(edit func(st *machineStore)) {
+		t.Helper()
+		w.d.storeMu.Lock()
+		defer w.d.storeMu.Unlock()
+		st, err := w.d.load()
+		if err == nil {
+			edit(&st)
+			err = w.d.store(st)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	moved := target
+	moved.Port++
+	if opened, err := w.d.SelectPairedMachine(moved, ""); err != nil || opened || active() != "" {
+		t.Fatalf("opened another address: %v %v, active %q", opened, err, active())
+	}
+	if opened, err := w.d.SelectPairedMachine(target, ""); err != nil || !opened || active() != r.ID {
+		t.Fatalf("not opened: %v %v, active %q", opened, err, active())
+	}
+	w.d.Disconnect()
+	// Another profile at the same id: not the one this row saved.
+	setStore(func(st *machineStore) { st.Active, st.Machines[0].LocalID = "", "another-profile" })
+	if opened, err := w.d.SelectPairedMachine(target, ""); err != nil || opened || active() != "" {
+		t.Fatalf("opened the replacement: %v %v, active %q", opened, err, active())
 	}
 }
 
@@ -1043,8 +1257,8 @@ func TestPairRequestSignOutDuringTheCommitKeepsTheSave(t *testing.T) {
 	if keys, saved := w.identities(t), w.machines(t); len(keys) != 1 || len(saved) != 1 || saved[0].KeyPath != keys[0] {
 		t.Fatalf("keys %v, saved %+v", keys, saved)
 	}
-	if _, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || !ok {
-		t.Fatalf("pin %v %v", ok, err)
+	if pin := w.machines(t)[0].HostKeyPin; pin != bridge.Fingerprint(studio.hostKey) {
+		t.Fatalf("pin %q", pin)
 	}
 }
 
@@ -1215,6 +1429,65 @@ func TestPairRequestSettlesARemovedMachine(t *testing.T) {
 	}
 }
 
+// Another device moving a paired machine to another address takes its pin
+// with the old address; renaming it there keeps the pin.
+func TestPairPinStaysWithItsAddressThroughSync(t *testing.T) {
+	quietSync(t)
+	_, srv := newWorker(t, "")
+	ctx := context.Background()
+	mac, linux := device(t, srv), device(t, srv)
+	if err := linux.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/k", Paired: true, HostKeyType: ssh.KeyAlgoED25519}, ""); err != nil {
+		t.Fatal(err)
+	}
+	linux.storeMu.Lock()
+	st, err := linux.load()
+	if err == nil {
+		st.Machines[0].HostKeyPin = "00ff"
+		err = linux.store(st)
+	}
+	linux.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinOnLinux := func() string {
+		t.Helper()
+		if err := linux.SyncMachines(ctx); err != nil {
+			t.Fatal(err)
+		}
+		ms, err := linux.Machines()
+		if err != nil || len(ms) != 1 {
+			t.Fatalf("linux %+v, %v", ms, err)
+		}
+		return ms[0].HostKeyPin
+	}
+	pinOnLinux()
+	// The Mac has it too (saved with its own key, it takes the same item).
+	if err := mac.SaveMachine(Machine{Host: "pi", User: "root", KeyPath: "/m"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := mac.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		m   Machine
+		was string
+		pin string
+	}{
+		{Machine{Nickname: "Pi", Host: "pi", User: "root", KeyPath: "/m"}, "root@pi:22", "00ff"},
+		{Machine{Nickname: "Pi", Host: "pi.lan", User: "root", KeyPath: "/m"}, "root@pi:22", ""},
+	} {
+		if err := mac.SaveMachine(c.m, c.was); err != nil {
+			t.Fatal(err)
+		}
+		if err := mac.SyncMachines(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if pin := pinOnLinux(); pin != c.pin {
+			t.Fatalf("after %+v: pin %q, want %q", c.m, pin, c.pin)
+		}
+	}
+}
+
 // A machine edited here after the list saved it, to another address, is
 // not the one the approver added the key to: settled as changed, and
 // nothing is dialled or pinned at its new address.
@@ -1244,12 +1517,22 @@ func TestPairRequestSettlesAMachineEditedToAnotherAddress(t *testing.T) {
 			c.Close()
 		}
 	}()
+	// An edit at the same address keeps the pin the save wrote; the page
+	// can't set one.
+	renamed := saved[0]
+	renamed.Nickname, renamed.HostKeyPin = "renamed", "forged"
+	if err := w.d.SaveMachine(renamed, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if again := w.machines(t); len(again) != 1 || again[0].HostKeyPin != saved[0].HostKeyPin || again[0].HostKeyType != saved[0].HostKeyType {
+		t.Fatalf("renamed %+v", again)
+	}
 	edited := saved[0]
 	edited.Port = elsewhere.Addr().(*net.TCPAddr).Port
 	if err := w.d.SaveMachine(edited, r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if again := w.machines(t); len(again) != 1 || again[0].LocalID != r.ProfileID || again[0].Port != edited.Port {
+	if again := w.machines(t); len(again) != 1 || again[0].LocalID != r.ProfileID || again[0].Port != edited.Port || again[0].HostKeyPin != "" {
 		t.Fatalf("edited %+v", again)
 	}
 	v, err = w.d.PairRequestConnect(ctx, id)
@@ -1291,8 +1574,8 @@ func TestPairRequestPinsTheKeyACertificateCertifies(t *testing.T) {
 	if resultOf(v, "studio").Result != PairSaved || len(saved) != 1 || saved[0].HostKeyType != ssh.KeyAlgoED25519 {
 		t.Fatalf("view %+v, saved %+v", v, saved)
 	}
-	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(studio.host, strconv.Itoa(studio.port))); err != nil || !ok || pin != bridge.Fingerprint(studio.hostKey) {
-		t.Fatalf("pin %q %v %v, want the plain key's", pin, ok, err)
+	if pin := saved[0].HostKeyPin; pin != bridge.Fingerprint(studio.hostKey) {
+		t.Fatalf("pin %q, want the plain key's", pin)
 	}
 	if v, err := w.d.PairRequestConnect(ctx, v.ID); err != nil || resultOf(v, "studio").Reach != PairOnline {
 		t.Fatalf("connect %+v, %v", v, err)
@@ -1304,7 +1587,7 @@ func TestPairRequestPinsTheKeyACertificateCertifies(t *testing.T) {
 func TestQRPairingReplacesThePinnedKeyType(t *testing.T) {
 	d := newDesk(t.TempDir())
 	raw, _, _, _, outcome := pairingListener(t, d, `{"type":"pair.ok"}`)
-	before := Machine{Host: "127.0.0.1", Port: 22, User: "pairing-user", Paired: true, HostKeyType: ssh.KeyAlgoECDSA256, KeyPath: "/old.key"}
+	before := Machine{Host: "127.0.0.1", Port: 22, User: "pairing-user", Paired: true, HostKeyType: ssh.KeyAlgoECDSA256, HostKeyPin: "00ff", KeyPath: "/old.key"}
 	d.storeMu.Lock()
 	err := d.store(machineStore{Machines: []Machine{before}})
 	d.storeMu.Unlock()
@@ -1318,7 +1601,7 @@ func TestQRPairingReplacesThePinnedKeyType(t *testing.T) {
 		t.Fatal(err)
 	}
 	hosts, err := d.Machines()
-	if err != nil || len(hosts) != 1 || !hosts[0].Paired || hosts[0].HostKeyType != "" || hosts[0].KeyPath == "/old.key" {
+	if err != nil || len(hosts) != 1 || !hosts[0].Paired || hosts[0].HostKeyType != "" || hosts[0].HostKeyPin != "" || hosts[0].KeyPath == "/old.key" {
 		t.Fatalf("re-paired %+v, %v", hosts, err)
 	}
 }

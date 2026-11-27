@@ -835,11 +835,18 @@ export interface Machine {
   paired?: boolean;
   /**
    * HostKeyType is the type of a Paired machine's pinned host key when
-   * another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
-   * whichever the approver saw. A connection offers only that type
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
    * (hostKeyAlgorithms). "" is herdr pair's own key.
    */
   hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
@@ -959,6 +966,18 @@ export interface PairApproveUpdate {
   id: string;
   state: string;
   problem?: string;
+}
+
+/**
+ * PairOpenTarget is the saved profile a result row opens, as the page drew
+ * it: its id, and the profile id and address the row joined it by.
+ */
+export interface PairOpenTarget {
+  id: string;
+  profileId: string;
+  user: string;
+  host: string;
+  port: number;
 }
 
 /**
@@ -1283,11 +1302,18 @@ export interface SavedMachine {
   paired?: boolean;
   /**
    * HostKeyType is the type of a Paired machine's pinned host key when
-   * another device's approval pinned it (pair-v1): ed25519, RSA or ECDSA,
-   * whichever the approver saw. A connection offers only that type
+   * another device's approval pinned it (pair-v1): ed25519 or ECDSA. A
+   * connection offers only that type and its certificate form
    * (hostKeyAlgorithms). "" is herdr pair's own key.
    */
   hostKeyType?: string;
+  /**
+   * HostKeyPin is that pinned key's fingerprint (bridge.Fingerprint),
+   * kept in the profile rather than with the pins this computer trusts
+   * on first use: the machine's connections check it (pinsFor), and it is
+   * saved with the profile in one write.
+   */
+  hostKeyPin?: string;
   /**
    * SyncID is the machine's id in the HerdrUp account's hosts (a lowercase
    * UUID), "" until it first synced (desk_account_sync.go).
@@ -2368,7 +2394,9 @@ export const Desk = {
   /**
    * PairRequestStart asks the account's other devices to pair this computer,
    * with a new key S. It replaces this computer's earlier request, here and
-   * at the service.
+   * at the service. One Start asks and installs its request at a time
+   * (d.pairStartMu): a later one asks only once the earlier one is installed,
+   * so the request installed here is always the service's newest.
    */
   pairRequestStart(): Promise<PairRequestView> {
     return call("Desk.PairRequestStart");
@@ -2543,6 +2571,16 @@ export const Desk = {
    */
   selectMachine(id: string, password: string): Promise<void> {
     return call("Desk.SelectMachine", id, password);
+  },
+  /**
+   * SelectPairedMachine is SelectMachine for a result row: it opens
+   * target.ID only while that saved profile is still the row's (its profile
+   * id and address), checked under the store lock. opened is false, and
+   * nothing changes, when it isn't (removed, edited or replaced since): the
+   * page draws its rows again.
+   */
+  selectPairedMachine(target: PairOpenTarget, password: string): Promise<boolean> {
+    return call("Desk.SelectPairedMachine", target, password);
   },
   /**
    * SelectSession switches the active machine to another herdr session and

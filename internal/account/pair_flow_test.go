@@ -207,6 +207,13 @@ func TestAPairedDeviceAddsTheNewDevicesKeyAndTheNewDeviceOpensTheMachineList(t *
 	if err != nil || !ok || got.Seq != 1 || len(got.Envelope.Machines) != 1 || got.Envelope.Machines[0].Nickname != "studio" {
 		t.Fatalf("machines = %+v, %v, %v", got, ok, err)
 	}
+	// Each machine's host key comes parsed with the list that validated it.
+	if len(got.HostKeys) != 1 {
+		t.Fatalf("host keys %v", got.HostKeys)
+	}
+	if want, err := got.Envelope.Machines[0].HostPublicKey(); err != nil || !bytes.Equal(got.HostKeys[0].Marshal(), want.Marshal()) {
+		t.Fatalf("host key %v, want %v (%v)", got.HostKeys[0], want, err)
+	}
 	if prog, err := ask.Poll(ctx); err != nil || prog.State != account.ApprovalApproved || !prog.Final {
 		t.Fatalf("after the approval: %+v, %v", prog, err)
 	}
