@@ -228,7 +228,8 @@ events.stateChanged.on((s) => {
  // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
  if (connectionChanged(state, s)) guestTab = "agents";
  // The shares list names the share open now, and its machine as its owner names it now.
- if (sharedListStale(state, s)) void refreshShared();
+ const stale = sharedListStale(state, s);
+ if (stale) void refreshShared();
  board = boardAfter(state, s, board);
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -238,7 +239,7 @@ events.stateChanged.on((s) => {
  // LeaveUnsent and its error dialog is dismissed later.
  if (hadGuest && !s.guest && shownWelcome === null && ready) {
   showWelcome({ owner: localOwnerHint.get() });
-  void refreshShared();
+  if (!stale) void refreshShared();
   return;
  }
  render();

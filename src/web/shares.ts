@@ -145,7 +145,20 @@ const writeKey = (p: PendingWrite) => JSON.stringify(bare(p));
  *  been listed, so it never landed and goes again, once; gone (410), what happened is past
  *  knowing, and it is superseded (dropped, its grant with it). Unasked or unanswered, it is
  *  unproven: kept, never sent, never dropped, and asked again at every later pull. */
-interface SharesRecord { rev: number; shares: RemoteShare[]; gone: Record<string, number>; pending: PendingWrite[]; drop?: string[]; sent?: JournalEntry[] }
+interface SharesRecord {
+ rev: number;
+ /** Monotonic local commit sequence across tabs, bumped on every locked update. */
+ seq?: number;
+ /** Commit sequence when each live share id was last confirmed live (pull, settle, or put). */
+ liveSeq?: Record<string, number>;
+ shares: RemoteShare[];
+ gone: Record<string, number>;
+ pending: PendingWrite[];
+ drop?: string[];
+ /** Conflict tombstone candidates waiting for post-push readback adjudication (never actionable drops until confirmed). */
+ pendingDrop?: string[];
+ sent?: JournalEntry[];
+}
 
 /** Where a pull starts that, not refused, proves a full pull lists any landing of e since it was
  *  sent (as Go's retainedFrom). */
@@ -243,9 +256,9 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  const maskListeners = new Set<(acct: string, ids: string[]) => void>();
  /** Shares whose deletion was observed in this tab (even if localStorage rejected the write, or
   *  IndexedDB failed to remove the grant, or a history proof is still pending), keyed by account
-  *  id -> share id -> observed deletion/pull revision. A newer committed live row (rev > maskRev)
-  *  or a new put supersedes a tab-local mask under the storage lock so a second tab's restored
-  *  share is never removed by a stale reconciliation pass. */
+  *  id -> share id -> committed record seq at the time of observation. A strictly later committed
+  *  live observation (`liveSeq[id] > maskSeq`) or a new put supersedes a tab-local mask under the
+  *  storage lock even across 410 history resets where service revisions restart at 1. */
  const masked = new Map<string, Map<string, number>>();
  /** Account id for each share left in this tab whose delete is still pending, so retrying an
   *  unsent Leave after the IndexedDB grant was removed still retries the account deletion. */
@@ -253,11 +266,11 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
  const maskInMemory = (acct: string, entries: Iterable<[string, number]>) => {
   const added: string[] = [];
   let map = masked.get(acct);
-  for (const [id, rev] of entries) {
+  for (const [id, seq] of entries) {
    if (map === undefined) { map = new Map(); masked.set(acct, map); }
    const prev = map.get(id);
    if (prev === undefined) added.push(id);
-   map.set(id, prev === undefined ? rev : Math.max(prev, rev));
+   map.set(id, prev === undefined ? seq : Math.max(prev, seq));
   }
   if (added.length > 0) for (const f of maskListeners) { try { f(acct, added); } catch { /* ignore */ } }
  };
@@ -268,14 +281,16 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   if (map.size === 0) masked.delete(acct);
  };
  /** Whether a tab-local mask for id in acct still holds against record r. If another tab committed
-  *  a newer live row (rev > maskRev) without a pending delete or durable drop marker, or queued a
-  *  new put for id, the stale tab-local mask is cleared and returns false. */
+  *  a strictly newer live observation (`liveSeq[id] > maskSeq`, works across 410 revision resets)
+  *  without a pending delete or durable drop marker, or queued a new put for id, the stale
+  *  tab-local mask is cleared and returns false. */
  const maskActiveIn = (r: SharesRecord, acct: string, id: string): boolean => {
-  const maskRev = masked.get(acct)?.get(id);
-  if (maskRev === undefined) return false;
+  const maskSeq = masked.get(acct)?.get(id);
+  if (maskSeq === undefined) return false;
   if (r.pending.some(p => p.body && p.id === id)) { unmaskInMemory(acct, [id]); return false; }
-  const live = r.shares.find(s => s.id === id);
-  if (live !== undefined && live.rev > maskRev && !r.pending.some(p => p.deleted && p.id === id) && !(r.drop ?? []).includes(id)) {
+  const live = r.shares.some(s => s.id === id);
+  const liveSeq = r.liveSeq?.[id] ?? 0;
+  if (live && liveSeq > maskSeq && !r.pending.some(p => p.deleted && p.id === id) && !(r.drop ?? []).includes(id)) {
    unmaskInMemory(acct, [id]);
    return false;
   }
@@ -286,12 +301,15 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   const raw = place.storage().getItem(keyOf(acct));
   return raw === null ? { rev: 0, shares: [], gone: {}, pending: [] } : JSON.parse(raw) as SharesRecord;
  };
- /** Reads, changes and writes acct's record in one step under its storage lock. */
- const update = async <T>(acct: string, change: (record: SharesRecord) => T): Promise<T> => {
+ /** Reads, changes and writes acct's record in one step under its storage lock, advancing its
+  *  monotonic local commit sequence `seq` so tabs can order observations across 410 resets. */
+ const update = async <T>(acct: string, change: (record: SharesRecord, baseSeq: number) => T): Promise<T> => {
   let out: { value: T } | null = null;
   const ran = await withStorageLock(keyOf(acct), () => {
    const record = read(acct);
-   out = { value: change(record) };
+   const baseSeq = record.seq ?? 0;
+   record.seq = baseSeq + 1;
+   out = { value: change(record, baseSeq) };
    place.storage().setItem(keyOf(acct), JSON.stringify(record));
   }, place.locks);
   if (!ran || out === null) throw new Error("This browser's storage is locked by another tab. Try again.");
@@ -321,7 +339,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  write goes at most once a round; dispatched gets each as its request is handed to fetch
   *  (writeKey). Applied deletes stay pending until the post-push pullInto readback confirms the
   *  share was not restored (appliedDeletes). */
- async function pushQueue(acct: string, signal: AbortSignal, generation: number, notAfter: number, dispatched: Set<string>, refusedAlone: Map<string, unknown>, appliedDeletes: Set<string>, conflictDrops: Map<string, number>): Promise<void> {
+ async function pushQueue(acct: string, signal: AbortSignal, generation: number, notAfter: number, dispatched: Set<string>, refusedAlone: Map<string, unknown>, appliedDeletes: Set<string>): Promise<void> {
   const change = (s: SentWrite): SyncChange => s.deleted
    ? { collection: "shares", id: s.id, base_rev: s.base_rev, deleted: true }
    : { collection: "shares", id: s.id, base_rev: s.base_rev, body: s.body };
@@ -331,63 +349,55 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    *  only matched writes leave the journal, so a 2xx answer that omits a write keeps its replay
    *  fence in r.sent. An applied delete stays in r.pending (tracked in appliedDeletes) until
    *  readback confirms no restore revived the share. A put conflict with a tombstone persists its
-   *  grant-removal candidate in r.drop and records it in conflictDrops so post-push readback
-   *  decides whether to mask/detach (or a newer live row supersedes it without disconnecting). */
+   *  candidate separately in r.pendingDrop (never in actionable r.drop, and without masking) so
+   *  neither another tab nor an early reconcile can disconnect or remove the grant before
+   *  post-push readback adjudicates it. */
   const settle = async (sent: SentWrite[], answer: SyncPushAnswer | null, refused: SentWrite[] = []) => {
-   const newlyConflicted: [string, number][] = [];
-   try {
-    await update(acct, r => {
-     const sentAs = new Map(sent.map(s => [s.id, s] as const));
-     const done = new Set(refused.map(writeKey)), known = new Set(refused.map(sentKey));
-     const rows: { id: string; rev: number; body: ShareBody | null }[] = [];
-     const conflictTombstones: [string, number][] = [];
-     for (const c of answer?.applied ?? []) {
-      const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
-      if (s === undefined) continue;
-      known.add(sentKey(s));
-      if (s.deleted) appliedDeletes.add(writeKey(s));
-      else done.add(writeKey(s));
-      rows.push({ id: c.id, rev: c.rev, body: s.deleted ? null : s.body! });
-     }
-     for (const c of answer?.conflicts ?? []) {
-      const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
-      if (s === undefined) continue;
-      known.add(sentKey(s));
-      const server = c.server;
-      if (server !== null && (server.deleted || validBody(server.body))) rows.push({ id: c.id, rev: server.rev, body: server.deleted ? null : server.body as ShareBody });
-      if (server !== null && server.deleted) conflictTombstones.push([c.id, server.rev]);
-      if (!(s.deleted && server !== null && !server.deleted && validBody(server.body))) done.add(writeKey(s));
-     }
-     r.pending = r.pending.filter(p => !done.has(writeKey(p)));
-     r.sent = (r.sent ?? []).filter(e => !known.has(sentKey(e)));
-     for (const row of rows) {
-      if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
-      r.shares = r.shares.filter(s => s.id !== row.id);
-      delete r.gone[row.id];
-      if (row.body !== null) r.shares = r.shares.concat({ id: row.id, rev: row.rev, body: row.body }).sort((a, b) => a.rev - b.rev);
-      else if (row.rev > 0) r.gone[row.id] = row.rev;
-     }
-     if (conflictTombstones.length > 0) {
-      noteDrops(r, conflictTombstones.map(([id]) => id));
-      const shown = new Set(visible(r).map(s => s.id));
-      for (const [id, rev] of conflictTombstones) {
-       if (!shown.has(id)) {
-        newlyConflicted.push([id, rev]);
-        const prev = conflictDrops.get(id);
-        conflictDrops.set(id, prev === undefined ? rev : Math.max(prev, rev));
-       }
-      }
-     }
-    });
-   } catch (error) {
-    if (newlyConflicted.length > 0) {
-     maskInMemory(acct, newlyConflicted);
-     if (account.current?.accountID === acct) {
-      await Promise.resolve().then(() => tell({ account: acct, shares: visible(read(acct), acct) })).catch(() => {});
+   await update(acct, r => {
+    const sentAs = new Map(sent.map(s => [s.id, s] as const));
+    const done = new Set(refused.map(writeKey)), known = new Set(refused.map(sentKey));
+    const rows: { id: string; rev: number; body: ShareBody | null }[] = [];
+    const conflictTombstones: string[] = [];
+    for (const c of answer?.applied ?? []) {
+     const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
+     if (s === undefined) continue;
+     known.add(sentKey(s));
+     if (s.deleted) appliedDeletes.add(writeKey(s));
+     else done.add(writeKey(s));
+     rows.push({ id: c.id, rev: c.rev, body: s.deleted ? null : s.body! });
+    }
+    for (const c of answer?.conflicts ?? []) {
+     const s = c.collection === "shares" ? sentAs.get(c.id) : undefined;
+     if (s === undefined) continue;
+     known.add(sentKey(s));
+     const server = c.server;
+     if (server !== null && (server.deleted || validBody(server.body))) rows.push({ id: c.id, rev: server.rev, body: server.deleted ? null : server.body as ShareBody });
+     if (server !== null && server.deleted) conflictTombstones.push(c.id);
+     if (!(s.deleted && server !== null && !server.deleted && validBody(server.body))) done.add(writeKey(s));
+    }
+    r.pending = r.pending.filter(p => !done.has(writeKey(p)));
+    r.sent = (r.sent ?? []).filter(e => !known.has(sentKey(e)));
+    const liveSeq = { ...r.liveSeq };
+    for (const row of rows) {
+     if ((r.shares.find(s => s.id === row.id)?.rev ?? r.gone[row.id] ?? -1) >= row.rev) continue;
+     r.shares = r.shares.filter(s => s.id !== row.id);
+     delete r.gone[row.id];
+     if (row.body !== null) {
+      r.shares = r.shares.concat({ id: row.id, rev: row.rev, body: row.body }).sort((a, b) => a.rev - b.rev);
+      liveSeq[row.id] = r.seq!;
+      r.pendingDrop = (r.pendingDrop ?? []).filter(id => id !== row.id);
+     } else if (row.rev > 0) {
+      r.gone[row.id] = row.rev;
+      delete liveSeq[row.id];
      }
     }
-    throw error;
-   }
+    r.liveSeq = liveSeq;
+    if (conflictTombstones.length > 0) {
+     const shown = new Set(visible(r).map(s => s.id));
+     const keep = conflictTombstones.filter(id => !shown.has(id));
+     if (keep.length > 0) r.pendingDrop = [...new Set([...r.pendingDrop ?? [], ...keep])];
+    }
+   });
   };
   let failed: { error: unknown } | null = null;
   /** The writes a push of this round took (writeKey), whether or not its request went: none is
@@ -457,35 +467,38 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   *  immediately detaches and hides the removed share. When appliedDeletes is given (post-push
   *  readback), an applied delete is retired only if the share is absent from the readback; if a
   *  410/full restore brought it back live, the delete stays queued for the next round. */
- async function pullInto(acct: string, signal: AbortSignal, generation: number, appliedDeletes?: Set<string>, conflictDrops?: Map<string, number>): Promise<{ change: SharesChange; newestMs: number | null; unproven?: { error: unknown } }> {
+ async function pullInto(acct: string, signal: AbortSignal, generation: number, appliedDeletes?: Set<string>): Promise<{ change: SharesChange; newestMs: number | null; unproven?: { error: unknown } }> {
   const pulled = await pullSince(account, acct, read(acct).rev, signal, generation);
   const newestMs = pulled.nowMs === null ? null : pulled.newestMs;
-  const { change, owed } = await update(acct, r => {
+  const { change, owed } = await update(acct, (r, baseSeq) => {
    const before = new Set(r.shares.map(s => s.id));
    const live = new Map(pulled.full ? [] : r.shares.map(s => [s.id, s] as const));
    const gone = pulled.full ? {} : r.gone;
+   const liveSeq: Record<string, number> = pulled.full ? {} : { ...r.liveSeq };
    for (const it of [...pulled.items].sort((a, b) => a.rev - b.rev)) {
     if (it.collection !== "shares" || Math.max(live.get(it.id)?.rev ?? -1, gone[it.id] ?? -1) > it.rev) continue;
-    if (it.deleted) { live.delete(it.id); gone[it.id] = it.rev; }
-    else if (validBody(it.body)) { live.set(it.id, { id: it.id, rev: it.rev, body: it.body }); delete gone[it.id]; }
+    if (it.deleted) { live.delete(it.id); gone[it.id] = it.rev; delete liveSeq[it.id]; }
+    else if (validBody(it.body)) { live.set(it.id, { id: it.id, rev: it.rev, body: it.body }); delete gone[it.id]; liveSeq[it.id] = r.seq!; }
    }
    r.rev = pulled.rev;
    r.shares = [...live.values()].sort((a, b) => a.rev - b.rev);
    r.gone = gone;
+   r.liveSeq = liveSeq;
    if (appliedDeletes && appliedDeletes.size > 0) {
     r.pending = r.pending.filter(p => !(p.deleted && appliedDeletes.has(writeKey(p)) && (!pulled.full || !live.has(p.id))));
    }
    const { off, owed } = settleJournal(r, pulled.nowMs, pulled.full, pulled.rev);
    const tombstoned = pulled.items.filter(it => it.collection === "shares" && it.deleted).map(it => it.id);
-   const candidates = [...before, ...tombstoned, ...off, ...(conflictDrops ? conflictDrops.keys() : [])];
+   const pendingCandidates = r.pendingDrop ?? [];
+   r.pendingDrop = [];
+   const candidates = [...before, ...tombstoned, ...off, ...pendingCandidates];
    // A share left here stays until its grant is gone, live on the account or not (its delete
    // not taken yet).
    noteDrops(r, candidates);
    const liveWithoutDelete = [...live.keys()].filter(id => !r.pending.some(p => p.deleted && p.id === id));
    unmaskInMemory(acct, liveWithoutDelete);
    const shown = new Set(visible(r).map(s => s.id));
-   const maskRevOf = (id: string) => Math.max(r.gone[id] ?? 0, conflictDrops?.get(id) ?? 0, r.rev);
-   maskInMemory(acct, [...new Set(candidates)].filter(id => !shown.has(id)).map(id => [id, maskRevOf(id)] as [string, number]));
+   maskInMemory(acct, [...new Set(candidates)].filter(id => !shown.has(id)).map(id => [id, baseSeq] as [string, number]));
    return { change: { account: acct, shares: visible(r, acct) }, owed };
   });
   if (owed.length === 0) return { change, newestMs };
@@ -501,7 +514,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   // Applied only while the round is still this account's, in the session it began in.
   if (proofs.size === 0 || account.generation !== generation || account.current?.accountID !== acct) return unproven === undefined ? { change, newestMs } : { change, newestMs, unproven };
   const answered = new Map(owed.map(o => [o.key, proofs.get(o.from)] as const));
-  const proven = await update(acct, r => {
+  const proven = await update(acct, (r, baseSeq) => {
    const off: string[] = [];
    r.sent = (r.sent ?? []).filter(e => {
     const held = answered.get(sentKey(e));
@@ -511,7 +524,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    });
    noteDrops(r, off);
    const shown = new Set(visible(r).map(s => s.id));
-   maskInMemory(acct, off.filter(id => !shown.has(id)).map(id => [id, Math.max(r.gone[id] ?? 0, r.rev)] as [string, number]));
+   maskInMemory(acct, off.filter(id => !shown.has(id)).map(id => [id, baseSeq] as [string, number]));
    return { account: acct, shares: visible(r, acct) };
   });
   return unproven === undefined ? { change: proven, newestMs } : { change: proven, newestMs, unproven };
@@ -529,33 +542,31 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   const generation = account.generation;
   const writes = (r: SharesRecord) => r.pending.length > 0 || (r.sent ?? []).length > 0;
   let unproven: { error: unknown } | undefined;
-  const appliedDeletes = new Set<string>(), conflictDrops = new Map<string, number>();
+  const appliedDeletes = new Set<string>();
+  let pushError: { error: unknown } | null = null;
   if (writes(read(acct))) {
    const first = await pullInto(acct, signal, generation);
    unproven = first.unproven;
    if (first.newestMs === null) console.warn("account sync: the service gives no now_ms; a share write of unknown outcome can't be fenced (themartianapp/herdrup#826)");
-   await pushQueue(acct, signal, generation, first.newestMs === null ? 0 : first.newestMs + NOT_AFTER_MS, dispatched, refusedAlone, appliedDeletes, conflictDrops);
-  }
-  let pulled: { change: SharesChange; newestMs: number | null; unproven?: { error: unknown } };
-  try {
-   pulled = await pullInto(acct, signal, generation, appliedDeletes, conflictDrops);
-  } catch (error) {
-   // Readback failed after a conflict tombstone: apply in-memory mask for any candidate not
-   // already superseded by a newer live row or new put.
-   if (conflictDrops.size > 0) {
-    let cur: SharesRecord | null = null;
-    try { cur = read(acct); } catch { /* ignore unreadable storage */ }
-    const toMask: [string, number][] = [];
-    for (const [id, rev] of conflictDrops) {
-     if (cur !== null && cur.pending.some(p => p.body && p.id === id)) continue;
-     const live = cur?.shares.find(s => s.id === id);
-     if (live !== undefined && live.rev > rev && !cur!.pending.some(p => p.deleted && p.id === id)) continue;
-     toMask.push([id, rev]);
-    }
-    maskInMemory(acct, toMask);
+   try {
+    await pushQueue(acct, signal, generation, first.newestMs === null ? 0 : first.newestMs + NOT_AFTER_MS, dispatched, refusedAlone, appliedDeletes);
+   } catch (error) {
+    pushError = { error };
    }
-   throw error;
   }
+  if (pushError !== null) {
+   // Even when a later batch fails (e.g. 429), adjudicate any earlier conflict candidates or
+   // applied deletes before reconciliation runs.
+   if (!signal.aborted && account.generation === generation) {
+    let needsReadback = appliedDeletes.size > 0;
+    try { needsReadback ||= (read(acct).pendingDrop?.length ?? 0) > 0; } catch { /* ignore */ }
+    if (needsReadback) {
+     try { await pullInto(acct, signal, generation, appliedDeletes); } catch { /* pendingDrop stays durable for next sync */ }
+    }
+   }
+   throw pushError.error;
+  }
+  const pulled = await pullInto(acct, signal, generation, appliedDeletes);
   unproven ??= pulled.unproven;
   const r = read(acct), queued = new Set(r.pending.map(p => p.id));
   for (const p of r.pending) if (p.deleted && appliedDeletes.has(writeKey(p))) dispatched.delete(writeKey(p));
@@ -628,6 +639,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   // service ever held the share, so whether or not a tombstone of it comes.
   if (change.body) {
    r.drop = (r.drop ?? []).filter(id => id !== change.id);
+   r.pendingDrop = (r.pendingDrop ?? []).filter(id => id !== change.id);
    unmaskInMemory(acct, [change.id]);
    pendingLeaveAccts.delete(change.id);
   } else {

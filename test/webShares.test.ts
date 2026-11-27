@@ -947,19 +947,25 @@ test("a conflict tombstone preserves the grant-removal obligation across a 410 f
  w.failPush = true;
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
- // Service already holds a tombstone for id, so the put conflicts with deleted=true.
+ // Inject tombstone at POST dispatch so the put hits a genuine server conflict (deleted=true).
  w.failPush = false;
- w.seedTombstone(id, "shares");
  w.serverNow += 121_000;
- // Hold IndexedDB removal so we can observe r.drop survive readback failure + 410 full pull.
+ let conflictPushed = false;
+ w.onPush = () => {
+  if (!conflictPushed) { conflictPushed = true; w.seedTombstone(id, "shares"); }
+ };
+ // Hold post-push readback so we observe pendingDrop persisted separately from actionable r.drop.
  const origRemove = mac.grants.remove.bind(mac.grants);
  mac.grants.remove = async () => { throw new Error("transient idb error"); };
  w.onPull = () => { w.onPull = () => { w.failPullSince = 0; }; };
  await mac.shares.sync().catch(() => {});
- const afterConflict = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { drop?: string[] };
- expect(afterConflict.drop ?? []).toContain(id);
+ expect(conflictPushed).toBe(true);
+ const afterConflict = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { drop?: string[]; pendingDrop?: string[] };
+ expect(afterConflict.drop ?? []).toEqual([]);
+ expect(afterConflict.pendingDrop ?? []).toContain(id);
  expect((await mac.grants.list()).map(g => `${g.endpoint.hostID}/${g.guestID}`)).toEqual([id]);
  // Now prune tombstone (floor <= rev so ?since=0 succeeds), trigger 410/full pull, and let IndexedDB succeed -> grant is dropped, never stranded.
+ w.onPush = null;
  mac.grants.remove = origRemove;
  w.failPullSince = null;
  w.seedPrompt("p-after-conflict", {});
@@ -1000,30 +1006,50 @@ test("Leave stays queued when a 410 full readback restores the share live, and t
  expect(journalOf(mac.storage).pending).toEqual([]);
 }, CONNECTS_LIMIT_MS);
 
-test("reconciliation revalidates under the shares lock so a newer live revision from another tab keeps its grant", async () => {
+test("reconciliation revalidates under the shares lock across 410 lower-revision restores and failed 410 commits", async () => {
  const w = worker(), h = host();
  const mac = await browser(w);
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
- // Tab A observes deletion at rev 2 (creating a tab-local in-memory mask) while IndexedDB fails
- // transiently so the grant is still present; Tab B then commits a newer live revision (rev 3)
- // with no drop marker before Tab A's reconciliation retries dropLocked.
+ // Bump service history so the local live row sits at rev 3.
+ w.seedPrompt("bump-1", {});
+ w.seedShare(id, liveBody);
+ await mac.shares.sync();
+ // Part 1: 410/full pull removes the share at rev 1 while localStorage throws QuotaExceededError.
+ // The old committed live row is at rev 3 (> 1), yet the mask must STILL hold (hide + refuse).
+ w.reset();
+ w.seedPrompt("reset-only", {});
+ w.prune(w.rev);
+ const origSet = mac.storage.setItem.bind(mac.storage);
  const origRemove = mac.grants.remove.bind(mac.grants);
+ let failOnce = true;
+ mac.storage.setItem = (k, v) => {
+  if (failOnce && k === SHARES_KEY_PREFIX + "acct") { failOnce = false; throw new DOMException("quota", "QuotaExceededError"); }
+  origSet(k, v);
+ };
+ // Hold IndexedDB removal so the grant remains present for both the failed-410 refusal checks
+ // and Part 2's two-tab lower-revision restore check.
  mac.grants.remove = async () => { throw new Error("transient idb error"); };
- w.seedTombstone(id, "shares"); // rev 2
  await mac.shares.sync().catch(() => {});
- expect(mac.shares.isMasked("acct", id)).toBe(true);
- // Now Tab B commits live rev 3 with no drop marker.
+ mac.storage.setItem = origSet;
  mac.grants.remove = origRemove;
- const rec = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { rev: number; shares: { id: string; rev: number; body: object }[]; gone: Record<string, number>; pending: unknown[]; drop?: string[] };
- rec.rev = 3;
- rec.shares = [{ id, rev: 3, body: liveBody }];
+ expect(mac.shares.isMasked("acct", id)).toBe(true);
+ expect(mac.shares.list()).toEqual([]);
+ expect(await mac.desk.sharedConnections()).toEqual([]);
+ await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+ // Part 2: Tab B completes a 410/full pull restoring the share live at rev 1 (lower than old rev 3!),
+ // advancing the monotonic commit seq and liveSeq[id]. Tab A's stale dropLocked must see the newer
+ // committed live observation, clear its stale mask, keep the grant, and list the share again.
+ const rec = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { rev: number; seq?: number; liveSeq?: Record<string, number>; shares: { id: string; rev: number; body: object }[]; gone: Record<string, number>; pending: unknown[]; drop?: string[] };
+ const nextSeq = (rec.seq ?? 0) + 1;
+ rec.rev = 1;
+ rec.seq = nextSeq;
+ rec.liveSeq = { [id]: nextSeq };
+ rec.shares = [{ id, rev: 1, body: liveBody }];
  rec.gone = {};
  rec.drop = [];
- mac.storage.setItem(SHARES_KEY_PREFIX + "acct", JSON.stringify(rec));
- // Tab A's stale reconciliation / dropLocked must see live rev 3 > mask rev 2, clear its stale mask,
- // keep the grant, and list the share again.
+ origSet(SHARES_KEY_PREFIX + "acct", JSON.stringify(rec));
  let removed = false;
  await mac.shares.dropLocked("acct", id, async () => { removed = true; await origRemove(id); });
  expect(removed).toBe(false);
@@ -1044,25 +1070,37 @@ test("a conflict tombstone does not disconnect a live guest when post-push readb
   node_pub: Buffer.from(access.endpoint.hostPublicKey).toString("base64url"),
   guest_id: access.guestID,
  };
- // Guest is actively connected.
- expect((await mac.desk.state()).guest).not.toBeNull();
- // Push hits a tombstone conflict (rev 2), then same-round readback returns a newer live row (rev 3).
+ // Actually connect the guest and wait until the handshake reaches phase === "connected".
+ await mac.desk.connectGuest(id);
+ for (let i = 0; i < 100 && (await mac.desk.state()).phase !== "connected"; i++) await new Promise(r => setTimeout(r, 10));
+ expect((await mac.desk.state()).phase).toBe("connected");
+ // Inject tombstone at POST dispatch so the put hits a genuine server conflict (deleted=true),
+ // and have the post-push readback return a newer live row. Also check mid-round that r.drop is
+ // still empty so another tab cannot prematurely remove the grant before readback.
  w.failPush = false;
- w.seedTombstone(id, "shares");
  w.serverNow += 121_000;
+ let posts = 0;
+ let dropDuringReadback: string[] | undefined;
+ w.onPush = () => {
+  posts++;
+  if (posts === 1) w.seedTombstone(id, "shares");
+ };
  w.onPull = () => {
   w.onPull = () => {
+   dropDuringReadback = mac.shares.dropping("acct");
    w.seedShare(id, liveBody);
   };
  };
  await mac.shares.sync();
- // Guest was NEVER disconnected and still holds both grant and account listing.
- expect((await mac.desk.state()).guest).not.toBeNull();
+ expect(posts).toBe(1);
+ expect(dropDuringReadback).toEqual([]);
+ // Guest stayed connected throughout and still holds both grant and account listing.
+ expect((await mac.desk.state()).phase).toBe("connected");
  expect(await mac.grants.get(id)).toBeDefined();
  expect(mac.shares.list().map(s => s.id)).toEqual([id]);
 }, CONNECTS_LIMIT_MS);
 
-test("firstBatch lazily stops before examining entry 101 of a 100+1 pending queue", async () => {
+test("firstBatch lazily stops before examining entry 101 of a 101-item pending queue", async () => {
  const { firstBatch } = await import("../src/web/account");
  let examined = 0;
  function* gen() {
