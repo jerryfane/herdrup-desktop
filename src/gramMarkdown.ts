@@ -66,10 +66,13 @@ gramMarked.use({
       const label = checked ? "Checked" : "Unchecked";
       return `<span class="gcheck ${state}" aria-label="${label}">${checked ? "☑" : "☐"}</span> `;
     },
-    // Render unsupported raw HTML syntax (e.g. `<environment>`) literally instead of letting
-    // DOMPurify drop unknown tags and erase message text.
-    html({ raw }: Tokens.HTML | Tokens.Tag) {
-      return escapeHTML(raw);
+    // Render unsupported raw HTML syntax (e.g. `<environment>` or raw `<pre><code>...`) literally
+    // instead of letting DOMPurify drop unknown tags or emit stray DOM `<pre>` elements that
+    // shift nested Markdown code-block matching (#645, herdrup#901).
+    html({ raw, block }: Tokens.HTML | Tokens.Tag) {
+      if (!block) return escapeHTML(raw);
+      const trimmed = raw.trimEnd();
+      return trimmed ? `<p>${escapeHTML(trimmed)}</p>\n` : "";
     },
     // Keep remote images disabled without turning image-only Markdown messages into empty
     // bubbles: preserve the label and destination as a safe link or plain text.

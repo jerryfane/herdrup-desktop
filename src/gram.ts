@@ -855,13 +855,12 @@ function renderFeed(visible: GramMessage[], setup: boolean) {
       r.append(el("span", "gunread-line"), el("span", "gunread-text", `${entry.unreadCount} unread`), el("span", "gunread-line"));
       slot.append(r);
     }
-    const blocks = parseGramMessage(m.text);
-    const hasCode = blocks.some((b) => b.kind === "code");
-    const row = messageRow(m, blocks, entry.startsGroup, entry.endsGroup);
+    const parsed = parseRowMessage(m.text);
+    const row = messageRow(m, parsed, entry.startsGroup, entry.endsGroup);
     row.style.marginTop = `${gaps.row}px`;
     slot.append(row);
     if (cached) feedObserver?.unobserve(cached.node);
-    rowNodes.set(m.id, { sig: sigOf(hasCode), node: slot, hasCode });
+    rowNodes.set(m.id, { sig: sigOf(parsed.hasCode), node: slot, hasCode: parsed.hasCode });
     feedObserver?.observe(slot);
     nodes.push(slot);
   });
@@ -1057,12 +1056,11 @@ function renderSaved() {
       nodes.push(cached.node);
       continue;
     }
-    const blocks = parseGramMessage(s.text);
-    const hasCode = blocks.some((b) => b.kind === "code");
+    const parsed = parseRowMessage(s.text);
     const slot = el("div", "gslot saved");
     slot.dataset.id = s.id;
-    slot.append(savedRow(s, blocks));
-    rowNodes.set(s.id, { sig: sigOf(hasCode), node: slot, hasCode });
+    slot.append(savedRow(s, parsed));
+    rowNodes.set(s.id, { sig: sigOf(parsed.hasCode), node: slot, hasCode: parsed.hasCode });
     nodes.push(slot);
   }
   for (const id of rowNodes.keys()) if (!seen.has(id)) rowNodes.delete(id);
@@ -1102,7 +1100,18 @@ function revealOlderSaved() {
 
 // ---- Rows (GramRow, SavedGramRow / GramLoneMessage) ----
 
-function messageRow(m: GramMessage, blocks: GramMarkdownBlock[], startsGroup: boolean, endsGroup: boolean): HTMLElement {
+interface ParsedRowMessage {
+  blocks: GramMarkdownBlock[];
+  hasCode: boolean;
+}
+
+function parseRowMessage(text: string): ParsedRowMessage {
+  const blocks = parseGramMessage(text);
+  return { blocks, hasCode: blocks.some((b) => b.kind === "code") };
+}
+
+function messageRow(m: GramMessage, parsed: ParsedRowMessage, startsGroup: boolean, endsGroup: boolean): HTMLElement {
+  const { blocks } = parsed;
   const mine = !m.fromAgent;
   const row = el("div", "grow " + (mine ? "mine" : "theirs") + (m.saved ? " saved" : ""));
   if (startsGroup && !mine) row.append(senderLine(m));
@@ -1119,7 +1128,7 @@ function messageRow(m: GramMessage, blocks: GramMarkdownBlock[], startsGroup: bo
       void Desk.gramMenu(m.id, items);
     });
   if (hasText) {
-    const part = textPart(m.id, blocks, mine, hasCard, (embedded) => fileCardFor(m, embedded));
+    const part = textPart(m.id, parsed, mine, hasCard, (embedded) => fileCardFor(m, embedded));
     if (model.showsTail({ endsGroup, hasText: blocks.length > 0, hasCard, hasImage: !!imageFile })) part.append(tail(mine));
     if (m.saved) part.append(savedBadge());
     menu(part);
@@ -1158,7 +1167,8 @@ function age(ms: number): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
-function savedRow(s: SavedGram, blocks: GramMarkdownBlock[]): HTMLElement {
+function savedRow(s: SavedGram, parsed: ParsedRowMessage): HTMLElement {
+  const { blocks } = parsed;
   const mine = !s.fromAgent;
   const row = el("div", "grow lone " + (mine ? "mine" : "theirs"));
   const head = el("div", "glone-head");
@@ -1171,7 +1181,7 @@ function savedRow(s: SavedGram, blocks: GramMarkdownBlock[]): HTMLElement {
   const hasCard = !!s.file || !!s.expiredFile;
   if (blocks.length > 0 || hasCard) {
     const parts = el("div", "gparts");
-    const part = textPart(s.id, blocks, mine, hasCard, (embedded) =>
+    const part = textPart(s.id, parsed, mine, hasCard, (embedded) =>
       s.file
         ? fileCard(s.id, s.file.name, s.file.mime, sizeLabel(s.file.size), embedded)
         : expiredCard(s.expiredFile!.name, sizeLabel(s.expiredFile!.size), embedded),
@@ -1206,13 +1216,13 @@ function fileCardFor(m: GramMessage, embedded: boolean): HTMLElement | null {
  * a file; the bare file card for a file with no text. */
 function textPart(
   id: string,
-  blocks: GramMarkdownBlock[],
+  parsed: ParsedRowMessage,
   mine: boolean,
   hasCard: boolean,
   cardOf: (embedded: boolean) => HTMLElement | null,
 ): HTMLElement {
+  const { blocks, hasCode } = parsed;
   const part = el("div", "gpart");
-  const hasCode = blocks.some((b) => b.kind === "code");
   const hasTable = blocks.some((b) => b.kind === "markdown" && b.hasTable);
   const fill = mine ? "var(--gram-out-fill)" : "var(--color-surface-raised)";
   if (blocks.length === 0 && hasCard) {

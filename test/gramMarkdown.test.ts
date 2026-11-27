@@ -158,4 +158,15 @@ test("raw angle-bracket placeholders and Markdown images preserve readable text 
     expect(imageOnly[0]!.html).not.toContain("<img");
     expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png">Chart</a>');
   }
+
+  // Raw HTML `<pre>` before a nested Markdown fence stays literal escaped text so it cannot
+  // emit an extra DOM `<pre>` and shift `block.codes` onto the wrong block (#645).
+  const rawPreBeforeFence = parseGramMessage("<pre><code>FIRST</code></pre>\n\n> ```sh\n> SECOND\n>\n> ```");
+  expect(rawPreBeforeFence).toHaveLength(1);
+  expect(rawPreBeforeFence[0]!.kind).toBe("markdown");
+  if (rawPreBeforeFence[0]!.kind === "markdown") {
+    expect(rawPreBeforeFence[0]!.html).toContain("<p>&lt;pre&gt;&lt;code&gt;FIRST&lt;/code&gt;&lt;/pre&gt;</p>");
+    expect((rawPreBeforeFence[0]!.html.match(/<pre>/g) ?? []).length).toBe(1);
+    expect(rawPreBeforeFence[0]!.codes).toEqual([{ code: "SECOND\n", language: "sh" }]);
+  }
 });
