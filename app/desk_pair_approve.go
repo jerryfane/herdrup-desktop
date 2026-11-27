@@ -16,10 +16,12 @@ package main
 // one from the page.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -247,9 +249,13 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 		pong, _ := client.Ping(ctx)
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
-	hostKey, err := d.verifiedHostKey(c)
+	hostKey, err := d.verifiedHostKey(ctx, c)
 	if err != nil {
-		return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
+		var unread *pinsUnreadError
+		if errors.Is(err, errHostKeyType) || errors.Is(err, errNotPinned) || errors.As(err, &unread) {
+			return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
+		}
+		return PairProbe{State: "unreachable"}, nil
 	}
 	if err := pairFits([]pairRow{{entry: pairEntry(m), hostKey: hostKey}}); err != nil {
 		return PairProbe{State: "unsendable", Reason: pairHeldReason(err)}, nil
@@ -306,12 +312,12 @@ func (e *pinsUnreadError) Unwrap() error { return e.err }
 // shows the key this computer trusts. The pin holds a fingerprint only:
 // when that session's key isn't the pinned one (a host pinned by its
 // ed25519 key or certificate that offers an ECDSA one since, which SSH's
-// defaults prefer), one session per type in pairSearchTypes looks for it,
-// and the first whose key or certificate is the pinned one is used. A
-// session failing otherwise than on its host key ends the search with its
-// error; none found, the host key changed. A machine without a pin is
-// errNoPin; nothing is ever pinned. The key is sent if the new device
-// checks its type (verifiedHostKey).
+// defaults prefer), one session per plain and certificate type in
+// pairHostKeyTypes looks for it, and the first whose key or certificate
+// is the pinned one is used. A session failing otherwise than on its
+// host key ends the search with its error; none found, the host key
+// changed. A machine without a pin is errNoPin; nothing is ever pinned.
+// The key is sent if the new device checks its type (verifiedHostKey).
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
 	if c := d.liveBridge(m); c != nil {
 		if key, addr := c.HostKey(); key != nil {
@@ -330,22 +336,24 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 	case err != nil && pins.missing.Load():
 		return nil, nil, errNoPin
 	case errors.As(err, &changed):
-		for _, algo := range pairSearchTypes {
-			tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
-			var other *bridge.HostKeyChangedError
-			var none *ssh.AlgorithmNegotiationError
-			switch {
-			case terr == nil:
-				return tc, tdone, nil
-			case errors.As(terr, &other):
-				continue
-			case errors.As(terr, &none) && none.What == "host key":
-				continue
+		for _, kt := range pairHostKeyTypes {
+			for _, algo := range [...]string{kt.plain, kt.cert} {
+				tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
+				var other *bridge.HostKeyChangedError
+				var none *ssh.AlgorithmNegotiationError
+				switch {
+				case terr == nil:
+					return tc, tdone, nil
+				case errors.As(terr, &other):
+					continue
+				case errors.As(terr, &none) && none.What == "host key":
+					continue
+				}
+				// The key was the pinned one and the session failed after
+				// (its sign-in, say), or it failed on something else (its key
+				// exchange): it says why.
+				return nil, nil, terr
 			}
-			// The key was the pinned one and the session failed after
-			// (its sign-in, say), or it failed on something else (its key
-			// exchange): it says why.
-			return nil, nil, terr
 		}
 	}
 	return c, done, err
@@ -368,19 +376,29 @@ func (d *Desk) pinnedKey(key ssh.PublicKey, addr string) error {
 	return nil
 }
 
-// pairHostKeyTypes are the host keys the new device checks (pair-v1
-// host_key).
-var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
+// pairHostKeyType pairs one plain host key algorithm the new device checks
+// (pair-v1 host_key) with its OpenSSH host certificate algorithm. Keeping
+// both in one list prevents wire eligibility (verifiedHostKey) and pin
+// fallback (pairBridge) from diverging.
+type pairHostKeyType struct {
+	plain string
+	cert  string
+}
 
-// pairSearchTypes are what pairBridge negotiates, one session each, to
-// find the pinned host key: pairHostKeyTypes, each followed by its
-// certificate, as a pin may hold a certificate's fingerprint (SSH's
-// defaults negotiate one first). The certified key is what is sent.
-var pairSearchTypes = []string{
-	ssh.KeyAlgoED25519, ssh.CertAlgoED25519v01,
-	ssh.KeyAlgoECDSA256, ssh.CertAlgoECDSA256v01,
-	ssh.KeyAlgoECDSA384, ssh.CertAlgoECDSA384v01,
-	ssh.KeyAlgoECDSA521, ssh.CertAlgoECDSA521v01,
+var pairHostKeyTypes = []pairHostKeyType{
+	{plain: ssh.KeyAlgoED25519, cert: ssh.CertAlgoED25519v01},
+	{plain: ssh.KeyAlgoECDSA256, cert: ssh.CertAlgoECDSA256v01},
+	{plain: ssh.KeyAlgoECDSA384, cert: ssh.CertAlgoECDSA384v01},
+	{plain: ssh.KeyAlgoECDSA521, cert: ssh.CertAlgoECDSA521v01},
+}
+
+func pairHostKeySupported(algo string) bool {
+	for _, kt := range pairHostKeyTypes {
+		if kt.plain == algo {
+			return true
+		}
+	}
+	return false
 }
 
 // errHostKeyType is a machine whose verified host key the new device
@@ -1008,12 +1026,14 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
-	hostKey, err := d.verifiedHostKey(c)
+	hostKey, err := d.verifiedHostKey(ctx, c)
 	switch {
 	case errors.Is(err, errHostKeyType):
 		return hold(err.Error())
-	case err != nil:
+	case errors.Is(err, errNotPinned):
 		return fail(err.Error(), false)
+	case err != nil:
+		return fail(pairReason(ctx, err))
 	}
 	sized := slices.Clone(rows)
 	sized[i].hostKey = hostKey
@@ -1034,13 +1054,70 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	return row
 }
 
+// errPlainKeyVerified ends probePlainHostKey cleanly once SSH key exchange
+// and host-key signature verification succeed, before user authentication.
+var errPlainKeyVerified = errors.New("plain host key verified")
+
+// probePlainHostKey verifies that addr offers plain as a plain (non-cert)
+// SSH host key and proves possession during key exchange. A host that only
+// offers certificates, or offers a different plain key of that type, gets
+// errHostKeyType; transport or context errors are returned as themselves.
+func probePlainHostKey(ctx context.Context, addr string, plain ssh.PublicKey) error {
+	var d net.Dialer
+	tcp, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer tcp.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tcp.SetDeadline(deadline)
+	}
+	stop := context.AfterFunc(ctx, func() { _ = tcp.SetDeadline(time.Now()) })
+	defer stop()
+
+	want := plain.Marshal()
+	var matched bool
+	sc, _, _, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
+		User:              "herdrup-probe",
+		HostKeyAlgorithms: []string{plain.Type()},
+		HostKeyCallback: func(_ string, _ net.Addr, got ssh.PublicKey) error {
+			if _, isCert := got.(*ssh.Certificate); isCert || got.Type() != plain.Type() || !bytes.Equal(got.Marshal(), want) {
+				return errHostKeyType
+			}
+			matched = true
+			return nil
+		},
+		AuthCallback: func(*ssh.ClientAuthContext) (ssh.AuthMethod, error) {
+			return nil, errPlainKeyVerified
+		},
+	})
+	if sc != nil {
+		_ = sc.Close()
+	}
+	if err == nil && matched {
+		return nil
+	}
+	if errors.Is(err, errPlainKeyVerified) && matched {
+		return nil
+	}
+	if errors.Is(err, errHostKeyType) {
+		return errHostKeyType
+	}
+	var neg *ssh.AlgorithmNegotiationError
+	if errors.As(err, &neg) && neg.What == "host key" {
+		return errHostKeyType
+	}
+	return err
+}
+
 // verifiedHostKey is the host key c's first handshake verified, as an
 // OpenSSH line with no comment, once it matches the pin kept here under
 // the address it dialled. The list carries plain keys the new device
 // checks only (pairHostKeyTypes): for a host certificate it is the key
-// the certificate certifies, which is what the new device pins (it never
-// negotiates certificates); errHostKeyType for any other key.
-func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
+// the certificate certifies, after verifying addr actually offers that
+// exact plain key (the new device never negotiates certificates);
+// errHostKeyType for any other key or a certificate-only host.
+func (d *Desk) verifiedHostKey(ctx context.Context, c *bridge.Client) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
 		return "", errors.New("no host key from this connection")
@@ -1050,8 +1127,13 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	}
 	if cert, isCert := key.(*ssh.Certificate); isCert {
 		key = cert.Key
-	}
-	if key == nil || !slices.Contains(pairHostKeyTypes, key.Type()) {
+		if key == nil || !pairHostKeySupported(key.Type()) {
+			return "", errHostKeyType
+		}
+		if err := probePlainHostKey(ctx, addr, key); err != nil {
+			return "", err
+		}
+	} else if !pairHostKeySupported(key.Type()) {
 		return "", errHostKeyType
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil

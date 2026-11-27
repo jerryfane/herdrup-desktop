@@ -994,8 +994,9 @@ func TestPairApproveSizesTheListAgainBeforeEachKey(t *testing.T) {
 func TestPairApproveSendsACertificateHostsPlainKey(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
-	cert := certHostKey(t, 13000)
-	w.keyMachineWith(t, "cert", cert, true, true)
+	host := ed25519HostKey(t)
+	cert := certOf(t, host, 13000)
+	w.keyMachineWith(t, "cert", cert, true, true, host)
 	plain := cert.PublicKey().(*ssh.Certificate).Key
 	id := w.start(t)
 	w.typeCode(t, id)
@@ -1206,18 +1207,82 @@ func TestPairApproveFindsThePinnedCertificateOfAHostThatGrewAnother(t *testing.T
 }
 
 // A host pinned here by its ECDSA certificate that offers an RSA
-// certificate too (SSH's defaults prefer it), and no plain key: the
-// search passes over the types it doesn't offer and finds the pinned
-// certificate, whose ECDSA key is sent.
+// certificate too (SSH's defaults prefer it) alongside its plain ECDSA
+// key: the search passes over the types it doesn't offer, finds the
+// pinned certificate, verifies the host also offers the certified plain
+// key, and sends that plain ECDSA key.
 func TestPairApproveFindsAPinnedECDSACertificate(t *testing.T) {
 	w := newPairWorld(t)
 	ec := ecdsaHostKey(t)
-	w.keyMachineWith(t, "eccert", certOf(t, ec, 8), true, true, certOf(t, rsaHostKey(t), 8))
+	w.keyMachineWith(t, "eccert", certOf(t, ec, 8), true, true, ec, certOf(t, rsaHostKey(t), 8))
 	if got := w.approveAlone(t, "eccert"); got != hostKeyLine(ec.PublicKey()) {
 		t.Fatalf("sent host key %q, want the pinned certificate's ECDSA key", got)
 	}
 	if n := w.machines["eccert"].adds.Load(); n != 1 {
 		t.Fatalf("%d adds on the host, want 1", n)
+	}
+}
+
+// A certificate-only host (whether matched directly or via fallback
+// after another certificate became preferred) is held out before any
+// key is added: the new device negotiates plain host keys only and
+// could never connect with the certified plain key if the host does not
+// offer it.
+func TestPairApproveHoldsOutACertificateOnlyHost(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		extra func(t *testing.T) []ssh.Signer
+	}{
+		{name: "direct", extra: func(t *testing.T) []ssh.Signer { return nil }},
+		{name: "fallback", extra: func(t *testing.T) []ssh.Signer { return []ssh.Signer{certOf(t, rsaHostKey(t), 8)} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newPairWorld(t)
+			ctx := context.Background()
+			ec := ecdsaHostKey(t)
+			w.keyMachineWith(t, "certonly", certOf(t, ec, 8), true, true, tc.extra(t)...)
+			id := w.start(t)
+			w.typeCode(t, id)
+			if p, err := w.d.PairApproveProbe(ctx, id, w.ids["certonly"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
+				t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errHostKeyType.Error())
+			}
+			res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["certonly"]})
+			rows := rowsByLabel(res)
+			if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded ||
+				rows["certonly"].Status != account.PairFailed || rows["certonly"].Reason != errHostKeyType.Error() || rows["certonly"].Retryable {
+				t.Fatalf("approve %+v, %v", res, err)
+			}
+			if n := w.machines["certonly"].adds.Load(); n != 0 {
+				t.Fatalf("%d adds on the certificate-only host, want 0", n)
+			}
+			if env := w.delivered(t).Envelope; len(env.Machines) != 1 || env.Machines[0].Nickname != "studio" {
+				t.Fatalf("envelope %+v", env)
+			}
+		})
+	}
+}
+
+// A host pinned by its ECDSA certificate that offers a different plain
+// ECDSA key than the certified one is held out before any key is added:
+// sending the certified plain key would fail the requester's pin check.
+func TestPairApproveHoldsOutACertificateHostWithDifferentPlainKey(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	certified := ecdsaHostKey(t)
+	otherPlain := ecdsaHostKey(t)
+	w.keyMachineWith(t, "mismatch", certOf(t, certified, 8), true, true, otherPlain)
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["mismatch"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
+		t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errHostKeyType.Error())
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["mismatch"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["mismatch"].Status != account.PairFailed || rows["mismatch"].Reason != errHostKeyType.Error() || rows["mismatch"].Retryable {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["mismatch"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on the mismatched plain-key host, want 0", n)
 	}
 }
 
