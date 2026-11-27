@@ -44,6 +44,8 @@ export interface TopicsHost {
  guestSelf: string;
  /** The agent's name as its row shows it: "SUGGESTED BY <NAME>". */
  agentName: string;
+ /** The pane's agent harness ("omp", "agy", etc.), used as fallback prefix on the model footer. */
+ harness?: string;
  guest: boolean;
  /** The topics the agent's session file holds: the list until the agent answers. */
  topicSessions: readonly TopicSession[];
@@ -876,7 +878,7 @@ class TopicChat {
   const agents = page?.subagents ?? [];
   if (agents.length) nodes.push(this.host.renderSubagents(agents, this.messages));
   const working = topicWorking(this.topic, page);
-  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model, "omp")];
+  const tail = [this.tail.working(working, page?.working?.intent || ""), this.tail.recap(page?.recap, !working && !this.outgoing.length), this.tail.model(page?.model, this.host.harness)];
   for (const node of tail) if (node) nodes.push(node);
   // The tail's rows stay attached, so the dots' animation runs on across polls.
   placeRows(this.messages, [this.earlier, ...nodes]);

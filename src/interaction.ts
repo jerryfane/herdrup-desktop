@@ -18,7 +18,7 @@ import { ConversationColumn } from "./conversationColumn";
 import { ComposerDictation } from "./dictation";
 import { markdown, readableMarkdown } from "./chatMarkdown";
 import { bytes, chatDayLabel, chatDuration, chatReceipt, currentPlan, cursorExpired, groupTranscript, mergeOlder, mergeTranscript, planDone, planWindow, readLive, remainingDraft, rowShown, runningCommandPreview, subagentRow, subagentsSummary, TerminalSequence } from "./interactionModel";
-import { ChatTail, placeRows } from "./chatTail";
+import { ChatTail, placeRows, workingDots } from "./chatTail";
 import { relayRow } from "./chatRelay";
 import { composerDrafts, unsentLine, type ComposerView, type DraftSend, type PaneDraft } from "./composerDraft";
 import { canAnswer, chooser, guestQuestion, promptByline, refusesResize, typesInTerminal, waitingForOwner, withheldFromCaller } from "./guestAnswersModel";
@@ -931,6 +931,7 @@ class Detail {
  }
  updateStatus(group: string, label: string, since?: number) {
   clearInterval(this.statusTimer);
+  const wasLive = this.chatLive();
   this.shownStatus = [group, label, since];
   if (this.guestPaused) since = undefined;
   // NEEDS <OWNER> while the question waits for the owner (GuestPaneView.statusPill, GuestPaneView.swift:411-413).
@@ -951,7 +952,7 @@ class Detail {
   if (since !== undefined) this.statusTimer = window.setInterval(updateAge, 1000);
   // The working row and the recap follow the board status (ChatView's agentStatus) between
   // polls, failed ones included: each redraws when whether it shows no longer matches the page.
-  if (this.chat && this.mode === "chat" && (!!this.renderWorking() !== this.tail.shows().working || !!this.renderRecap() !== this.tail.shows().recap)) this.drawChat(false);
+  if (this.chat && this.mode === "chat" && (wasLive !== this.chatLive() || !!this.renderWorking() !== this.tail.shows().working || !!this.renderRecap() !== this.tail.shows().recap)) this.drawChat(false);
  }
  toggleFind(open = !this.findOpen) {
   // A pending up-arrow jump stops when Find opens or closes (herdrup #637, review F2).
@@ -983,7 +984,9 @@ class Detail {
    if (query) {
     const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
     for (const row of this.transcript.children) {
-     const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+     const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => (n.parentElement?.closest(".chat-running-steps") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+     });
      const nodes: { node: Text; start: number; end: number }[] = [];
      let text = "", node: Node | null;
      while ((node = walker.nextNode())) { const start = text.length; text += node.textContent ?? ""; nodes.push({ node: node as Text, start, end: text.length }); }
@@ -1168,6 +1171,7 @@ class Detail {
  mountTopics(view: AgentView) {
   const pane = new TopicsPane({
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
+   harness: view.harness,
    topicSessions: view.topicSessions,
    renderRow: (row, unfolded) => this.renderRow(row, unfolded),
    // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
@@ -1903,6 +1907,7 @@ class Detail {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, ...this.questionKey(row.entry.id)]
     : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null]
+    : row.kind === "work" ? [rowShown(row, now), this.chatLive()]
     : row.kind === "mark" ? row : rowShown(row, now));
    if (old?.dataset.signature === signature) return old;
    const node = row.kind === "suggestion" || row.kind === "mark" ? this.renderSuggestionRow(row, true)
@@ -1956,11 +1961,15 @@ class Detail {
   // gets a card of its own, never the old one's field and handlers on state the reset dropped.
   return [this.chat?.session_id, id, this.chat?.pending_ask, this.answering, this.answerProblem, this.localAnswers.get(id), this.answersRefused, this.formStates.get(id)?.version ?? 0, this.localFormAnswers.get(id), this.localDismissed.has(id), this.view?.askForm];
  }
+ /** Whether the chat represents a live session (not paused, failed, or definitively stopped). */
+ private chatLive(): boolean {
+  return !this.guestPaused && !this.chatFailed && this.shownStatus[0] !== "stopped";
+ }
  /** ChatView.sessionFooter's ChatWorkingDots (ChatWorkingDots.swift): while the agent works —
-  * its board status, or with none yet the transcript's working turn — and the chat loads. */
+  * its board status, or the transcript's working turn unless the pane is definitively stopped. */
  private renderWorking(): HTMLElement | null {
   const group = this.shownStatus[0];
-  return this.tail.working(!this.guestPaused && !this.chatFailed && (group === "working" || !!this.chat?.working), this.chat?.working?.intent || "");
+  return this.tail.working(this.chatLive() && (group === "working" || !!this.chat?.working), this.chat?.working?.intent || "");
  }
  /** ChatView.outgoingBubble: a prompt sent from here, at the tail until the transcript shows it,
   *  with its receipt under it. It enters once (motion spec §1.3: from opacity 0, 14 px down and
@@ -2234,16 +2243,11 @@ class Detail {
    label.append(el("span", "", work.live ? "Working" : `Worked for ${duration}`), el("span", "work-count", ` · ${work.steps.length} step${work.steps.length === 1 ? "" : "s"}`));
    summary.append(label);
    const list = el("div", "chat-work-list");
-   const makeWorkingDots = () => {
-    const dots = el("span", "chat-working-dots compact"); dots.setAttribute("aria-hidden", "true");
-    for (let i = 0; i < 3; i++) dots.append(el("span", "chat-working-dot"));
-    return dots;
-   };
-   const live = !this.guestPaused;
+   const live = this.chatLive() && work.live;
    for (const step of work.steps) {
     const detail = el("details", "chat-tool"); detail.dataset.id = step.id;
     const title = el("summary");
-    const marker = step.status === "running" && live ? makeWorkingDots() : el("span", `tool-dot ${step.status ?? ""}`);
+    const marker = step.status === "running" && live ? workingDots(true) : el("span", `tool-dot ${step.status ?? ""}`);
     title.append(marker, el("code", "", step.tool ?? ""), el("span", "", step.intent ?? ""));
     detail.append(title);
     if (step.detail) detail.append(el("pre", "", step.detail));
@@ -2257,12 +2261,14 @@ class Detail {
      for (const step of running) {
       const item = el("details", "chat-running-step"); item.dataset.id = `r:${step.id}`;
       const title = el("summary");
-      title.append(makeWorkingDots());
-      if (step.tool) title.append(el("code", "", step.tool));
-      title.append(el("span", "chat-running-step-intent", step.intent ?? ""));
-      item.append(title);
+      const head = el("span", "chat-running-step-head");
+      head.append(workingDots(true));
+      if (step.tool) head.append(el("code", "", step.tool));
+      head.append(el("span", "chat-running-step-intent", step.intent ?? ""));
+      title.append(head);
       const preview = runningCommandPreview(step.detail);
-      if (preview && preview !== step.intent) item.append(el("div", "chat-running-cmd", preview));
+      if (preview && preview !== step.intent) title.append(el("span", "chat-running-cmd", preview));
+      item.append(title);
       if (step.detail) item.append(el("pre", "", step.detail));
       active.append(item);
      }
