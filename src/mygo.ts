@@ -14,11 +14,24 @@ export interface Access {
   endpoint: Endpoint;
   acceptedAt: string;
   /**
+   * LabeledAt is when a hello's reply last named the machine MachineLabel
+   * (its owner may rename it, herdr #519); absent, AcceptedAt, when the
+   * accept's (or open's) hello named it.
+   */
+  labeledAt?: string;
+  /**
    * AccountBound is a share bound to the guest's HerdrUp account at its
    * redemption: every hello for it carries a statement for that account
    * (herdr src/guest/store.rs:1121-1128), and its sessions refresh it.
    */
   accountBound: boolean;
+  /**
+   * Account is the HerdrUp account a bound share is bound to: the one the
+   * statement herdr admitted it with names. Its shares item lives in that
+   * account's collection, whichever account is signed in later. Empty
+   * for a plain share and for one saved before it was kept.
+   */
+  account?: string;
 }
 
 /** AccountDeleteInfo is what the account page needs to offer Delete account. */
@@ -793,6 +806,12 @@ export interface GuestInvitation {
   guestName: string;
   expires: string;
   fingerprint: string;
+  /**
+   * Account is an invitation whose host takes HerdrUp accounts (its
+   * acct): the guest may keep the share on the account
+   * (AcceptGuestInvitation's keep).
+   */
+  account: boolean;
 }
 
 /**
@@ -1388,6 +1407,22 @@ export interface SyncedMachine {
   key: boolean;
 }
 
+/** SyncedShare is one of the account's shares, for the page. */
+export interface SyncedShare {
+  /** ID is the item id, "<host_id>/<guest_id>" (OpenSyncedShare's). */
+  id: string;
+  relay: string;
+  hostID: string;
+  nodePub: string;
+  guestID: string;
+  agentName: string;
+  ownerName: string;
+  machineLabel: string;
+  shareGram: boolean;
+  /** Local says this device holds the grant. */
+  local: boolean;
+}
+
 export interface TerminalCreationResult {
   phase: string;
   terminal?: SavedTerminal;
@@ -1572,8 +1607,17 @@ export interface WebAccessUpdate {
  * its board current. One machine is connected at a time.
  */
 export const Desk = {
-  acceptGuestInvitation(text: string): Promise<Access> {
-    return call("Desk.AcceptGuestInvitation", text);
+  /**
+   * AcceptGuestInvitation redeems an invitation, keeping the share as keep
+   * says (herdrup#700): "account" binds an invitation whose host takes
+   * accounts (GuestInvitation.Account) to the signed-in HerdrUp account (the
+   * redemption carries its statement), and a share the host bound goes to
+   * the shares of the account it was bound to (Access.Account: the
+   * admitted statement's), for every device of it; "device" keeps it on
+   * this device only, as any other invitation is.
+   */
+  acceptGuestInvitation(text: string, keep: string): Promise<Access> {
+    return call("Desk.AcceptGuestInvitation", text, keep);
   },
   /**
    * AccountCheck asks the service whether the session still works (a refresh
@@ -1865,6 +1909,11 @@ export const Desk = {
   folderMenu(id: string): Promise<boolean> {
     return call("Desk.FolderMenu", id);
   },
+  /**
+   * ForgetGuestConnection lets go of a grant on this device. A bound one
+   * leaves the account's shares too (noteShare), so every device of the
+   * account lets it go.
+   */
   forgetGuestConnection(id: string): Promise<void> {
     return call("Desk.ForgetGuestConnection", id);
   },
@@ -2180,6 +2229,16 @@ export const Desk = {
   },
   openSettings(machineID: string, session: string, token: string): Promise<void> {
     return call("Desk.OpenSettings", machineID, session, token);
+  },
+  /**
+   * OpenSyncedShare opens one of the account's shares on this device (id,
+   * a SyncedShare's): one this device holds connects as ConnectGuest does;
+   * otherwise this device joins it by a returning hello with the account's
+   * statement and no invitation (guest.Open), saves the bound grant, and
+   * connects.
+   */
+  openSyncedShare(id: string): Promise<void> {
+    return call("Desk.OpenSyncedShare", id);
   },
   openTerminalView(target: AgentTarget, token: string): Promise<AgentView> {
     return call("Desk.OpenTerminalView", target, token);
@@ -2532,6 +2591,14 @@ export const Desk = {
   settingsServerUpdate(token: string, refresh: boolean): Promise<string> {
     return call("Desk.SettingsServerUpdate", token, refresh);
   },
+  /**
+   * SharedConnections is every grant this device holds, in their order, each
+   * naming its machine as its host's latest hello did: the label on the
+   * host's grant a hello named last (guest.Access.NamedAt), whichever grant
+   * comes first, as a sibling opened since may hold an older name until its
+   * own hello. Each grant keeps its own label saved; only the copies
+   * returned are named so.
+   */
   sharedConnections(): Promise<Access[]> {
     return call("Desk.SharedConnections");
   },
@@ -2582,6 +2649,14 @@ export const Desk = {
    */
   syncedMachines(): Promise<SyncedMachine[]> {
     return call("Desk.SyncedMachines");
+  },
+  /**
+   * SyncedShares is the account's shares as last synced, and the bound
+   * grants accepted here not yet written there (no network); none while
+   * signed out.
+   */
+  syncedShares(): Promise<SyncedShare[]> {
+    return call("Desk.SyncedShares");
   },
   /** TakeGuestInvitation hands a launch URL to the page once, without persisting it. */
   takeGuestInvitation(): Promise<string> {
@@ -2828,6 +2903,11 @@ export const events = {
   accountChanged: event<AccountState>("account:changed"),
   /** AccountDeletedEvent carries the end of a deletion the browser finished. */
   accountDeleted: event<AccountDeleted>("account:deleted"),
+  /**
+   * SyncedSharesChanged tells the page the account's shares, or which of
+   * them this device holds, changed.
+   */
+  syncedSharesChanged: event<SyncedShare[]>("syncedShares:changed"),
   /** SyncedMachinesChanged tells the page the account's machines changed. */
   syncedMachinesChanged: event<SyncedMachine[]>("syncedMachines:changed"),
   /** AgentActionRequested asks the page for a row menu item's dialog. */

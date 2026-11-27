@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,10 @@ type GuestInvitation struct {
 	GuestName    string    `json:"guestName"`
 	Expires      time.Time `json:"expires"`
 	Fingerprint  string    `json:"fingerprint"`
+	// Account is an invitation whose host takes HerdrUp accounts (its
+	// acct): the guest may keep the share on the account
+	// (AcceptGuestInvitation's keep).
+	Account bool `json:"account"`
 }
 type GuestConnection struct {
 	Access      guest.Access   `json:"access"`
@@ -95,7 +100,7 @@ func (d *Desk) InspectGuestInvitation(ctx context.Context, text string) (GuestIn
 	if err != nil {
 		return GuestInvitation{}, err
 	}
-	return GuestInvitation{MachineLabel: invite.MachineLabel, OwnerName: invite.OwnerName, AgentName: invite.AgentName, GuestName: invite.GuestName, Expires: invite.Expires, Fingerprint: identity.Fingerprint()}, nil
+	return GuestInvitation{MachineLabel: invite.MachineLabel, OwnerName: invite.OwnerName, AgentName: invite.AgentName, GuestName: invite.GuestName, Expires: invite.Expires, Fingerprint: identity.Fingerprint(), Account: invite.Account}, nil
 }
 
 // guestStatements gives a bound share's statements, from the signed-in
@@ -120,18 +125,62 @@ func (g guestStatementSource) Statement(ctx context.Context, host string, minLef
 	if err != nil {
 		return guest.Statement{}, err
 	}
-	return guest.Statement{JWS: got.JWS, Exp: got.Exp, Live: func() bool { return g.cache.Live(got) }}, nil
+	return guest.Statement{JWS: got.JWS, Exp: got.Exp, Live: func() bool { return g.cache.Live(got) }, Account: got.Account()}, nil
 }
 
 func (g guestStatementSource) Drop(host, jws string) { g.cache.Drop(host, jws) }
 
-func (d *Desk) SharedConnections() ([]guest.Access, error) { return d.guestStore.List() }
-func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Access, error) {
+// SharedConnections is every grant this device holds, in their order, each
+// naming its machine as its host's latest hello did: the label on the
+// host's grant a hello named last (guest.Access.NamedAt), whichever grant
+// comes first, as a sibling opened since may hold an older name until its
+// own hello. Each grant keeps its own label saved; only the copies
+// returned are named so.
+func (d *Desk) SharedConnections() ([]guest.Access, error) {
+	list, err := d.guestStore.List()
+	if err != nil {
+		return nil, err
+	}
+	return sharedConnectionsOf(list), nil
+}
+
+// sharedConnectionsOf is SharedConnections' naming of held, in place.
+func sharedConnectionsOf(held []guest.Access) []guest.Access {
+	latest := map[string]guest.Access{}
+	for _, g := range held {
+		if had, ok := latest[g.Endpoint.HostID]; !ok || g.NamedAt().After(had.NamedAt()) {
+			latest[g.Endpoint.HostID] = g
+		}
+	}
+	for i, g := range held {
+		held[i].MachineLabel = latest[g.Endpoint.HostID].MachineLabel
+	}
+	return held
+}
+
+// AcceptGuestInvitation redeems an invitation, keeping the share as keep
+// says (herdrup#700): "account" binds an invitation whose host takes
+// accounts (GuestInvitation.Account) to the signed-in HerdrUp account (the
+// redemption carries its statement), and a share the host bound goes to
+// the shares of the account it was bound to (Access.Account: the
+// admitted statement's), for every device of it; "device" keeps it on
+// this device only, as any other invitation is.
+func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (guest.Access, error) {
+	if keep != "account" && keep != "device" {
+		return guest.Access{}, fmt.Errorf("unknown way to keep a share: %q", keep)
+	}
 	d.guestAcceptMu.Lock()
 	defer d.guestAcceptMu.Unlock()
 	invite, err := guest.Resolve(ctx, text, time.Now(), d.inviteTransport)
 	if err != nil {
 		return guest.Access{}, err
+	}
+	var bind guest.StatementSource
+	if keep == "account" && invite.Account {
+		cur, _ := d.account.Current()
+		if bind = d.guestStatements(); cur == nil || bind == nil {
+			return guest.Access{}, account.ErrSignedOut
+		}
 	}
 	identity, err := d.guestIdentity()
 	if err != nil {
@@ -141,9 +190,7 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Ac
 	if err != nil || device == "" {
 		device = "Desktop"
 	}
-	// Binding to the HerdrUp account waits for its choice (Add to my
-	// account / Only this device, herdrup#700): plain for now.
-	access, err := guest.Accept(ctx, invite, identity, device, time.Now(), nil)
+	access, err := guest.Accept(ctx, invite, identity, device, time.Now(), bind)
 	if err != nil {
 		return guest.Access{}, err
 	}
@@ -153,6 +200,11 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text string) (guest.Ac
 		return guest.Access{}, fmt.Errorf("Access was accepted but could not be saved: %w. Keep this device's guest identity and ask the owner for a new invitation", err)
 	}
 	d.syncGuestGram()
+	if access.AccountBound {
+		if err := d.noteShare(access, false); err != nil {
+			return guest.Access{}, fmt.Errorf("Access was accepted and saved on this device, but could not be added to your HerdrUp account: %w", err)
+		}
+	}
 	return access, nil
 }
 func (d *Desk) ConnectGuest(id string) error {
@@ -201,10 +253,30 @@ func (d *Desk) ConnectGuest(id string) error {
 	}()
 	return nil
 }
+
+// ForgetGuestConnection lets go of a grant on this device. A bound one
+// leaves the account's shares too (noteShare), so every device of the
+// account lets it go.
 func (d *Desk) ForgetGuestConnection(id string) error {
+	list, err := d.guestStore.List()
+	if err != nil {
+		return err
+	}
+	if i := slices.IndexFunc(list, func(a guest.Access) bool { return a.ID() == id }); i >= 0 && list[i].AccountBound {
+		if err := d.noteShare(list[i], true); err != nil {
+			return err
+		}
+	}
 	if err := d.guestStore.Remove(id); err != nil {
 		return err
 	}
+	d.closeGuest(id)
+	return nil
+}
+
+// closeGuest ends this device's use of a grant it let go: the connection,
+// when it is the open one, and its Gram.
+func (d *Desk) closeGuest(id string) {
 	d.mu.Lock()
 	active := d.link != nil && d.link.guest != nil && d.link.access.ID() == id
 	var x detached
@@ -216,7 +288,6 @@ func (d *Desk) ForgetGuestConnection(id string) error {
 	d.syncGuestGram()
 	x.stop()
 	x.remove()
-	return nil
 }
 
 // guestAvailability is GuestConnection.Availability for a failed listing
@@ -319,12 +390,13 @@ func (d *Desk) runGuest(ctx context.Context, l *link, fingerprint string) {
 }
 
 // guestRelabeled keeps the machine name a hello reply gave share id (its
-// owner renamed the machine, herdr #519): saved with the share, so SHARED
-// WITH YOU lists it, and on the share's open link, whose connection state
-// names it (published at once when connected, else by the state the link's
-// next list publishes), so the open page's header and the list show it.
+// owner may have renamed the machine, herdr #519), and when: saved with the
+// share, so SHARED WITH YOU names the machine as its latest hello did, and
+// on the share's open link, whose connection state names it (published at
+// once when connected, else by the state the link's next list publishes),
+// so the open page's header and the list show it.
 func (d *Desk) guestRelabeled(id, label string) {
-	if err := d.guestStore.Relabel(id, label); err != nil {
+	if err := d.guestStore.Relabel(id, label, time.Now()); err != nil {
 		log.Printf("guest relabel: %s: %v", id, err)
 	}
 	d.mu.Lock()

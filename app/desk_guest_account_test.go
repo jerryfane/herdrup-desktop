@@ -83,7 +83,7 @@ func TestAStatementTheHostRefusedIsAskedForAgain(t *testing.T) {
 	// The statements the host still verifies: from the validFrom-th on.
 	var mu sync.Mutex
 	validFrom := 2
-	relay.CheckStatement = func(jws string) (string, time.Time, string) {
+	relay.CheckStatement = func(jws string, _ []byte) (string, time.Time, string) {
 		parts := strings.Split(jws, ".")
 		if len(parts) != 3 {
 			return "", time.Time{}, "statement_invalid"

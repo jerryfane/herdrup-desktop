@@ -45,7 +45,8 @@ export function signInFirst(f: FirstScreenFacts): boolean {
 }
 
 export interface BootFacts {
- /** The address carries an invite (/web/#…). */
+ /** The address carries an invite (/web/#…), or one waits in this tab for its sign-in's return
+  *  (start.ts PENDING_BIND_KEY), which comes back to a plain /web/?account=1. */
  fragment: boolean;
  guestInstead: boolean;
  /** The guest page found a session (SIGNED_IN_FOUND_KEY): no lookup is waited for. */

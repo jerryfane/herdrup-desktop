@@ -53,7 +53,7 @@ func guestGramFixtureOf(t *testing.T, spec string, setup ...func(*Desk)) (*Desk,
 	}
 	ids := map[string]string{}
 	for _, g := range fx.Grants {
-		access, err := d.AcceptGuestInvitation(context.Background(), g.Relay.InviteLink(base, time.Now().Add(time.Hour)))
+		access, err := d.AcceptGuestInvitation(context.Background(), g.Relay.InviteLink(base, time.Now().Add(time.Hour)), "device")
 		if err != nil {
 			t.Fatal(err)
 		}

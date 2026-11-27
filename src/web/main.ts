@@ -19,11 +19,14 @@ import { animateDisclosures, applyMotions } from "../motion";
 import { onTextSizeChanged } from "../textSize";
 import { errorText } from "../errors";
 import { localOwnerHint } from "./storage";
-import { plainWelcome, start, takeFragment, welcome, type WelcomeState } from "./start";
+import { plainWelcome, start, startAccount, takeFragment, takePendingBind, welcome, type Started, type WelcomeState } from "./start";
+import { showBindChoice, signInToBind, type BindPage } from "./bindChoice";
+import { showAccountShareNotice } from "../notices";
 import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAccount";
-import { pageExit, signInReturned } from "./mygo";
+import { ownerAccess, pageExit, signInEnded, signInReturned } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
 import { boardAfter, connectionChanged } from "../shellModel";
+import { sharedListStale, sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
 type GuestTab = "agents" | "gram" | "settings";
 
@@ -45,10 +48,26 @@ let ready = false;
 
 // The HerdrUp account (design #698 §2.3): on the guest's Settings and on the plain screen without
 // a grant, once the account service offers web sign-in on this origin (guest.herdrup.app only).
-const account = new HerdrUpAccountPanel(() => { if (shownWelcome) showWelcome(shownWelcome); else render(); });
+const account = new HerdrUpAccountPanel(() => { void refreshShared(); if (shownWelcome) showWelcome(shownWelcome); else render(); });
 const accountRoot = () => account.available ? account.root : null;
 
-// main.ts guestActions; "hosts" is Leave share or Remove share: this browser holds no other.
+// The shares in the guest's Settings (#543): the owner host home's list (sharedWithYou.ts) of
+// every grant this browser holds and, while signed in, the account's shares. Any of them opens in
+// place of the share open now, which stays saved (Leave alone forgets it); the agents' tab then
+// shows it.
+const sharedProblem = el("p", "host-home-message"); sharedProblem.setAttribute("role", "alert"); sharedProblem.hidden = true;
+const sharedList = sharedSection(symbol, () => guestActions.agents(), error => { sharedProblem.textContent = errorText(error); sharedProblem.hidden = false; }, () => false, "YOUR SHARED AGENTS");
+sharedList.root.append(sharedProblem);
+const sharedRoot = el("div", "host-home guest-shared-list"); sharedRoot.append(sharedList.root);
+let sharedVersion = 0;
+async function refreshShared() {
+ const at = ++sharedVersion, signedIn = account.signedIn;
+ const [grants, synced] = await Promise.all([Desk.sharedConnections().catch(() => []), syncedSharesNow(signedIn)]);
+ if (at === sharedVersion) { sharedProblem.hidden = true; await sharedList.draw(sharedMachines(grants, synced)); }
+}
+events.syncedSharesChanged.on(() => { void refreshShared(); });
+
+// main.ts guestActions; "hosts" is Leave share or Remove share.
 const guestActions = {
  agents: () => { guestTab = "agents"; render(); },
  settings: () => { closeWriter(); guestTab = "settings"; void account.refresh(true); render(); },
@@ -193,6 +212,8 @@ trackPhotoConnections(events);
 events.stateChanged.on((s) => {
  // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
  if (connectionChanged(state, s)) guestTab = "agents";
+ // The shares list names the share open now, and its machine as its owner names it now.
+ if (sharedListStale(state, s)) void refreshShared();
  board = boardAfter(state, s, board);
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
@@ -217,17 +238,21 @@ async function init() {
  reduceMotion.addEventListener("change", () => applyMotions(document.documentElement, reduceMotion.matches));
  animateDisclosures(document.body);
  enableLongPress();
- guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot });
+ guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: true, account: accountRoot, shared: () => sharedRoot });
  initInteraction($("detail"), symbol, target => { selectedAgent = target; render(); });
  await initGram({
   el, symbol, placeInitials, spinner: spinnerSVG,
   barChanged: () => { if (guestBar?.tab === "gram") void buildBars(guestBar); },
   guestGramChanged: () => { setTabBadge(); if (guestBar && guestBar.gram !== guestGramOffer().offered) render(); },
  }, $("detail"), $("sidebar"), $("sidebar-foot"));
- if (payload !== "") showOpening();
- let started;
+ // An invite back from the sign-in its "Add to my account" left for (start.ts PENDING_BIND_KEY),
+ // taken now: from here on it lives only in this page.
+ const pending = takePendingBind(() => sessionStorage);
+ if (payload !== "" || pending !== null) showOpening();
+ let started: Started;
  try {
-  started = await start(Desk, payload, location.origin, () => localOwnerHint.get());
+  started = await start(Desk, payload, location.origin, () => localOwnerHint.get(),
+   startAccount(ownerAccess.account, pending, pending === null ? null : signInEnded()));
  } catch (error) {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
@@ -241,11 +266,33 @@ async function init() {
  // way chosen at boot shows no sign-in, so it waits for nothing.
  const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
- showWelcome(started.kind === "welcome" ? started.welcome : null);
+ // The landing's "Add to my account", signed out: the named sign-in leaves at once (the opening
+ // card stays up meanwhile), or the invitation's choices show.
+ if (started.kind === "signIn") { void signInToBind(started.payload, started.provider, bindPage); return; }
+ if (started.kind === "bind") { void showBindChoice(started.payload, started.problem, bindPage); return; }
+ showStarted(started);
  // Back from the account service (?account=1 or ?account_error=) with a share: its Settings,
- // where the result shows. Either way the panel is asked once, so the result shows once.
- if (started.kind === "connected" && signInReturned) guestActions.settings();
+ // where the result shows. Either way the panel is asked once, so the result shows once. An
+ // invite that waited for the sign-in shows its own result (the account notice).
+ if (started.kind === "connected" && signInReturned && pending === null) guestActions.settings();
  else if (!waits) void account.refresh(true);
 }
+
+/** The screen a start ends on: the plain screen (with why an invite failed), or the share, with
+ *  the notice when it went in the HerdrUp account. */
+function showStarted(started: Started) {
+ showWelcome(started.kind === "welcome" ? started.welcome : null);
+ if (started.kind === "connected" && started.inAccount !== undefined) showAccountShareNotice(started.inAccount);
+}
+
+/** The bind choice on this page's welcome screen (bindChoice.ts). */
+const bindPage: BindPage = {
+ origin: location.origin,
+ storage: () => sessionStorage,
+ owner: () => localOwnerHint.get(),
+ show: card => { shownWelcome = null; welcomeView.replaceChildren(card); welcomeView.hidden = false; render(); },
+ opening: showOpening,
+ done: started => { showStarted(started); void account.refresh(true); },
+};
 
 void init();

@@ -78,13 +78,16 @@ type GuestRelay struct {
 	// Accounts is a herdr whose invitation says "acct":1 and which binds a
 	// redemption whose hello carries a statement, as herdr#440 does
 	// (src/guest/store.rs admit_in, admit_returning). CheckStatement
-	// checks one: the account it names (sub) and its exp, or herdr's
-	// refusal code. A bound share's hellos all need a statement for its
-	// account; its sessions take {"t":"account.refresh","account":<jws>}
-	// in band (src/guest/link/session.rs), a refused one ending the session
-	// with its code.
+	// checks one, given the session's authenticated (Noise) device key,
+	// against which herdr checks the statement's dev claim
+	// (src/guest/account.rs verify): the account it names (sub) and its
+	// exp, or herdr's refusal code. A bound share's hellos all need a
+	// statement for its account; its sessions take
+	// {"t":"account.refresh","account":<jws>} in band
+	// (src/guest/link/session.rs), a refused one ending the session with
+	// its code.
 	Accounts       bool
-	CheckStatement func(jws string) (sub string, exp time.Time, code string)
+	CheckStatement func(jws string, device []byte) (sub string, exp time.Time, code string)
 	// AccountDeadline, when set, is a bound session's deadline for a
 	// statement expiring at exp (the hello reply's deadline_unix); herdr's
 	// is exp + 60 s (src/guest/mod.rs).
@@ -95,9 +98,12 @@ type GuestRelay struct {
 	inviteID string
 	secret   string
 	// issues is the guest id redeeming the invitation issues; empty is
-	// fake-guest-1.
-	issues string
-	srv    *http.Server
+	// fake-guest-1, or with Accounts accountGuest: 16 random bytes in
+	// unpadded base64url, as herdr's (src/guest/store.rs), which a bound
+	// share's shares item id needs.
+	issues       string
+	accountGuest string
+	srv          *http.Server
 
 	mu      sync.Mutex
 	guestID string
@@ -105,6 +111,9 @@ type GuestRelay struct {
 	// and each one a bound share took in by its account's statement.
 	guestKeys [][]byte
 	calls     []GuestCall
+	// holdReply, when set (HoldReply), runs before each hello's answer is
+	// written.
+	holdReply func()
 	// connects are the guest's relay connects; past connectLimit in a minute
 	// the relay refuses one with 429 rate_limited (LimitConnects).
 	connects     []GuestConnect
@@ -164,7 +173,7 @@ func NewGuestRelay() (*GuestRelay, error) {
 		_, _ = rand.Read(b)
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
-	return &GuestRelay{host: host, hostID: random(16), inviteID: random(16), secret: random(32)}, nil
+	return &GuestRelay{host: host, hostID: random(16), inviteID: random(16), secret: random(32), accountGuest: random(16)}, nil
 }
 
 // Listen serves the relay on addr and returns its http:// base URL, which
@@ -242,6 +251,15 @@ func (r *GuestRelay) Devices() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.guestKeys)
+}
+
+// HoldReply runs hold, with the relay unlocked, once herdr has answered each
+// later hello (its admission done) and before the answer is written: a
+// test holds the reply there. nil stops it.
+func (r *GuestRelay) HoldReply(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdReply = hold
 }
 
 // Connects returns every guest connect to the relay, refused ones included,
@@ -389,6 +407,12 @@ func acceptGuest(w http.ResponseWriter, req *http.Request, hostID string, key no
 // until it ends, and says why it ended (GuestConnect.End).
 func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, handshake *noise.HandshakeState, hello guestHello, served, overlapped func()) string {
 	reply, request, bound := r.hello(hello, handshake.PeerStatic())
+	r.mu.Lock()
+	hold := r.holdReply
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
 	answer, receive, send, err := handshake.WriteMessage(nil, reply)
 	if err != nil || socket.Write(ctx, websocket.MessageBinary, answer) != nil {
 		return "guest"
@@ -414,7 +438,7 @@ func (r *GuestRelay) converse(ctx, end context.Context, socket *websocket.Conn, 
 			}
 			if bound {
 				if jws, ok := refreshStatement(chunk); ok {
-					if code := r.refresh(jws); code != "" {
+					if code := r.refresh(jws, handshake.PeerStatic()); code != "" {
 						_ = socket.Close(websocket.StatusNormalClosure, code)
 						return
 					}
@@ -534,7 +558,7 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 	var sub, refused string
 	var exp time.Time
 	if r.Accounts && hello.Account != "" {
-		sub, exp, refused = r.CheckStatement(hello.Account)
+		sub, exp, refused = r.CheckStatement(hello.Account, key)
 		if refused != "" {
 			sub = ""
 		}
@@ -548,7 +572,11 @@ func (r *GuestRelay) hello(hello guestHello, key []byte) (reply []byte, request,
 		case refused != "":
 			return refuse(refused)
 		}
-		r.guestID, r.guestKeys, r.account = cmp.Or(r.issues, "fake-guest-1"), [][]byte{slices.Clone(key)}, sub
+		issued := cmp.Or(r.issues, "fake-guest-1")
+		if r.issues == "" && r.Accounts {
+			issued = r.accountGuest
+		}
+		r.guestID, r.guestKeys, r.account = issued, [][]byte{slices.Clone(key)}, sub
 	} else {
 		held := slices.ContainsFunc(r.guestKeys, func(k []byte) bool { return bytes.Equal(k, key) })
 		if hello.GuestID == "" || hello.GuestID != r.guestID || !held && (r.account == "" || sub != r.account) {
@@ -613,11 +641,11 @@ func refreshStatement(chunk []byte) (string, bool) {
 
 // refresh records a bound session's in-band statement and checks it: the
 // code that ends the session, or "" when it holds.
-func (r *GuestRelay) refresh(jws string) string {
+func (r *GuestRelay) refresh(jws string, device []byte) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.refreshes = append(r.refreshes, jws)
-	sub, _, code := r.CheckStatement(jws)
+	sub, _, code := r.CheckStatement(jws, device)
 	if code == "" && sub != r.account {
 		code = "account_mismatch"
 	}

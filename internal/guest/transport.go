@@ -91,9 +91,7 @@ type Transport struct {
 	// statements gives a bound share's statements (connect).
 	statements StatementSource
 
-	// label is the machine's name as the share last heard it (under mu):
-	// the access's, then each hello reply's. onLabel hears it change.
-	label   string
+	// onLabel hears the machine's name each hello reply gives.
 	onLabel func(label string)
 }
 
@@ -107,13 +105,14 @@ type idleSession struct {
 
 // NewTransport makes a Transport for access. statements gives a bound
 // share's statements (Access.AccountBound); a plain share never asks.
-// onLabel, when not nil, hears the machine's name when a connect's hello
-// reply names it differently from the share (the owner relabeled the
-// machine, herdr #519): a valid label, never an absent one (an older
-// herdr's). It runs on the connecting goroutine.
+// onLabel, when not nil, hears the machine's name every connect's hello
+// reply gives (the owner may have relabeled the machine, herdr #519), an
+// unchanged one too, so the share keeps when a hello last named it: a
+// valid label, never an absent one (an older herdr's). It runs on the
+// connecting goroutine.
 func NewTransport(access Access, identity Identity, clock Clock, statements StatementSource, onLabel func(label string)) *Transport {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel, label: access.MachineLabel, onLabel: onLabel}
+	return &Transport{access: access, identity: identity, clock: clock, statements: statements, ctx: ctx, cancel: cancel, onLabel: onLabel}
 }
 func (t *Transport) Done() <-chan struct{} { return t.ctx.Done() }
 func (t *Transport) Close() error {
@@ -366,10 +365,13 @@ func (t *Transport) connect(ctx context.Context) (*session, error) {
 		if err == nil {
 			return connected, nil
 		}
-		if attempt == 0 && bound != nil && freshStatementMayAdmit(err) {
+		if bound != nil && freshStatementMayAdmit(err) {
+			// The host refused this exact statement: it never goes again.
 			t.statements.Drop(bound.host, bound.jws)
-			earlier = bound.admitted
-			continue
+			if attempt == 0 {
+				earlier = bound.admitted
+				continue
+			}
 		}
 		return nil, err
 	}
@@ -393,7 +395,7 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 			}
 			stale = ErrSignInChanged
 		}
-		host := t.access.Endpoint.accountHost()
+		host := t.access.Endpoint.AccountHost()
 		st, err := t.statements.Statement(ctx, host, statementLead)
 		if err != nil {
 			// A lookup the change of sign-in spoiled is that change; any
@@ -407,7 +409,7 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		if earlier != nil {
 			admitted = func() bool { return earlier() && st.Live() }
 		}
-		bound = &boundStatement{statements: t.statements, host: host, cutoff: st.Exp, jws: st.JWS, admitted: admitted}
+		bound = &boundStatement{statements: t.statements, host: host, exp: st.Exp, cutoff: st.Exp, jws: st.JWS, admitted: admitted}
 	}
 	refusals, ok := t.attempt()
 	if !ok {
@@ -445,14 +447,8 @@ func (t *Transport) connectOnce(ctx context.Context, earlier func() bool) (*sess
 		connected.bound = bound
 	}
 	t.admitted(refusals, connected.reply.Features)
-	if label := connected.reply.MachineLabel; label != "" && validLabel(label) {
-		t.mu.Lock()
-		changed, heard := label != t.label, t.onLabel
-		t.label = label
-		t.mu.Unlock()
-		if changed && heard != nil {
-			heard(label)
-		}
+	if label := connected.reply.MachineLabel; label != "" && validLabel(label) && t.onLabel != nil {
+		t.onLabel(label)
 	}
 	connected.handshook = t.clock.Now()
 	return connected, nil, nil

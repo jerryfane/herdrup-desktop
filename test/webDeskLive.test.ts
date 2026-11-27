@@ -64,8 +64,8 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const desk = createGuestDesk({ identities: new MemoryIdentityStore(), grants, owner, webSocket: (url) => new WebSocket(url), topicsRetryMs: [100] });
  const reviewed = await desk.inspectGuestInvitation(invite);
  expect(reviewed).toMatchObject({ ownerName: "Fixture Owner", agentName: "docs", guestName: "visitor" });
- const access = await desk.acceptGuestInvitation(invite);
- expect(grants.access?.guestID).toBe(access.guestID);
+ const access = await desk.acceptGuestInvitation(invite, "device");
+ expect((await grants.list()).map(g => g.guestID)).toEqual([access.guestID]);
  expect(owner.owner).toBe("Fixture Owner");
  expect(await desk.sharedConnections()).toEqual([access]);
 
@@ -183,6 +183,6 @@ test.skipIf(go === null)("a browser guest redeems, lists, chats, watches and pau
  const idle = next<ConnState>((f) => events.stateChanged.on(f), (s) => s.phase === "idle");
  await desk.forgetGuestConnection(id);
  await idle;
- expect(grants.access).toBeUndefined();
+ expect(await grants.list()).toEqual([]);
  await expect(desk.chatTranscript("view-1", "", "", "", "")).rejects.toThrow("agent view changed; request was not sent");
 }, 120_000);

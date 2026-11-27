@@ -9,6 +9,16 @@
 .guest-key-value dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
 .guest-note { color: var(--color-text-dim); font-size: 13px; line-height: 1.5; }
 .guest-error { padding: 0 20px; color: var(--color-text); }
+/* The keep choices (guestAccept.ts acceptChoices, frames opt-a-g1d/g2d): a capsule pair side by
+   side (stacked where they don't fit), the quiet line above it, "Only this device" across the
+   sheet below it. */
+.guest-choices { display: grid; gap: 10px; }
+.guest-choices > p { margin: 0; text-align: center; }
+.guest-choice-label { color: var(--color-text-dim); font-size: 13px; }
+.guest-choice-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.guest-choice-pair > button, .guest-choice-wide { width: 100%; white-space: nowrap; }
+.guest-choice-pair > button.button-large { padding-inline: 10px; font-size: 14px; }
+.guest-choice-pair svg { flex: none; }
 
 /* ---- Guest home: herdrup's GuestHomeView (App/GuestHomeView.swift, f2df68b) in the
    sidebar, between the owner's top bar and glass tab bar, where the roster sits. ---- */
@@ -67,6 +77,10 @@
 /* GuestShellStyle.card, 16 sides; its rows carry their own padding (the share sheet's
    .guest-card pads itself, guestShare.css). */
 .guest-settings .guest-settings-card { margin: 0 16px; padding: 0; }
+/* YOUR SHARED AGENTS (web/main.ts, the host home's list): on the cards' 16 sides, spaced as a
+   section; hidden (signed out, none), it takes no room. */
+.guest-settings .guest-shared-list .host-home-saved { margin: 26px 16px 0; }
+.guest-settings .guest-shared-list :is(.host-shared-note, .host-home-message) { margin: 8px 18px 0; }
 /* The header (GuestSettingsView.swift 24-29): "Settings" in app 20 semibold, leading, 16 by 12. */
 .guest-settings .settings-page-title { place-items: center start; padding: 0 16px; font-size: calc(20px * var(--ui-font-scale, 1)); }
 /* GuestShellStyle.keyValue (GuestAcceptView.swift 34-40): app 15, the key textDim, 16 by

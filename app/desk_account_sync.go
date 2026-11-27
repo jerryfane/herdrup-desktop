@@ -79,11 +79,21 @@ type syncState struct {
 	// Removed are the tombstones pulled, by "collection/id": the revision
 	// a write of the item again is based on.
 	Removed map[string]int64 `json:"removed,omitempty"`
-	// PromptsGone and HostsGone are the tombstones from other devices that
-	// the last readback passed: the next sync, pulling from after them,
-	// still knows the account held those items.
+	// PromptsGone, HostsGone and SharesGone are the tombstones from other
+	// devices that the last readback passed: the next sync, pulling from
+	// after them, still knows the account held those items.
 	PromptsGone []string `json:"promptsGone,omitempty"`
 	HostsGone   []string `json:"hostsGone,omitempty"`
+	SharesGone  []string `json:"sharesGone,omitempty"`
+	// SharesPulled is set once Mirror holds the account's shares: a state
+	// from before shares synced pulls everything once.
+	SharesPulled bool `json:"sharesPulled,omitempty"`
+	// ShareWrites are the bound grants accepted here whose shares item the
+	// account doesn't hold yet, and ShareDeletes those left here whose item
+	// it may still hold (shareOp): each kept for the account it is owed to,
+	// whichever account this state is.
+	ShareWrites  []shareOp `json:"shareWrites,omitempty"`
+	ShareDeletes []shareOp `json:"shareDeletes,omitempty"`
 	// PushFrom is the write ("collection/id") the next round's pushes
 	// start from: a round the service's rate limit stopped leaves it at the
 	// first write it didn't settle, so the writes past a long run of
@@ -716,8 +726,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		state = syncState{AccountID: acct}
 	}
 	since := state.Mirror.Rev
-	if !state.PromptsPulled {
-		// A mirror from before prompts synced lacks the account's prompts.
+	if !state.PromptsPulled || !state.SharesPulled {
+		// A mirror from before prompts (or shares) synced lacks the
+		// account's prompts (or shares).
 		since = 0
 	}
 	pull, err := d.account.PullSince(ctx, round, since)
@@ -821,14 +832,31 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			}
 		}
 	}
+	// The same for shares: a bound grant whose item the account held and
+	// doesn't now was left on another device (mergeShares).
+	knownShares := map[string]bool{}
+	for _, s := range old.Shares {
+		knownShares[s.ID] = true
+	}
+	if state.SharesPulled {
+		for id := range tombstoned.Shares {
+			knownShares[id] = true
+		}
+		for _, id := range state.SharesGone {
+			knownShares[id] = true
+		}
+	}
 	for _, c := range confirmed {
 		if c.Server == nil || !c.Server.Deleted {
 			continue
 		}
-		if c.Collection == "hosts" {
+		switch {
+		case c.Collection == "hosts":
 			known[c.ID] = true
-		} else if state.PromptsPulled {
+		case c.Collection == "prompts" && state.PromptsPulled:
 			knownPrompts[c.ID] = true
+		case c.Collection == "shares" && state.SharesPulled:
+			knownShares[c.ID] = true
 		}
 	}
 	pending, baseline := latest.Deletes, latest.Baseline
@@ -853,6 +881,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent, revs)
 	promptsChanged := !slices.Equal(prompts, ps.Prompts)
 	changes = append(changes, promptChanges...)
+	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs)
+	changes = append(changes, shareChanges...)
 	// The writes that may still land: those the pull is past, or past
 	// their deadline (promptAttempt), are settled.
 	attempts = settleAttempts(attempts, revs, pull.NowMs)
@@ -899,9 +929,10 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		_, hasBaseline := promptBaseline[id]
 		return hasBaseline || !slices.ContainsFunc(prompts, func(p SavedPrompt) bool { return p.ID == id })
 	})
-	removed = usedRemoved(removed, st.Machines, deletes, prompts, promptDeletes, attempts)
+	removed = usedRemoved(removed, st.Machines, deletes, prompts, promptDeletes, attempts, slices.Concat(shareWrites, shareDeletes))
 	state = syncState{AccountID: acct, Mirror: mirror, Deletes: deletes, Baseline: baseline, PromptsPulled: true,
 		PromptDeletes: promptDeletes, PromptBaseline: promptBaseline, PromptBaselineHash: baselineHash, PromptAttempts: attempts, PromptLastSent: lastSent,
+		SharesPulled: true, ShareWrites: shareWrites, ShareDeletes: shareDeletes,
 		Removed: removed, PushFrom: pushFrom, LastSync: lastSync, History: latest.History, ResetsSeen: latest.ResetsSeen}
 	if switched {
 		// Another account's state starts its own count: its first pull
@@ -922,6 +953,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			return err
 		}
 	}
+	// The bound grants whose share the account deleted go before the state
+	// that no longer knows the share is written: a failure leaves it known,
+	// and the next pass lets them go.
+	dropped, err := d.dropGoneShares(acct, goneShares)
+	if err != nil {
+		d.storeMu.Unlock()
+		return err
+	}
 	recorded, err := d.commitMerge(machines, changedPrompts, renamed, state)
 	if recorded {
 		// The record holds what the merge paid, even if a file failed.
@@ -933,6 +972,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return err
 	}
 	d.storeMu.Unlock()
+	for _, id := range dropped {
+		d.closeGuest(id)
+	}
 	if promptsChanged {
 		publishSavedPrompts(listOf(prompts))
 	}
@@ -1131,7 +1173,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		var readGone account.Tombstones
 		state.Mirror, readGone = state.Mirror.Apply(readBack)
 		state.Removed = noteRemoved(state.Removed, readBack.Full, readGone, state.Mirror)
-		newTombstones = newTombstones || len(readGone.Hosts)+len(readGone.Prompts) > 0
+		newTombstones = newTombstones || len(readGone.Hosts)+len(readGone.Prompts)+len(readGone.Shares) > 0
 		// The readback's rows decide the held uploads below them as the
 		// pull's do, at once: the next pull may already hold another
 		// device's write over a landing.
@@ -1150,20 +1192,27 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			for _, p := range state.Mirror.Prompts {
 				present["prompts/"+p.ID] = true
 			}
+			for _, s := range state.Mirror.Shares {
+				present["shares/"+s.ID] = true
+			}
 		}
 		// A delete the service took stays pending when the restored history
 		// still holds the item: the next round deletes it there again.
 		state.Deletes = slices.DeleteFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] && !present["hosts/"+id] })
 		state.PromptDeletes = slices.DeleteFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] && !present["prompts/"+id] })
+		state.ShareDeletes = slices.DeleteFunc(state.ShareDeletes, func(op shareOp) bool {
+			return op.Account == acct && pushed["shares/"+op.ID] && !present["shares/"+op.ID]
+		})
 		if unsent == nil && (slices.ContainsFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] }) ||
-			slices.ContainsFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] })) {
+			slices.ContainsFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] }) ||
+			slices.ContainsFunc(state.ShareDeletes, func(op shareOp) bool { return op.Account == acct && pushed["shares/"+op.ID] })) {
 			unsent = errDeleteUndone // the round is incomplete until it goes
 		}
 		// Deletes from other devices the readback passed: the local copies
 		// go next time, unless edited, instead of being uploaded again.
 		// After a restore, what the mirror held and the restored account
 		// doesn't is gone as well, except what this round just wrote.
-		var goneHosts, gonePrompts []string
+		var goneHosts, gonePrompts, goneShares []string
 		for id := range readGone.Hosts {
 			if !pushed["hosts/"+id] {
 				goneHosts = append(goneHosts, id)
@@ -1172,6 +1221,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		for id := range readGone.Prompts {
 			if !pushed["prompts/"+id] {
 				gonePrompts = append(gonePrompts, id)
+			}
+		}
+		for id := range readGone.Shares {
+			if !pushed["shares/"+id] {
+				goneShares = append(goneShares, id)
 			}
 		}
 		if readBack.Full {
@@ -1185,22 +1239,30 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 					gonePrompts = append(gonePrompts, p.ID)
 				}
 			}
+			for _, s := range held.Shares {
+				if key := "shares/" + s.ID; !present[key] && !wrote[key] && !pushed[key] {
+					goneShares = append(goneShares, s.ID)
+				}
+			}
 		}
-		state.HostsGone, state.PromptsGone = goneHosts, gonePrompts
+		state.HostsGone, state.PromptsGone, state.SharesGone = goneHosts, gonePrompts, goneShares
 	}
 	for _, c := range turnedDownGone {
-		if c.Collection == "hosts" {
+		switch c.Collection {
+		case "hosts":
 			state.HostsGone = append(state.HostsGone, c.ID)
-		} else {
+		case "prompts":
 			state.PromptsGone = append(state.PromptsGone, c.ID)
+		case "shares":
+			state.SharesGone = append(state.SharesGone, c.ID)
 		}
 	}
 	state.PushFrom = pushFrom
 	// The merge pruned the tombstones; again only when the push or its
 	// readback changed what that saw: tombstones added, or pending deletes
 	// and open sends settled.
-	if newTombstones || len(state.Deletes) < len(deletes) || len(state.PromptDeletes) < len(promptDeletes) || len(state.PromptAttempts) < len(attempts) {
-		state.Removed = usedRemoved(state.Removed, st.Machines, state.Deletes, prompts, state.PromptDeletes, state.PromptAttempts)
+	if newTombstones || len(state.Deletes) < len(deletes) || len(state.PromptDeletes) < len(promptDeletes) || len(state.ShareDeletes) < len(shareDeletes) || len(state.PromptAttempts) < len(attempts) {
+		state.Removed = usedRemoved(state.Removed, st.Machines, state.Deletes, prompts, state.PromptDeletes, state.PromptAttempts, slices.Concat(state.ShareWrites, state.ShareDeletes))
 	}
 	// A round that left a change unsent did not finish well: the status
 	// keeps the last one that did, and so does a pass whose turned-down
@@ -1214,6 +1276,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		return err
 	}
 	publishSyncedMachines(unsavedHosts(st.Machines, state.Mirror.Hosts))
+	d.announceShares()
 	switch {
 	case unsent != nil:
 		return unsent
@@ -1227,11 +1290,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 
 // usedRemoved keeps the tombstone revisions (syncState.Removed) a later
 // write may be based on: those of machines and prompts saved here, of
-// pending deletes, and of prompts with sends that may still land. Any
-// other comes back, if ever needed, with a stale base's conflict. It
-// prunes removed, which the caller owns, in place, and notes only the
-// tombstones it holds.
-func usedRemoved(removed map[string]int64, machines []Machine, hostDeletes []string, prompts []SavedPrompt, promptDeletes []string, attempts map[string][]promptAttempt) map[string]int64 {
+// pending deletes, of prompts with sends that may still land, and of the
+// shares writes and deletes owed (shares). Any other comes back, if ever
+// needed, with a stale base's conflict. It prunes removed, which the
+// caller owns, in place, and notes only the tombstones it holds.
+func usedRemoved(removed map[string]int64, machines []Machine, hostDeletes []string, prompts []SavedPrompt, promptDeletes []string, attempts map[string][]promptAttempt, shares []shareOp) map[string]int64 {
 	if len(removed) == 0 {
 		return removed
 	}
@@ -1255,6 +1318,9 @@ func usedRemoved(removed map[string]int64, machines []Machine, hostDeletes []str
 	}
 	for id := range attempts {
 		use("prompts/" + id)
+	}
+	for _, op := range shares {
+		use("shares/" + op.ID)
 	}
 	if len(used) < len(removed) {
 		maps.DeleteFunc(removed, func(key string, _ int64) bool { return !used[key] })
@@ -1289,6 +1355,9 @@ func baseRevs(m account.Mirror, removed map[string]int64) map[string]int64 {
 	for _, p := range m.Prompts {
 		revs["prompts/"+p.ID] = p.Rev
 	}
+	for _, s := range m.Shares {
+		revs["shares/"+s.ID] = s.Rev
+	}
 	return revs
 }
 
@@ -1306,11 +1375,17 @@ func noteRemoved(removed map[string]int64, full bool, gone account.Tombstones, m
 	for id, rev := range gone.Prompts {
 		out["prompts/"+id] = rev
 	}
+	for id, rev := range gone.Shares {
+		out["shares/"+id] = rev
+	}
 	for _, h := range m.Hosts {
 		delete(out, "hosts/"+h.ID)
 	}
 	for _, p := range m.Prompts {
 		delete(out, "prompts/"+p.ID)
+	}
+	for _, s := range m.Shares {
+		delete(out, "shares/"+s.ID)
 	}
 	return out
 }

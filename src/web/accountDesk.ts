@@ -75,9 +75,11 @@ function accountState(account: Pick<WebAccount, "current" | "signOutAttempt">, p
 }
 
 /** The account Desk methods, whether this load ended a sign-in (`signInReturned`, the marker this
- *  call takes out of the address) for the page to open where the result shows, the page's one
- *  way out (`exit`, PageExit): every navigation away from this document goes through it, and
- *  `sync`, the account sync the saved prompts (prompts.ts) run after a change. */
+ *  call takes out of the address) for the page to open where the result shows, how it ended for a
+ *  page that shows it itself (`signInEnded`: null when it didn't, problem null for a session, else
+ *  the error in words, taken so the account page doesn't show it again), the page's one way out
+ *  (`exit`, PageExit): every navigation away from this document goes through it, and `sync`, the
+ *  account sync the saved prompts (prompts.ts) run after a change. */
 export function createAccountDesk(page: AccountPage, here: AccountHere) {
  const account = new WebAccount(page.fetch);
  const exit = new PageExit(account);
@@ -196,5 +198,6 @@ export function createAccountDesk(page: AccountPage, here: AccountHere) {
    await account.removeThisDevice(id, acct, signal);
   },
  };
- return { desk, signInReturned: returned !== null, account, exit, sync };
+ const signInEnded = () => returned === null ? null : { problem: returned.error === null ? null : takeProblem() };
+ return { desk, signInReturned: returned !== null, signInEnded, account, exit, sync };
 }
