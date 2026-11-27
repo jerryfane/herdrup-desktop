@@ -2,7 +2,7 @@
 // tables, blockquotes, rules, code blocks, inline bold/italic/code/strikethrough/links, and bare
 // URLs). Each message is lexed ONCE as a whole document so nested fences inside lists, tilde
 // fences containing backticks, and reference links defined across code blocks parse intact.
-import { Marked, type Token, type Tokens, type TokensList } from "marked";
+import { Marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
@@ -18,11 +18,10 @@ gramMarked.use({
     },
     link(token: Tokens.Link) {
       // Bare GFM `www.` autolinks have `raw` starting with `www.` and default to `http://`;
-      // upgrade only bare autolinks to `https://` while preserving explicit `[text](http://...)`
-      // and `<http://...>` targets as authored.
+      // upgrade only the scheme on bare autolinks and let Marked's default renderer escape
+      // the destination and label (preserving query entities and explicit http:// links).
       if (/^www\./i.test(token.raw) && token.href.toLowerCase() === `http://${token.raw.toLowerCase()}`) {
-        const href = `https://${token.raw}`.replace(/"/g, "&quot;");
-        return `<a href="${href}">${this.parser.parseInline(token.tokens)}</a>`;
+        token.href = "https://" + token.href.slice("http://".length);
       }
       return false;
     },
@@ -44,6 +43,25 @@ function tokenHasTable(token: Token): boolean {
   return false;
 }
 
+export interface NestedCodeBlock {
+  code: string;
+  language: string | null;
+}
+
+function collectCodeBlocks(tokens: Token[], out: NestedCodeBlock[]): void {
+  for (const token of tokens) {
+    if (token.type === "code") {
+      const codeToken = token as Tokens.Code;
+      const language = (codeToken.lang ?? "").trim().split(/\s+/)[0] || null;
+      out.push({ code: codeToken.text, language });
+    } else if (token.type === "list") {
+      for (const item of (token as Tokens.List).items) collectCodeBlocks(item.tokens, out);
+    } else if ("tokens" in token && Array.isArray(token.tokens)) {
+      collectCodeBlocks(token.tokens, out);
+    }
+  }
+}
+
 export type GramMarkdownBlock =
   | {
       kind: "markdown";
@@ -55,6 +73,9 @@ export type GramMarkdownBlock =
       rich: boolean;
       /** True when this run contains a Markdown table (widens the bubble to its cap). */
       hasTable: boolean;
+      /** Nested code tokens inside this run (e.g. fenced blocks inside lists/quotes), keeping
+       *  their exact parsed text including any trailing blank lines for the Copy button. */
+      codes: NestedCodeBlock[];
     }
   | {
       kind: "code";
@@ -63,8 +84,7 @@ export type GramMarkdownBlock =
     };
 
 /** Parses a whole Gram message ONCE into top-level code blocks (for the distinct card inset with
- *  the shared Copy receipt) and surrounding Markdown runs (sharing the whole document's reference
- *  link table). Pure; safe without a DOM. */
+ *  the shared Copy receipt) and surrounding Markdown runs. Pure; safe without a DOM. */
 export function parseGramMessage(text: string): GramMarkdownBlock[] {
   const tokens = gramMarked.lexer(text);
   const out: GramMarkdownBlock[] = [];
@@ -73,14 +93,16 @@ export function parseGramMessage(text: string): GramMarkdownBlock[] {
   const flushRun = () => {
     if (run.length === 0) return;
     const meaningful = run.filter((t) => t.type !== "space" && t.type !== "def");
-    const slice = Object.assign(run, { links: tokens.links }) as TokensList;
+    const slice = run;
     run = [];
     if (meaningful.length === 0) return;
     const html = gramMarked.parser(slice);
     if (html.trim() === "") return;
     const hasTable = meaningful.some(tokenHasTable);
     const rich = meaningful.length > 1 || meaningful[0]!.type !== "paragraph";
-    out.push({ kind: "markdown", html, rich, hasTable });
+    const codes: NestedCodeBlock[] = [];
+    collectCodeBlocks(meaningful, codes);
+    out.push({ kind: "markdown", html, rich, hasTable, codes });
   };
 
   for (const token of tokens) {
@@ -100,7 +122,7 @@ export function parseGramMessage(text: string): GramMarkdownBlock[] {
 /** Renders a parsed Gram Markdown run as a DOMPurify-sanitized DOM element ready for `.gprose`,
  *  with tables wrapped in scrollable rounded frames, links routed through `Desk.openExternalURL`,
  *  and any nested `<pre>` (e.g. a code fence inside a list item or blockquote) rendered with the
- *  Gram code block widget. */
+ *  Gram code block widget using the exact parsed code text. */
 export function renderGramMarkdown(block: Extract<GramMarkdownBlock, { kind: "markdown" }>): HTMLElement {
   const body = document.createElement("div");
   body.className = block.rich ? "gprose-md" : "gprose-text";
@@ -124,13 +146,17 @@ export function renderGramMarkdown(block: Extract<GramMarkdownBlock, { kind: "ma
     void Desk.openExternalURL(link.getAttribute("href") ?? "").catch(() => {});
   });
 
+  let nestedIndex = 0;
   for (const pre of body.querySelectorAll("pre")) {
     const code = pre.querySelector("code");
-    const source = code?.textContent ?? pre.textContent ?? "";
-    const language = /(?:^|\s)language-(\S+)/.exec(code?.className ?? "")?.[1] ?? null;
+    const parsed = block.codes[nestedIndex++];
+    const source = parsed ? parsed.code : (code?.textContent ?? pre.textContent ?? "").replace(/\n$/, "");
+    const language = parsed
+      ? parsed.language
+      : /(?:^|\s)language-(\S+)/.exec(code?.className ?? "")?.[1] ?? null;
     const host = document.createElement("div");
     host.className = "gprose-code";
-    host.append(selfCopyingCodeBlock(source.replace(/\n$/, ""), language, false));
+    host.append(selfCopyingCodeBlock(source, language, false));
     pre.replaceWith(host);
   }
 

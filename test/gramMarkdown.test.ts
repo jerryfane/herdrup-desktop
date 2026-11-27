@@ -91,11 +91,13 @@ test("nested tables inside blockquotes are detected", () => {
 });
 
 test("whole-message parsing preserves indented list fences, tilde fences containing backticks, and cross-fence reference links", () => {
-  // 1. Indented backtick fence inside a list item stays one single list with continuation inside the item.
+  // 1. Indented backtick fence inside a list item stays one single list with continuation inside the item,
+  //    and retains exact parsed code text (including a trailing blank line) for Copy.
   const nestedList = [
     "- Run build:",
     "  ```sh",
     "  make test",
+    "",
     "  ```",
     "  Then verify output.",
     "- Deploy",
@@ -107,6 +109,7 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
     expect((listBlocks[0]!.html.match(/<ul>/g) ?? []).length).toBe(1);
     expect(listBlocks[0]!.html).toContain("Then verify output.");
     expect(listBlocks[0]!.html).toContain("<pre><code");
+    expect(listBlocks[0]!.codes).toEqual([{ code: "make test\n", language: "sh" }]);
   }
 
   // 2. Tilde-fenced Markdown example containing literal backticks stays one single top-level code block.
@@ -127,13 +130,14 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
   expect(refBlocks[1]).toEqual({ kind: "code", code: "make", language: "sh" });
 });
 
-test("bare www autolinks upgrade to https while explicit http link destinations stay http", () => {
-  const msg = "Bare www.example.com vs explicit [www.example.com](http://www.example.com) and <http://www.example.com>.";
+test("bare www autolinks upgrade to https while preserving query entities and explicit http destinations", () => {
+  const msg = "Bare www.example.com and query www.example.test/path?x=1&amp;y=2 vs explicit [www.example.com](http://www.example.com) and <http://www.example.com>.";
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
   if (blocks[0]!.kind !== "markdown") return;
   expect(blocks[0]!.html).toContain('Bare <a href="https://www.example.com">www.example.com</a>');
+  expect(blocks[0]!.html).toContain('query <a href="https://www.example.test/path?x=1&amp;amp;y=2">www.example.test/path?x=1&amp;amp;y=2</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 });

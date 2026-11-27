@@ -709,7 +709,7 @@ function showState(node: HTMLElement) {
 let feedList: HTMLElement;
 let sentinelEl: HTMLElement | null = null;
 let footerEl: HTMLElement;
-const rowNodes = new Map<string, { sig: string; node: HTMLElement }>();
+const rowNodes = new Map<string, { sig: string; node: HTMLElement; hasCode: boolean }>();
 let feedObserver: IntersectionObserver | null = null;
 const onScreen = new Set<string>();
 
@@ -824,19 +824,20 @@ function renderFeed(visible: GramMessage[], setup: boolean) {
     const sep = entry.separator ? separator(entry.separator, now) : null;
     const gaps = model.rowGaps(index, entry);
     const dl = downloads.get(m.id);
-    const sig = JSON.stringify([
-      m,
-      entry.startsGroup,
-      entry.endsGroup,
-      entry.unreadCount,
-      sep,
-      gaps,
-      [...(expanded.get(m.id) ?? [])],
-      dl ? [dl.done, dl.size, dl.state] : null,
-      /(?:```|~~~| {4}|\t)/.test(m.text) ? copied : null,
-    ]);
     const cached = rowNodes.get(m.id);
-    if (cached && cached.sig === sig) {
+    const sigOf = (hasCode: boolean) =>
+      JSON.stringify([
+        m,
+        entry.startsGroup,
+        entry.endsGroup,
+        entry.unreadCount,
+        sep,
+        gaps,
+        [...(expanded.get(m.id) ?? [])],
+        dl ? [dl.done, dl.size, dl.state] : null,
+        hasCode ? copied : null,
+      ]);
+    if (cached && cached.sig === sigOf(cached.hasCode)) {
       nodes.push(cached.node);
       return;
     }
@@ -854,11 +855,13 @@ function renderFeed(visible: GramMessage[], setup: boolean) {
       r.append(el("span", "gunread-line"), el("span", "gunread-text", `${entry.unreadCount} unread`), el("span", "gunread-line"));
       slot.append(r);
     }
-    const row = messageRow(m, entry.startsGroup, entry.endsGroup);
+    const blocks = parseGramMessage(m.text);
+    const hasCode = blocks.some((b) => b.kind === "code");
+    const row = messageRow(m, blocks, entry.startsGroup, entry.endsGroup);
     row.style.marginTop = `${gaps.row}px`;
     slot.append(row);
     if (cached) feedObserver?.unobserve(cached.node);
-    rowNodes.set(m.id, { sig, node: slot });
+    rowNodes.set(m.id, { sig: sigOf(hasCode), node: slot, hasCode });
     feedObserver?.observe(slot);
     nodes.push(slot);
   });
@@ -1047,16 +1050,19 @@ function renderSaved() {
   for (const s of drawn) {
     seen.add(s.id);
     const dl = downloads.get(s.id);
-    const sig = JSON.stringify([s, [...(expanded.get(s.id) ?? [])], dl ? [dl.done, dl.size, dl.state] : null, /(?:```|~~~| {4}|\t)/.test(s.text) ? copied : null, Math.floor(Date.now() / 60000)]);
     const cached = rowNodes.get(s.id);
-    if (cached && cached.sig === sig) {
+    const sigOf = (hasCode: boolean) =>
+      JSON.stringify([s, [...(expanded.get(s.id) ?? [])], dl ? [dl.done, dl.size, dl.state] : null, hasCode ? copied : null, Math.floor(Date.now() / 60000)]);
+    if (cached && cached.sig === sigOf(cached.hasCode)) {
       nodes.push(cached.node);
       continue;
     }
+    const blocks = parseGramMessage(s.text);
+    const hasCode = blocks.some((b) => b.kind === "code");
     const slot = el("div", "gslot saved");
     slot.dataset.id = s.id;
-    slot.append(savedRow(s));
-    rowNodes.set(s.id, { sig, node: slot });
+    slot.append(savedRow(s, blocks));
+    rowNodes.set(s.id, { sig: sigOf(hasCode), node: slot, hasCode });
     nodes.push(slot);
   }
   for (const id of rowNodes.keys()) if (!seen.has(id)) rowNodes.delete(id);
@@ -1096,14 +1102,13 @@ function revealOlderSaved() {
 
 // ---- Rows (GramRow, SavedGramRow / GramLoneMessage) ----
 
-function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): HTMLElement {
+function messageRow(m: GramMessage, blocks: GramMarkdownBlock[], startsGroup: boolean, endsGroup: boolean): HTMLElement {
   const mine = !m.fromAgent;
   const row = el("div", "grow " + (mine ? "mine" : "theirs") + (m.saved ? " saved" : ""));
   if (startsGroup && !mine) row.append(senderLine(m));
   const line = el("div", "grow-line");
   if (!mine) line.append(endsGroup ? gramAvatar(m.from, 28) : el("div", "gavatar-space"));
   const parts = el("div", "gparts");
-  const blocks = parseGramMessage(m.text);
   const imageFile = m.file?.isImage ? m.file : undefined;
   const hasCard = (!!m.file && !m.file.isImage) || !!m.expiredFile;
   const hasText = blocks.length > 0 || hasCard;
@@ -1153,7 +1158,7 @@ function age(ms: number): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
-function savedRow(s: SavedGram): HTMLElement {
+function savedRow(s: SavedGram, blocks: GramMarkdownBlock[]): HTMLElement {
   const mine = !s.fromAgent;
   const row = el("div", "grow lone " + (mine ? "mine" : "theirs"));
   const head = el("div", "glone-head");
@@ -1163,7 +1168,6 @@ function savedRow(s: SavedGram): HTMLElement {
   row.append(head);
   const line = el("div", "grow-line");
   if (!mine) line.append(gramAvatar(s.from, 28));
-  const blocks = parseGramMessage(s.text);
   const hasCard = !!s.file || !!s.expiredFile;
   if (blocks.length > 0 || hasCard) {
     const parts = el("div", "gparts");
