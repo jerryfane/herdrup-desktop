@@ -1,13 +1,36 @@
 import { expect, test } from "bun:test";
-import { modelLine } from "../src/interactionModel";
+import { modelLine, runningCommandPreview } from "../src/interactionModel";
 
 // Owner report 2026-11-03: Chat showed no model or effort. The line reads as native's
 // TranscriptModel.label / accessibilityLabel (AgentTranscript.swift).
-test("the model line words the effort as native does", () => {
+test("the model line words the harness and effort as native does", () => {
  const m = { id: "claude-opus-5-5", provider: "anthropic" };
  expect(modelLine({ ...m, thinking_level: "high" })).toEqual({ label: "claude-opus-5-5 · high", accessibilityLabel: "Model: anthropic, claude-opus-5-5, effort high" });
  expect(modelLine({ ...m, thinking_level: "high", thinking_auto: true }).label).toBe("claude-opus-5-5 · high (auto)");
  expect(modelLine({ ...m, thinking_auto: true }).label).toBe("claude-opus-5-5 · auto");
  expect(modelLine(m)).toEqual({ label: "claude-opus-5-5", accessibilityLabel: "Model: anthropic, claude-opus-5-5" });
  expect(modelLine({ ...m, thinking_level: null, thinking_auto: null }).label).toBe("claude-opus-5-5");
+
+ // Harness prefix from wire field or pane fallback.
+ expect(modelLine({ ...m, harness: "omp", thinking_level: "high" })).toEqual({
+  label: "omp · claude-opus-5-5 · high",
+  accessibilityLabel: "Model: omp, anthropic, claude-opus-5-5, effort high",
+ });
+ expect(modelLine({ id: "Gemini 4 Neon", provider: "antigravity", harness: "agy", thinking_level: "high" })).toEqual({
+  label: "agy · Gemini 4 Neon · high",
+  accessibilityLabel: "Model: agy, antigravity, Gemini 4 Neon, effort high",
+ });
+ expect(modelLine({ ...m, thinking_level: "high" }, "omp")).toEqual({
+  label: "omp · claude-opus-5-5 · high",
+  accessibilityLabel: "Model: omp, anthropic, claude-opus-5-5, effort high",
+ });
+ // Wire harness wins over fallback.
+ expect(modelLine({ ...m, harness: "omp" }, "agy").label).toBe("omp · claude-opus-5-5");
+ expect(modelLine(m, "  AGY ").label).toBe("agy · claude-opus-5-5");
+});
+
+test("runningCommandPreview extracts the first non-empty line", () => {
+ expect(runningCommandPreview(null)).toBeNull();
+ expect(runningCommandPreview("   \n\t\n")).toBeNull();
+ expect(runningCommandPreview("\n  set -e\ncargo test\n")).toBe("set -e");
 });
