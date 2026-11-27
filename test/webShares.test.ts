@@ -1377,3 +1377,28 @@ test("over-quota queued puts cannot block an unrelated Leave, and a 4xx-refused 
  ].sort());
  expect(recordOf(mac.storage).pending).toEqual([]);
 }, CONNECTS_LIMIT_MS);
+
+test("a 400 refusal on an isolated Leave delete keeps it queued, throws LeaveUnsent, and succeeds on the next sync", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const first = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "one"), "account");
+ const firstId = `${h.relay.hostID}/${first.guestID}`;
+ expect(w.sharesIn("acct")).toEqual([firstId]);
+
+ // Queue a second valid put while pushes are temporarily refused, then inject a one-time 400
+ // invalid_item on the isolated delete batch during Leave.
+ w.refuseNextPush = [429, "rate_limited"];
+ const second = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "two"), "account");
+ const secondId = `${h.relay.hostID}/${second.guestID}`;
+ expect(second.added?.outcome).toBe("unknown");
+
+ w.refuseNextPush = [400, "invalid_item"];
+ await expect(mac.desk.forgetGuestConnection(firstId)).rejects.toThrow(LeaveUnsent);
+ expect(w.sharesIn("acct").sort()).toEqual([firstId, secondId].sort());
+ expect(recordOf(mac.storage).pending).toEqual([{ id: firstId, deleted: true }]);
+
+ // Next healthy sync retries the queued delete and removes the share from the account.
+ await mac.shares.sync();
+ expect(w.sharesIn("acct")).toEqual([secondId]);
+ expect(recordOf(mac.storage).pending).toEqual([]);
+}, CONNECTS_LIMIT_MS);
