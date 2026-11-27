@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { choiceRows, initWebAccess, takesTyping, TYPING_PAUSE_MS, type SheetClock } from "../src/webAccess";
 import { followPresses } from "../src/codeField";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
+import { ACCESS_CHOICES, APPROVAL_BACKOFF_MAX_MS, APPROVAL_POLL_MS, approvalPollDelay, askOffered, canApprove, choiceLabel, CodePress, codeInput, codeSlots, DRAG_PX, isApprovalRateLimited, lengthLabel, machinesNote, machinesSummary, nextRequest, OFFERED_RECHECK_MS,
  resultLines, slotSelection, timeSummary, wrongCode } from "../src/webAccessModel";
 import { FakeDocument, FakeElement, Listened } from "./fakeDom";
 
@@ -644,4 +644,15 @@ test("the line under the rows says what Approve turns on and why a machine can't
  expect(machinesNote([{ label: "hetzner", available: true }])).toBe("Approving turns on web access on the machines you tick.");
  expect(machinesNote([{ label: "hetzner", available: true }, { label: "win-box", available: false, unavailable: "unsupported" }, { label: "nas", available: false, unavailable: "needs_key" }]))
   .toBe("Approving turns on web access on the machines you tick. win-box can't share with the web (Windows). nas needs a key file (connect it once with a key).");
+});
+
+test("approval poll backoff doubles on rate limits up to the cap and resets at 0 failures", () => {
+ expect(isApprovalRateLimited(new Error("account service: 429 too_many_requests"))).toBe(true);
+ expect(isApprovalRateLimited("account service: 429 rate_limited")).toBe(true);
+ expect(isApprovalRateLimited(new Error("account service: 503 unavailable"))).toBe(false);
+ expect(approvalPollDelay(0, false)).toBe(APPROVAL_POLL_MS);
+ expect(approvalPollDelay(1, true)).toBe(APPROVAL_POLL_MS * 2);
+ expect(approvalPollDelay(2, true)).toBe(APPROVAL_POLL_MS * 4);
+ expect(approvalPollDelay(3, true)).toBe(APPROVAL_BACKOFF_MAX_MS);
+ expect(approvalPollDelay(5, true)).toBe(APPROVAL_BACKOFF_MAX_MS);
 });

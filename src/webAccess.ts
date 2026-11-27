@@ -17,12 +17,8 @@ import { noticeRegion } from "./notices";
 import { codeField } from "./codeField";
 import { showPairSheet } from "./pairApproval";
 import { pairNotice } from "./pairApprovalModel";
-import { ACCESS_CHOICES, askOffered, canApprove, choiceLabel, codeInput, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
+import { ACCESS_CHOICES, APPROVAL_POLL_MS, approvalPollDelay, askOffered, canApprove, choiceLabel, codeInput, isApprovalRateLimited, lengthLabel, machinesNote, machinesSummary, nextRequest, resultLines, skipReason,
  timeSummary, wrongCode, type WebAccessRequestView } from "./webAccessModel";
-
-/** How often to look for requests while the window is in front: the service allows 30 approval
- *  calls a minute per account, and a request lasts 10 minutes. */
-const POLL_MS = 8000;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text?: string): HTMLElementTagNameMap[K] {
  const n = document.createElement(tag);
@@ -128,8 +124,9 @@ export function takesTyping(node: Element | null): boolean {
 }
 
 /** clock is the For row's and the pair sheet's, and times the pause in typing and the recheck of
- *  what the service offers (tests pass their own). */
-export function initWebAccess(clock: SheetClock = systemClock): void {
+ *  what the service offers (tests pass their own). paused reports when the list poll is redundant
+ *  (e.g. this computer is waiting on its own pair request, sharing the account's approval budget). */
+export function initWebAccess(clock: SheetClock = systemClock, paused: () => boolean = () => false): void {
  if (webGuest) return;
  const closed = new Set<string>();
  // The request whose sheet, or notice, is up: one at a time, of either kind.
@@ -138,13 +135,17 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  // kinds). A refresh that fails keeps it; with none yet, the look ends and the next asks again.
  let offers: { browsers: boolean; pairs: boolean; at: number } | null = null;
  let timer: ReturnType<typeof setTimeout> | undefined;
+ // Consecutive poll failures (reset on a successful list read or sign-in change) and the earliest
+ // clock time a visibilitychange may trigger an immediate look while backed off.
+ let failures = 0;
+ let backoffUntil = 0;
  // When the user last typed anywhere in the window.
  let typedAt = -Infinity;
  const typed = () => { typedAt = clock.now(); };
  document.addEventListener("keydown", typed, true);
  document.addEventListener("input", typed, true);
 
- const schedule = () => { clearTimeout(timer); timer = setTimeout(() => { void look(); }, POLL_MS); };
+ const schedule = (ms = APPROVAL_POLL_MS) => { clearTimeout(timer); timer = setTimeout(() => { void look(); }, ms); };
  const machinesNow = (): Promise<WebAccessMachine[]> => Desk.webAccessMachines().catch(() => []);
  // A look in flight: it alone picks a request and puts up its notice or sheet, so the timer's
  // look and one from coming back to the window never put up two for one request.
@@ -154,16 +155,20 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
  async function look(): Promise<void> {
   if (looking) return;
   looking = true;
+  let nextDelay = APPROVAL_POLL_MS;
   try {
-   if (document.visibilityState !== "visible" || open !== null) return;
+   if (document.visibilityState !== "visible" || open !== null || paused()) return;
    const state = await Desk.accountState();
-   if (!state.signedIn) { offers = null; return; }
+   if (!state.signedIn) { offers = null; failures = 0; backoffUntil = 0; return; }
    if (askOffered(offers, clock.now())) {
     try { offers = { ...await Desk.approvalsOffered(), at: clock.now() }; }
     catch (error) { if (!offers) throw error; offers = { ...offers, at: clock.now() }; }
    }
    if (!offers?.browsers && !offers?.pairs) return;
-   const next = nextRequest(await Desk.approvalRequests(), offers, closed);
+   const requests = await Desk.approvalRequests();
+   failures = 0;
+   backoffUntil = 0;
+   const next = nextRequest(requests, offers, closed);
    if (!next) return;
    let id: string, text: string, sheet: (machines: readonly WebAccessMachine[]) => Promise<void>;
    const done = () => { closed.add(id); open = null; };
@@ -182,11 +187,21 @@ export function initWebAccess(clock: SheetClock = systemClock): void {
    // Checked again after the last wait, right before the sheet would open: typing may have begun meanwhile.
    if (takesTyping(document.activeElement)) notify(id, text, sheet);
    else await sheet(machines);
-  } catch { /* the next look tries again */ }
-  finally { looking = false; schedule(); }
+  } catch (error) {
+   failures = Math.min(failures + 1, 5);
+   nextDelay = approvalPollDelay(failures, isApprovalRateLimited(error));
+   backoffUntil = clock.now() + nextDelay;
+  }
+  finally { looking = false; schedule(nextDelay); }
  }
- document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { clearTimeout(timer); void look(); } });
- events.accountChanged.on(() => { offers = null; });
+ document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  const wait = backoffUntil - clock.now();
+  if (wait > 0) { schedule(wait); return; }
+  clearTimeout(timer);
+  void look();
+ });
+ events.accountChanged.on(() => { offers = null; failures = 0; backoffUntil = 0; });
  schedule();
 
  /** A request that came while the user was typing: a modal sheet would take the keys mid-word
