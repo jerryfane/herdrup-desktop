@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/dsa"
 	"crypto/ed25519"
 	"crypto/mldsa"
 	"crypto/rand"
@@ -114,15 +115,23 @@ func TestSessionConnectsToEd25519PinnedHostThatAddedECDSA(t *testing.T) {
 	}
 
 	// Ordinary connection path (Desk.session -> dialWithPinFallback): connects
-	// by finding the pinned ed25519 key.
+	// by finding the pinned ed25519 key and delivers the first connected board.
 	if err := d.Connect(m, ""); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	t.Cleanup(func() { d.Disconnect() })
-	waitFor(t, "ed25519-pinned host connected after adding ECDSA", func() bool {
-		return d.liveBridge(m) != nil
+	waitFor(t, "ed25519-pinned host connected board after adding ECDSA", func() bool {
+		st := d.State()
+		if st.Phase == "error" {
+			t.Fatalf("session entered error state: %s", st.Message)
+		}
+		return st.Phase == "connected" && d.Board() != nil
 	})
-	gotKey, _ := d.liveBridge(m).HostKey()
+	live := d.liveBridge(m)
+	if live == nil {
+		t.Fatal("connected session has nil liveBridge")
+	}
+	gotKey, _ := live.HostKey()
 	if got := bridge.Fingerprint(gotKey); got != wantPin {
 		t.Fatalf("session connected with key %s, want pinned %s", got, wantPin)
 	}
@@ -237,10 +246,84 @@ func TestSessionConnectsToMLDSAPinnedHostThatAddedECDSA(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 	t.Cleanup(func() { d.Disconnect() })
-	waitFor(t, "mldsa-pinned host connected after adding ECDSA", func() bool {
-		return d.liveBridge(m) != nil
+	waitFor(t, "mldsa-pinned host connected board after adding ECDSA", func() bool {
+		st := d.State()
+		if st.Phase == "error" {
+			t.Fatalf("session entered error state: %s", st.Message)
+		}
+		return st.Phase == "connected" && d.Board() != nil
 	})
-	gotKey, _ := d.liveBridge(m).HostKey()
+	live := d.liveBridge(m)
+	if live == nil {
+		t.Fatal("connected session has nil liveBridge")
+	}
+	gotKey, _ := live.HostKey()
+	if got := bridge.Fingerprint(gotKey); got != wantPin {
+		t.Fatalf("session connected with key %s, want pinned %s", got, wantPin)
+	}
+
+	d.Disconnect()
+	ecClient, done, err := d.ownerClient(context.Background(), m)
+	if err != nil {
+		t.Fatalf("ownerClient: %v", err)
+	}
+	defer done()
+	if ecClient == nil {
+		t.Fatal("ownerClient returned nil client")
+	}
+
+	gotPin, ok, err := d.pins.Pin(addr)
+	if err != nil || !ok || gotPin != wantPin {
+		t.Fatalf("pin changed: %q ok=%v err=%v, want %q", gotPin, ok, err, wantPin)
+	}
+}
+
+// A non-Paired host pinned on a legacy DSA key (which Go's default dial accepts
+// and can pin) that later adds ECDSA still connects through both Desk.session
+// and ownerClient without changing the pin.
+func TestSessionConnectsToDSAPinnedHostThatAddedECDSA(t *testing.T) {
+	dir := t.TempDir()
+	d := newDesk(dir)
+	keyPath, clientPub := writeTestClientKey(t, dir)
+
+	var params dsa.Parameters
+	if err := dsa.GenerateParameters(&params, rand.Reader, dsa.L1024N160); err != nil {
+		t.Fatal(err)
+	}
+	priv := &dsa.PrivateKey{PublicKey: dsa.PublicKey{Parameters: params}}
+	if err := dsa.GenerateKey(priv, rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	dsaSigner, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ec := ecdsaHostKey(t)
+	host, port, _ := startFakeHost(t, dsaSigner, []ssh.Signer{ec}, clientPub, "")
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	wantPin := bridge.Fingerprint(dsaSigner.PublicKey())
+	if err := d.pins.SetPin(addr, wantPin); err != nil {
+		t.Fatal(err)
+	}
+
+	m := Machine{Nickname: "dsa-box", Host: host, Port: port, User: "dev", KeyPath: keyPath}
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { d.Disconnect() })
+	waitFor(t, "dsa-pinned host connected board after adding ECDSA", func() bool {
+		st := d.State()
+		if st.Phase == "error" {
+			t.Fatalf("session entered error state: %s", st.Message)
+		}
+		return st.Phase == "connected" && d.Board() != nil
+	})
+	live := d.liveBridge(m)
+	if live == nil {
+		t.Fatal("connected session has nil liveBridge")
+	}
+	gotKey, _ := live.HostKey()
 	if got := bridge.Fingerprint(gotKey); got != wantPin {
 		t.Fatalf("session connected with key %s, want pinned %s", got, wantPin)
 	}

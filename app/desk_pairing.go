@@ -147,17 +147,26 @@ func hostKeyAlgorithms(m Machine) []string {
 // sessionHostKeyFallback returns the bounded per-type algorithms tried one by
 // one when a non-Paired machine with a stored pin hits HostKeyChangedError
 // under Go's default preference order (which prefers ECDSA over ed25519 and
-// ML-DSA). Derived from ssh.SupportedAlgorithms().HostKeys so every key and
-// certificate type the SSH library can negotiate by default (including ML-DSA)
-// is covered, plus legacy ssh-rsa plain/cert for older hosts.
+// ML-DSA). Derived from ssh.SupportedAlgorithms().HostKeys plus
+// ssh.InsecureAlgorithms().HostKeys so every key and certificate type the
+// default SSH dial can negotiate and pin (including ML-DSA, legacy RSA, and
+// legacy DSA) is covered consistently.
 func sessionHostKeyFallback() []string {
 	algos := ssh.SupportedAlgorithms().HostKeys
-	for _, legacy := range []string{ssh.KeyAlgoRSA, ssh.CertAlgoRSAv01} {
+	for _, legacy := range ssh.InsecureAlgorithms().HostKeys {
 		if !slices.Contains(algos, legacy) {
 			algos = append(algos, legacy)
 		}
 	}
 	return algos
+}
+
+// readOnlyPins checks host-key pins against PinStore without ever adding or
+// replacing a pin during fallback probing.
+type readOnlyPins struct{ bridge.PinStore }
+
+func (readOnlyPins) SetPin(string, string) error {
+	return errors.New("pin fallback does not record new host keys")
 }
 
 // hostKeyRetryable reports whether a dial failure means this host-key type did
@@ -176,10 +185,9 @@ func hostKeyRetryable(err error) bool {
 // dialWithPinFallback dials cfg; when no explicit HostKeyAlgorithms were set
 // (a non-Paired machine using SSH defaults) and the server's preferred key
 // misses the stored pin (HostKeyChangedError), it tries each algorithm in
-// sessionHostKeyFallback using a read-only pin checker (pairPins, never
-// repinning). Any error other than hostKeyRetryable stops the search
-// immediately, preserving auth or network failures; if none matches, the
-// initial HostKeyChangedError returns.
+// sessionHostKeyFallback using readOnlyPins (never repinning). Any error other
+// than hostKeyRetryable stops the search immediately, preserving auth or
+// network failures; if none matches, the initial HostKeyChangedError returns.
 func dialWithPinFallback(ctx context.Context, cfg bridge.Config) (*bridge.Client, error) {
 	c, err := bridge.Dial(ctx, cfg)
 	var changed *bridge.HostKeyChangedError
@@ -187,7 +195,7 @@ func dialWithPinFallback(ctx context.Context, cfg bridge.Config) (*bridge.Client
 		return c, err
 	}
 	if cfg.Pins != nil {
-		cfg.Pins = &pairPins{PinStore: cfg.Pins}
+		cfg.Pins = readOnlyPins{cfg.Pins}
 	}
 	for _, algo := range sessionHostKeyFallback() {
 		tryCfg := cfg
