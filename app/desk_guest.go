@@ -211,9 +211,11 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 		d.confirmShare()
 		// If the accept's own sync removed the grant (the share was deleted
 		// from the account meanwhile), report that distinctly even if saving
-		// sync state afterward failed; never claim confirmed or saved.
+		// sync state or recording the durable marker failed; never claim
+		// confirmed or saved.
 		list, listErr := d.guestStore.List()
-		if listErr == nil && !slices.ContainsFunc(list, func(g guest.Access) bool { return g.ID() == access.ID() }) {
+		gone, goneErr := d.boundShareGone(access.Account, access.ShareID())
+		if (listErr == nil && !slices.ContainsFunc(list, func(g guest.Access) bool { return g.ID() == access.ID() })) || (goneErr == nil && gone) {
 			access.AccountShare = shareRemoved
 			access.AccountShareProblem = ""
 			return access, nil
@@ -221,7 +223,7 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 		// Unread, the access says nothing of the account (no AccountShare),
 		// never that it holds the share.
 		if listErr == nil {
-			if told, err := d.withAccountShares([]guest.Access{access}); err == nil {
+			if told, err := d.withAccountShares([]guest.Access{access}); err == nil && len(told) > 0 {
 				access = told[0]
 			}
 		}
@@ -243,6 +245,21 @@ func (d *Desk) ConnectGuest(id string) error {
 	}
 	if access == nil {
 		return errors.New("This shared connection is no longer saved")
+	}
+	if access.AccountBound {
+		acct := access.Account
+		if acct == "" {
+			if cur, _ := d.account.Current(); cur != nil {
+				acct = cur.AccountID
+			}
+		}
+		gone, err := d.boundShareGone(acct, access.ShareID())
+		if err != nil {
+			return err
+		}
+		if gone {
+			return errShareGone
+		}
 	}
 	identity, err := guest.ExistingIdentity(filepath.Join(d.dir, "guest-identity"))
 	if err != nil {

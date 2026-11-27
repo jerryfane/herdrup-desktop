@@ -1966,14 +1966,211 @@ func TestFailedProofSaveMaskSurvivesInconclusiveMerge(t *testing.T) {
 		t.Fatalf("SyncedShares listed dropped share: %+v, %v", shares, err)
 	}
 
-	// Now allow state writes, but fail the history probe (503) so the next
-	// merge commits while keeping the unsettled ShareWrite.
+	// Now allow state writes, seed a second unrelated prompt on the server, and
+	// fail the history probe (503) so the next merge commits the new prompt
+	// while keeping the unsettled ShareWrite.
+	w.seedPrompt("prompt-2", `{"text":"committed-during-503"}`)
 	d.accountSync.writeState = nil
 	w.mu.Lock()
 	w.onPull = func() { w.failPull = true }
 	w.mu.Unlock()
-	_ = d.SyncMachines(ctx)
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("inconclusive retry with 503 history probe unexpectedly succeeded")
+	}
+	// Prove the merge actually committed (prompt-2 landed locally) AND the
+	// Unproven ShareWrite is still on disk while the dropped share stays masked.
+	if prompts, err := d.SavedPrompts(); err != nil || !slices.ContainsFunc(prompts, func(p SavedPrompt) bool { return p.ID == "prompt-2" }) {
+		t.Fatalf("inconclusive retry did not commit merge (prompt-2 missing): %+v, %v", prompts, err)
+	}
+	d.storeMu.Lock()
+	afterState, stateErr := d.loadSyncState()
+	d.storeMu.Unlock()
+	if stateErr != nil {
+		t.Fatalf("loadSyncState: %v", stateErr)
+	}
+	if !slices.ContainsFunc(afterState.ShareWrites, func(op shareOp) bool { return op.ID == id && op.Unproven }) {
+		t.Fatalf("expected Unproven ShareWrite for %s to remain after 503 history probe: %+v", id, afterState.ShareWrites)
+	}
 	if shares, err := d.SyncedShares(); err != nil || len(shares) != 0 {
 		t.Fatalf("inconclusive merge relisted dropped share: %+v, %v", shares, err)
 	}
+}
+
+// Even if staging sync-gone-shares.json fails when a sync observes a share
+// deleted, the running process must immediately detach the active guest
+// connection, hide the share from SyncedShares and SharedConnections, and
+// refuse both OpenSyncedShare and ConnectGuest—while preserving the on-disk
+// grant until the durable marker can be written.
+func TestDeletionMarkerWriteFailureStillDetachesAndHidesShare(t *testing.T) {
+	w, srv, relay, _, _, access := acceptBound(t)
+	id := relay.HostID() + "/" + access.GuestID
+	d2 := shareDevice(t, srv)
+	ctx := context.Background()
+
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatalf("initial sync on d2: %v", err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); err != nil {
+		t.Fatalf("OpenSyncedShare on d2: %v", err)
+	}
+	t.Cleanup(func() { d2.Disconnect() })
+	connected := func() bool {
+		d2.mu.Lock()
+		defer d2.mu.Unlock()
+		return d2.link != nil && d2.link.guest != nil
+	}
+	waitFor(t, "d2 connected to share", connected)
+	grantsBefore, err := d2.guestStore.List()
+	if err != nil || len(grantsBefore) != 1 {
+		t.Fatalf("grants before delete: %+v, %v", grantsBefore, err)
+	}
+	grantID := grantsBefore[0].ID()
+
+	// Delete the share on the server, then block writing sync-gone-shares.json.tmp on d2.
+	w.mu.Lock()
+	w.tombstone(id)
+	w.mu.Unlock()
+	blocker := d2.goneSharesPath() + ".tmp"
+	if err := os.Mkdir(blocker, 0o700); err != nil {
+		t.Fatalf("mkdir blocker: %v", err)
+	}
+	if err := d2.SyncMachines(ctx); err == nil {
+		t.Fatal("d2 sync with blocked sync-gone-shares.json.tmp unexpectedly succeeded")
+	}
+	// Active connection must be detached immediately, and all list/open paths
+	// must reject the removed share in memory.
+	if connected() {
+		t.Fatal("guest connection stayed active after marker write failure")
+	}
+	if shares, err := d2.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("SyncedShares listed removed share after marker write failure: %+v, %v", shares, err)
+	}
+	if conns, err := d2.SharedConnections(); err != nil || len(conns) != 0 {
+		t.Fatalf("SharedConnections listed removed share after marker write failure: %+v, %v", conns, err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
+		t.Fatalf("OpenSyncedShare after marker write failure = %v, want %v", err, errShareGone)
+	}
+	if err := d2.ConnectGuest(grantID); !errors.Is(err, errShareGone) {
+		t.Fatalf("ConnectGuest after marker write failure = %v, want %v", err, errShareGone)
+	}
+	if connected() {
+		t.Fatal("removed share reconnected after marker write failure")
+	}
+	// On-disk grant must still be intact until the durable marker can be written.
+	if grants, err := d2.guestStore.List(); err != nil || len(grants) != 1 {
+		t.Fatalf("on-disk grant removed before durable marker succeeded: %+v, %v", grants, err)
+	}
+
+	// Unblock disk writes and verify recovery commits cleanly.
+	if err := os.Remove(blocker); err != nil {
+		t.Fatalf("remove blocker: %v", err)
+	}
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatalf("recovery sync failed: %v", err)
+	}
+	if grants, err := d2.guestStore.List(); err != nil || len(grants) != 0 {
+		t.Fatalf("on-disk grant survived recovery: %+v, %v", grants, err)
+	}
+}
+
+// If a share becomes live again on the server and sync commits the newer live
+// row, an unpruned older deletion marker (e.g. because rewriting
+// sync-gone-shares.json failed when another account still had a marker) must
+// NOT hide or block opening the newly committed live share.
+func TestCommittedLiveRowSupersedesUnprunedDeletionMarker(t *testing.T) {
+	w, srv, relay, _, _, access := acceptBound(t)
+	id := relay.HostID() + "/" + access.GuestID
+	d2 := shareDevice(t, srv)
+	ctx := context.Background()
+
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatalf("initial sync on d2: %v", err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); err != nil {
+		t.Fatalf("OpenSyncedShare on d2: %v", err)
+	}
+	d2.Disconnect()
+
+	// Queue a local prompt so the next sync enters the readback path, tombstone
+	// the share after the push lands, and fail storeSyncState so
+	// sync-gone-shares.json keeps a durable deletion marker for id.
+	if _, err := d2.SavePrompt(SavedPrompt{Nickname: "note", Text: "trigger-readback"}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.afterPush = func() {
+		w.afterPush = nil
+		w.tombstone(id)
+	}
+	w.mu.Unlock()
+	d2.accountSync.writeState = func(path string, raw []byte) error {
+		var state syncState
+		if err := json.Unmarshal(raw, &state); err == nil && slices.Contains(state.SharesGone, id) {
+			return errors.New("disk full on delete commit")
+		}
+		return writeFileAtomic(path, raw)
+	}
+	if err := d2.SyncMachines(ctx); err == nil {
+		t.Fatal("d2 sync with failing writeState unexpectedly succeeded")
+	}
+	d2.accountSync.writeState = nil
+
+	// Copy this account's durable marker entry under another account key so
+	// pruning d2's account requires rewriting (not removing) sync-gone-shares.json.
+	rawMarkers, err := os.ReadFile(d2.goneSharesPath())
+	if err != nil {
+		t.Fatalf("read gone shares file: %v", err)
+	}
+	var markerMap map[string]json.RawMessage
+	if err := json.Unmarshal(rawMarkers, &markerMap); err != nil {
+		t.Fatalf("unmarshal gone shares file: %v", err)
+	}
+	for _, v := range markerMap {
+		markerMap["other-acct"] = v
+		break
+	}
+	updatedMarkers, err := json.Marshal(markerMap)
+	if err != nil {
+		t.Fatalf("marshal gone shares file: %v", err)
+	}
+	if err := os.WriteFile(d2.goneSharesPath(), updatedMarkers, 0o600); err != nil {
+		t.Fatalf("write gone shares file: %v", err)
+	}
+
+	// Make the same share live again on the server at a higher revision.
+	body, err := shareBodyOf(access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBody, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.rev++
+	w.items[id] = account.Item{Collection: "shares", ID: id, Rev: w.rev, Body: rawBody}
+	w.mu.Unlock()
+
+	// Block rewriting sync-gone-shares.json while allowing sync-state commit.
+	blocker := d2.goneSharesPath() + ".tmp"
+	if err := os.Mkdir(blocker, 0o700); err != nil {
+		t.Fatalf("mkdir blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(blocker) })
+
+	if err := d2.SyncMachines(ctx); err != nil {
+		t.Fatalf("sync bringing share back live failed: %v", err)
+	}
+	// The committed live row has a strictly higher rev than the stale on-disk
+	// marker, so SyncedShares and OpenSyncedShare must both succeed even though
+	// pruning sync-gone-shares.json could not rewrite the file.
+	shares, err := d2.SyncedShares()
+	if err != nil || len(shares) != 1 || shares[0].ID != id {
+		t.Fatalf("SyncedShares hid newly live share behind stale marker: %+v, %v", shares, err)
+	}
+	if err := d2.OpenSyncedShare(ctx, id); err != nil {
+		t.Fatalf("OpenSyncedShare blocked newly live share behind stale marker: %v", err)
+	}
+	d2.Disconnect()
 }

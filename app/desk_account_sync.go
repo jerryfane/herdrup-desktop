@@ -561,6 +561,10 @@ type accountSync struct {
 	// writeState writes account-sync.json for storeSyncState; nil is
 	// writeFileAtomic. Tests make it fail. Set before any sync.
 	writeState func(path string, raw []byte) error
+	// goneShares holds in-memory observed-deleted share markers per account
+	// (guarded by d.storeMu) so even if writing sync-gone-shares.json fails,
+	// the running process immediately hides and refuses to reopen them.
+	goneShares map[string]map[string]goneShareMark
 	// background are the syncs syncMachinesSoon started that haven't
 	// ended: a caller that must see everything a change of its sent (a
 	// test counting an accept's pushes) waits for them.
@@ -1002,10 +1006,11 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// that no longer knows the share is written: a failure leaves it known,
 	// and the next pass lets them go. Their connections end as they go,
 	// whatever fails after (dropGoneShares).
-	ended, err := d.dropGoneShares(acct, goneShares)
+	ended, err := d.dropGoneShares(acct, goneShares, goneShareMark{History: state.History, Rev: max(state.Mirror.Rev, latest.Mirror.Rev)})
 	if err != nil {
 		d.storeMu.Unlock()
 		d.finishGuests(ended)
+		d.announceShares()
 		return err
 	}
 	recorded, err := d.commitMerge(machines, changedPrompts, renamed, state)
@@ -1418,7 +1423,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// the grants would stay.
 	var dropped []detached
 	if len(readBackGoneShares) > 0 {
-		if dropped, err = d.dropGoneShares(acct, readBackGoneShares); err != nil {
+		if dropped, err = d.dropGoneShares(acct, readBackGoneShares, goneShareMark{History: state.History, Rev: state.Mirror.Rev}); err != nil {
 			d.storeMu.Unlock()
 			d.finishGuests(dropped)
 			d.announceShares()
