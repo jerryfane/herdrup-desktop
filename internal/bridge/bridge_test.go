@@ -242,6 +242,67 @@ func TestHostKeyIsPinnedAndAChangedKeyRefused(t *testing.T) {
 	}
 }
 
+// certified is key's host certificate from a fresh CA, as an sshd with a
+// HostCertificate presents it.
+func certified(t *testing.T, key ssh.Signer) ssh.Signer {
+	t.Helper()
+	ca, _ := newSigner(t)
+	cert := &ssh.Certificate{Key: key.PublicKey(), CertType: ssh.HostCert, ValidPrincipals: []string{"127.0.0.1"}, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewCertSigner(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A machine presenting a host certificate is the pinned machine when the
+// certificate is of the pinned plain key (what another device's approval
+// pins), or is the certificate pinned on first use before; a certificate of
+// another key is a changed host key.
+func TestAHostCertificateIsCheckedByTheKeyItCertifies(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// pin is the pin set before the dial, from the host's plain key
+		// and the certificate it presents.
+		pin  func(plain ssh.PublicKey, presented ssh.Signer) string
+		same bool
+	}{
+		{"plain key pinned", func(plain ssh.PublicKey, _ ssh.Signer) string { return bridge.Fingerprint(plain) }, true},
+		{"certificate pinned", func(_ ssh.PublicKey, presented ssh.Signer) string { return bridge.Fingerprint(presented.PublicKey()) }, true},
+		{"another key pinned", func(ssh.PublicKey, ssh.Signer) string {
+			other, _ := newSigner(t)
+			return bridge.Fingerprint(other.PublicKey())
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plain, _ := newSigner(t)
+			presented := certified(t, plain)
+			m := startMachine(t, func(s *fakeherdr.Server) { s.HostKey = presented })
+			at := net.JoinHostPort(m.host, strconv.Itoa(m.port))
+			pin := c.pin(plain.PublicKey(), presented)
+			if err := m.pins.SetPin(at, pin); err != nil {
+				t.Fatal(err)
+			}
+			client, err := bridge.Dial(context.Background(), bridge.Config{Host: m.host, Port: m.port, User: "dev", KeyPEM: m.key, Pins: m.pins})
+			var changed *bridge.HostKeyChangedError
+			switch {
+			case c.same && err != nil:
+				t.Fatalf("refused: %v", err)
+			case c.same:
+				client.Close()
+			case !errors.As(err, &changed):
+				t.Fatalf("got %v, want HostKeyChangedError", err)
+			}
+			if now, _, _ := m.pins.Pin(at); now != pin {
+				t.Fatalf("pin changed to %s", now)
+			}
+		})
+	}
+}
+
 func TestPasswordLogin(t *testing.T) {
 	m := startMachine(t, func(s *fakeherdr.Server) { s.Password = "s3cret" })
 	c, err := bridge.Dial(context.Background(), bridge.Config{

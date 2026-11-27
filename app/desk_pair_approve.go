@@ -243,7 +243,7 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 		pong, _ := client.Ping(ctx)
 		return PairProbe{State: "needs_update", Version: pong.Version}, nil
 	}
-	hostKey, err := d.verifiedHostKey(c)
+	hostKey, err := d.verifiedHostKey(c, m)
 	if err != nil {
 		return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
 	}
@@ -279,7 +279,7 @@ func (p *pairPins) SetPin(string, string) error {
 // pairBridge is ownerBridge for a pair approval: a machine without a pin
 // kept here is errNoPin, never pinned.
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
-	pins := &pairPins{PinStore: d.pins}
+	pins := &pairPins{PinStore: d.pinsFor(m)}
 	c, done, err := d.ownerBridge(ctx, m, pins)
 	if err != nil && pins.missing.Load() {
 		return nil, nil, errNoPin
@@ -889,7 +889,7 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
-	hostKey, err := d.verifiedHostKey(c)
+	hostKey, err := d.verifiedHostKey(c, row.m)
 	if errors.Is(err, errNoPlainKey) {
 		row.hold(err.Error())
 		publishPairProgress(PairApproveProgress{ID: id, MachineID: mid, Status: account.PairFailed, Reason: row.held})
@@ -920,21 +920,25 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 }
 
 // verifiedHostKey is the host key c's first handshake verified, as an
-// OpenSSH line with no comment, once it matches the pin kept here under
-// the address it dialled. The list carries plain keys only (pair-v1
+// OpenSSH line with no comment, once it matches m's pin (pinsFor) under
+// the address it dialled: the certificate's pin or, for a host certificate,
+// that of the key it certifies. The list carries plain keys only (pair-v1
 // host_key): for a host certificate it is the key the certificate
-// certifies, which is what the new device pins (it never negotiates
-// certificates), errNoPlainKey when there is none.
-func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
+// certifies, which is what the new device pins, errNoPlainKey when there
+// is none.
+func (d *Desk) verifiedHostKey(c *bridge.Client, m Machine) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
 		return "", errors.New("no host key from this connection")
 	}
-	pin, ok, err := d.pins.Pin(addr)
+	pin, ok, err := d.pinsFor(m).Pin(addr)
+	cert, isCert := key.(*ssh.Certificate)
 	switch {
 	case err != nil:
 		return "", err
-	case !ok || pin != bridge.Fingerprint(key):
+	case ok && pin == bridge.Fingerprint(key):
+	case ok && isCert && cert.Key != nil && pin == bridge.Fingerprint(cert.Key):
+	default:
 		return "", errors.New("its host key doesn't match the one pinned here")
 	}
 	if cert, isCert := key.(*ssh.Certificate); isCert {

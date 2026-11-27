@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // MaxPairSeq is the highest envelope seq the service takes (a safe
@@ -261,10 +263,14 @@ func (p *PairAsk) Abandon() {
 type PairDelivery struct {
 	Seq      uint64
 	Envelope PairEnvelope
+	// HostKeys[i] is Envelope.Machines[i]'s host key as the envelope's
+	// checks parsed it; nil for a failed machine without one.
+	HostKeys []ssh.PublicKey
 }
 
 func (d PairDelivery) clone() PairDelivery {
 	d.Envelope.Machines = slices.Clone(d.Envelope.Machines)
+	d.HostKeys = slices.Clone(d.HostKeys)
 	return d
 }
 
@@ -292,20 +298,20 @@ func (p *PairAsk) Machines(ctx context.Context) (PairDelivery, bool, error) {
 			continue
 		}
 		pub, err1 := base64.RawURLEncoding.DecodeString(e.ApproverPub)
-		ssh, err2 := base64.RawURLEncoding.DecodeString(e.SSHPub)
-		if err1 != nil || err2 != nil || !bytes.Equal(pub, approverPub) || !bytes.Equal(ssh, p.sshPub) || e.Seq < 1 || e.Seq > MaxPairSeq {
+		sshPub, err2 := base64.RawURLEncoding.DecodeString(e.SSHPub)
+		if err1 != nil || err2 != nil || !bytes.Equal(pub, approverPub) || !bytes.Equal(sshPub, p.sshPub) || e.Seq < 1 || e.Seq > MaxPairSeq {
 			return PairDelivery{}, false, ErrApproveTampered
 		}
 		plain, err := OpenPairEnvelope(p.key, approverPub, p.sshPub, p.id, e.Seq, e.Sealed)
 		if err != nil {
 			return PairDelivery{}, false, ErrApproveTampered
 		}
-		env, err := ParsePairEnvelope(plain)
+		env, keys, err := parsePairEnvelope(plain)
 		if err != nil {
 			return PairDelivery{}, false, err
 		}
 		if newest == nil || e.Seq > newest.Seq {
-			newest = &PairDelivery{Seq: e.Seq, Envelope: env}
+			newest = &PairDelivery{Seq: e.Seq, Envelope: env, HostKeys: keys}
 		}
 	}
 	p.mu.Lock()

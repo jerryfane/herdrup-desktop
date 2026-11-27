@@ -655,7 +655,7 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	c, done, err := d.ownerBridge(ctx, m, d.pins)
+	c, done, err := d.ownerBridge(ctx, m, d.pinsFor(m))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -680,10 +680,7 @@ func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore)
 	if m.KeyPath == "" {
 		return nil, nil, errNeedsKey
 	}
-	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairingHostKeyAlgorithms
-	}
+	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins, HostKeyAlgorithms: hostKeyAlgorithms(m)}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
 		return nil, nil, err
