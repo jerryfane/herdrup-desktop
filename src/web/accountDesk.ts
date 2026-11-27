@@ -20,12 +20,25 @@ import { browserLocks } from "./locks";
 import { PageExit } from "./ownerSession";
 import { createAccountSync, type SyncPlace } from "./prompts";
 
-export interface AccountPage { origin: string; href: string; fetch: typeof fetch; navigate(url: string): void; replaceURL(url: string): void }
+export interface AccountPage {
+ origin: string;
+ href: string;
+ fetch: typeof fetch;
+ navigate(url: string): void;
+ replaceURL(url: string): void;
+ /** Tab-scoped storage (sessionStorage in the browser) so a sign-in return and its error
+  *  survive a chunk-load recovery reload after replaceURL strips the query marker. */
+ tabStorage?: () => Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+}
+
+/** sessionStorage key holding a stripped sign-in return until a page consumes it. */
+export const ACCOUNT_RETURN_KEY = "herdrup.web.accountReturn";
 
 export function browserAccountPage(): AccountPage {
  return {
   origin: location.origin, href: location.href, fetch: globalThis.fetch.bind(globalThis),
   navigate: url => location.assign(url), replaceURL: url => history.replaceState(history.state, "", url),
+  tabStorage: () => sessionStorage,
  };
 }
 
@@ -84,10 +97,35 @@ export function createAccountDesk(page: AccountPage, here: AccountHere) {
  const account = new WebAccount(page.fetch);
  const exit = new PageExit(account);
  let live: Promise<Provider[]> | null = null;
- // A load that ends a sign-in: drop the marker from the address now, and say how it went once
- // the page asks (the error is shown once).
- const returned = returnedFromSignIn(page.href);
- if (returned) page.replaceURL(returned.clean);
+ // A load that ends a sign-in: drop the marker from the address now, and keep it in
+ // sessionStorage until a page consumes it (takeProblem / signInEnded), so a chunk-load
+ // recovery reload (boot.ts or web/main.ts) does not lose the return or its error.
+ const tab = () => { try { return page.tabStorage?.() ?? null; } catch { return null; } };
+ const saveReturn = (error: string | null) => {
+  try { tab()?.setItem(ACCOUNT_RETURN_KEY, JSON.stringify({ error })); } catch { /* ignore */ }
+ };
+ const readReturn = (): { error: string | null } | null => {
+  try {
+   const raw = tab()?.getItem(ACCOUNT_RETURN_KEY);
+   if (!raw) return null;
+   const parsed = JSON.parse(raw) as { error?: unknown };
+   return { error: typeof parsed?.error === "string" ? parsed.error : null };
+  } catch {
+   return null;
+  }
+ };
+ let returnCleared = false;
+ const clearReturn = () => {
+  if (returnCleared) return;
+  returnCleared = true;
+  try { tab()?.removeItem(ACCOUNT_RETURN_KEY); } catch { /* ignore */ }
+ };
+ const fromURL = returnedFromSignIn(page.href);
+ if (fromURL) {
+  page.replaceURL(fromURL.clean);
+  saveReturn(fromURL.error);
+ }
+ const returned = fromURL ?? readReturn();
  let pendingProblem = returned?.error ? signInEndedProblem(returned.error) : "";
  // Each finished sync round tells every view the account's state (desk_account_sync.go
  // AccountSyncNow's publishAccount): the account page reads SYNCED again from it.
@@ -97,7 +135,7 @@ export function createAccountDesk(page: AccountPage, here: AccountHere) {
   if (session && sync.failed(session.accountID)) s.syncFailed = true;
   return s;
  };
- const takeProblem = () => { const p = pendingProblem; pendingProblem = ""; return p; };
+ const takeProblem = () => { const p = pendingProblem; pendingProblem = ""; clearReturn(); return p; };
  // One account state for every view: the account panel and the owner screen hear each change
  // (sign-in, sign-out and how it went, another account) when it happens, from the same event. A
  // session that begins syncs at once (the desktop's launch and sign-in), and then every 15 minutes.
@@ -198,6 +236,11 @@ export function createAccountDesk(page: AccountPage, here: AccountHere) {
    await account.removeThisDevice(id, acct, signal);
   },
  };
- const signInEnded = () => returned === null ? null : { problem: returned.error === null ? null : takeProblem() };
+ const signInEnded = () => {
+  if (returned === null) return null;
+  const problem = returned.error === null ? null : (takeProblem() || signInEndedProblem(returned.error));
+  clearReturn();
+  return { problem };
+ };
  return { desk, signInReturned: returned !== null, signInEnded, account, exit, sync };
 }
