@@ -248,8 +248,6 @@
 .gprose.out .gtable-frame { border-color: color-mix(in srgb, var(--color-on-accent) 28%, transparent); }
 .gtable table { width: 100%; table-layout: fixed; border-collapse: collapse; }
 .gtable th, .gtable td { padding: 6px 10px; border: 0; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-.gtable :is(th, td)[align="center"] { text-align: center; }
-.gtable :is(th, td)[align="right"] { text-align: right; }
 .gtable thead tr { background: var(--color-surface); }
 .gprose.out .gtable thead tr { background: color-mix(in srgb, var(--color-on-accent) 14%, transparent); }
 .gtable th { font-size: 12.5px; line-height: 17px; font-weight: 600; color: var(--color-text-dim); }
@@ -257,7 +255,11 @@
 .gtable td { font-size: 13.5px; line-height: 18px; color: inherit; }
 .gtable tbody td { border-top: 1px solid var(--color-hairline-quiet); }
 .gprose.out .gtable tbody td { border-top-color: color-mix(in srgb, var(--color-on-accent) 20%, transparent); }
-.gtable td.gtable-number { font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.gtable td.gtable-number { font-size: 13px; font-variant-numeric: tabular-nums; }
+.gtable td.gtable-number:not([align]) { text-align: right; }
+.gtable :is(th, td)[align="left"] { text-align: left; }
+.gtable :is(th, td)[align="center"] { text-align: center; }
+.gtable :is(th, td)[align="right"] { text-align: right; }
 .gtable td.gtable-gain { color: var(--chat-ok); }
 .gprose.out .gtable td.gtable-gain { color: var(--color-on-accent); }
 .glink { color: var(--color-brand); text-decoration: none; }

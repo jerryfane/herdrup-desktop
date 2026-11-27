@@ -29,8 +29,8 @@ import {
   type GramAgent,
 } from "./gramMention";
 import * as model from "./gramModel";
-import { gramMarkdown, hasMarkdownTable } from "./gramMarkdown";
-import { agentName, foldToggleLabel, gramTextFolds, rowPreview, savedPreview, segments, type GramTextSegment } from "./gramText";
+import { parseGramMessage, renderGramMarkdown, type GramMarkdownBlock } from "./gramMarkdown";
+import { agentName, foldToggleLabel, gramTextFolds, rowPreview, savedPreview } from "./gramText";
 import { guestGramView, type GuestGramView } from "./guestGramView";
 import type { GuestGramGrantInfo } from "./guestGramMerge";
 import {
@@ -833,7 +833,7 @@ function renderFeed(visible: GramMessage[], setup: boolean) {
       gaps,
       [...(expanded.get(m.id) ?? [])],
       dl ? [dl.done, dl.size, dl.state] : null,
-      m.text.includes("```") ? copied : null,
+      /(?:```|~~~| {4}|\t)/.test(m.text) ? copied : null,
     ]);
     const cached = rowNodes.get(m.id);
     if (cached && cached.sig === sig) {
@@ -1047,7 +1047,7 @@ function renderSaved() {
   for (const s of drawn) {
     seen.add(s.id);
     const dl = downloads.get(s.id);
-    const sig = JSON.stringify([s, [...(expanded.get(s.id) ?? [])], dl ? [dl.done, dl.size, dl.state] : null, s.text.includes("```") ? copied : null, Math.floor(Date.now() / 60000)]);
+    const sig = JSON.stringify([s, [...(expanded.get(s.id) ?? [])], dl ? [dl.done, dl.size, dl.state] : null, /(?:```|~~~| {4}|\t)/.test(s.text) ? copied : null, Math.floor(Date.now() / 60000)]);
     const cached = rowNodes.get(s.id);
     if (cached && cached.sig === sig) {
       nodes.push(cached.node);
@@ -1103,10 +1103,10 @@ function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): H
   const line = el("div", "grow-line");
   if (!mine) line.append(endsGroup ? gramAvatar(m.from, 28) : el("div", "gavatar-space"));
   const parts = el("div", "gparts");
-  const segs = segments(m.text);
+  const blocks = parseGramMessage(m.text);
   const imageFile = m.file?.isImage ? m.file : undefined;
   const hasCard = (!!m.file && !m.file.isImage) || !!m.expiredFile;
-  const hasText = segs.length > 0 || hasCard;
+  const hasText = blocks.length > 0 || hasCard;
   const items = model.menuItems({ hasFile: !!m.file, hasText: m.text !== "", saved: m.saved, savedCopy: false }).filter(item => !guest || item !== "Delete");
   const menu = (part: HTMLElement) =>
     part.addEventListener("contextmenu", (e) => {
@@ -1114,8 +1114,8 @@ function messageRow(m: GramMessage, startsGroup: boolean, endsGroup: boolean): H
       void Desk.gramMenu(m.id, items);
     });
   if (hasText) {
-    const part = textPart(m.id, segs, mine, hasCard, (embedded) => fileCardFor(m, embedded));
-    if (model.showsTail({ endsGroup, hasText: segs.length > 0, hasCard, hasImage: !!imageFile })) part.append(tail(mine));
+    const part = textPart(m.id, blocks, mine, hasCard, (embedded) => fileCardFor(m, embedded));
+    if (model.showsTail({ endsGroup, hasText: blocks.length > 0, hasCard, hasImage: !!imageFile })) part.append(tail(mine));
     if (m.saved) part.append(savedBadge());
     menu(part);
     parts.append(part);
@@ -1163,16 +1163,16 @@ function savedRow(s: SavedGram): HTMLElement {
   row.append(head);
   const line = el("div", "grow-line");
   if (!mine) line.append(gramAvatar(s.from, 28));
-  const segs = segments(s.text);
+  const blocks = parseGramMessage(s.text);
   const hasCard = !!s.file || !!s.expiredFile;
-  if (segs.length > 0 || hasCard) {
+  if (blocks.length > 0 || hasCard) {
     const parts = el("div", "gparts");
-    const part = textPart(s.id, segs, mine, hasCard, (embedded) =>
+    const part = textPart(s.id, blocks, mine, hasCard, (embedded) =>
       s.file
         ? fileCard(s.id, s.file.name, s.file.mime, sizeLabel(s.file.size), embedded)
         : expiredCard(s.expiredFile!.name, sizeLabel(s.expiredFile!.size), embedded),
     );
-    if (segs.length > 0 && !hasCard) part.append(tail(mine));
+    if (blocks.length > 0 && !hasCard) part.append(tail(mine));
     const items = model.menuItems({ hasFile: !!s.file, hasText: s.text !== "", saved: true, savedCopy: true });
     part.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -1202,16 +1202,16 @@ function fileCardFor(m: GramMessage, embedded: boolean): HTMLElement | null {
  * a file; the bare file card for a file with no text. */
 function textPart(
   id: string,
-  segs: GramTextSegment[],
+  blocks: GramMarkdownBlock[],
   mine: boolean,
   hasCard: boolean,
   cardOf: (embedded: boolean) => HTMLElement | null,
 ): HTMLElement {
   const part = el("div", "gpart");
-  const hasCode = segs.some((s) => s.kind === "code");
-  const hasTable = segs.some((s) => s.kind === "text" && hasMarkdownTable(s.text));
+  const hasCode = blocks.some((b) => b.kind === "code");
+  const hasTable = blocks.some((b) => b.kind === "markdown" && b.hasTable);
   const fill = mine ? "var(--gram-out-fill)" : "var(--color-surface-raised)";
-  if (segs.length === 0 && hasCard) {
+  if (blocks.length === 0 && hasCard) {
     const c = cardOf(false);
     if (c) part.append(c);
     part.classList.add("wide");
@@ -1221,12 +1221,12 @@ function textPart(
   if (hasCode || hasCard) {
     part.classList.add("wide");
     bubble.classList.add("card");
-    segs.forEach((s, i) => {
-      if (s.kind === "text") {
-        const p = prose(id, s.text, i, mine);
+    blocks.forEach((b, i) => {
+      if (b.kind === "markdown") {
+        const p = prose(id, b, i, mine);
         p.classList.add("in-card");
         bubble.append(p);
-      } else bubble.append(codeBlock(s.code, s.language));
+      } else bubble.append(codeBlock(b.code, b.language));
     });
     const c = hasCard ? cardOf(true) : null;
     if (c) bubble.append(c);
@@ -1235,8 +1235,8 @@ function textPart(
   } else {
     if (hasTable) part.classList.add("wide");
     bubble.classList.add("plain");
-    segs.forEach((s, i) => {
-      if (s.kind === "text") bubble.append(prose(id, s.text, i, mine));
+    blocks.forEach((b, i) => {
+      if (b.kind === "markdown") bubble.append(prose(id, b, i, mine));
     });
     paintShape(bubble, { radius: 18, fill });
   }
@@ -1247,12 +1247,11 @@ function textPart(
 /** GramFoldingText: single paragraphs show whole up to eight lines, rich Markdown blocks up to
  *  the fold height cap; past that "Read more" / "Show less" sits under it. The open segments are
  *  the page's, by message and segment. */
-function prose(id: string, text: string, index: number, mine: boolean): HTMLElement {
+function prose(id: string, block: Extract<GramMarkdownBlock, { kind: "markdown" }>, index: number, mine: boolean): HTMLElement {
   const box = el("div", "gprose");
   box.dataset.fold = `${id}:${index}`;
   const open = expanded.get(id)?.has(index) ?? false;
-  const rendered = gramMarkdown(text);
-  const body = rendered.root;
+  const body = renderGramMarkdown(block);
   if (!open) body.classList.add("clamp");
   const toggle = button("gfold", foldToggleLabel(open), () => {
     const set = expanded.get(id) ?? new Set<number>();
