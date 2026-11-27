@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -196,60 +200,171 @@ func (d *Desk) settleShareProofsLocked(still func() bool, acct string, proofs ma
 	if err := d.storeSyncState(state); err != nil {
 		return ended, err
 	}
-	d.clearGoneSharesLocked(acct, gone)
+	d.pruneGoneSharesLocked(acct, state, false)
 	return ended, nil
 }
 
-// noteGoneSharesLocked remembers share ids whose deletion this run observed
-// and dropped locally (dropGoneShares) until a sync state for acct commits.
+func (d *Desk) goneSharesPath() string { return filepath.Join(d.dir, "sync-gone-shares.json") }
+
+// loadGoneSharesLocked reads sync-gone-shares.json: share ids per account
+// whose observed deletion was recorded durably before removing their local
+// grants, waiting for a sync state commit to record their absence.
 // d.storeMu must be held.
-func (d *Desk) noteGoneSharesLocked(acct string, gone map[string]bool) {
+func (d *Desk) loadGoneSharesLocked() (map[string][]string, error) {
+	raw, err := os.ReadFile(d.goneSharesPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string][]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var m map[string][]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("gone shares %s: %w", d.goneSharesPath(), err)
+	}
+	if m == nil {
+		m = map[string][]string{}
+	}
+	return m, nil
+}
+
+// saveGoneSharesLocked writes sync-gone-shares.json atomically (or removes it
+// when empty). d.storeMu must be held.
+func (d *Desk) saveGoneSharesLocked(m map[string][]string) error {
+	clean := map[string][]string{}
+	for acct, ids := range m {
+		if acct == "" || len(ids) == 0 {
+			continue
+		}
+		seen := map[string]bool{}
+		var dedup []string
+		for _, id := range ids {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				dedup = append(dedup, id)
+			}
+		}
+		if len(dedup) > 0 {
+			slices.Sort(dedup)
+			clean[acct] = dedup
+		}
+	}
+	if len(clean) == 0 {
+		err := os.Remove(d.goneSharesPath())
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	raw, err := json.MarshalIndent(clean, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(d.goneSharesPath(), raw)
+}
+
+// recordGoneSharesLocked durably records gone share ids for acct BEFORE
+// dropGoneShares removes local grants, so a failed sync-state save or process
+// restart cannot list or reopen a deleted share from the stale mirror.
+// d.storeMu must be held.
+func (d *Desk) recordGoneSharesLocked(acct string, gone map[string]bool) error {
 	if acct == "" || len(gone) == 0 {
-		return
-	}
-	if d.accountSync.goneShares == nil {
-		d.accountSync.goneShares = map[string]map[string]bool{}
-	}
-	set := d.accountSync.goneShares[acct]
-	if set == nil {
-		set = map[string]bool{}
-		d.accountSync.goneShares[acct] = set
-	}
-	for id := range gone {
-		set[id] = true
-	}
-}
-
-// clearGoneSharesLocked clears uncommitted observed deletions for acct: all
-// of them when ids is nil (a fresh mirror for acct just committed), or only
-// ids (specific settled writes or a fresh local accept). d.storeMu must be held.
-func (d *Desk) clearGoneSharesLocked(acct string, ids map[string]bool) {
-	if acct == "" || d.accountSync.goneShares == nil {
-		return
-	}
-	if ids == nil {
-		delete(d.accountSync.goneShares, acct)
-		return
-	}
-	set := d.accountSync.goneShares[acct]
-	if len(set) == 0 {
-		return
-	}
-	for id := range ids {
-		delete(set, id)
-	}
-	if len(set) == 0 {
-		delete(d.accountSync.goneShares, acct)
-	}
-}
-
-// goneSharesLocked returns a copy of acct's uncommitted observed deletions.
-// d.storeMu must be held.
-func (d *Desk) goneSharesLocked(acct string) map[string]bool {
-	if acct == "" || d.accountSync.goneShares == nil {
 		return nil
 	}
-	return maps.Clone(d.accountSync.goneShares[acct])
+	m, err := d.loadGoneSharesLocked()
+	if err != nil {
+		return err
+	}
+	existing := m[acct]
+	changed := false
+	for id := range gone {
+		if !slices.Contains(existing, id) {
+			existing = append(existing, id)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	m[acct] = existing
+	return d.saveGoneSharesLocked(m)
+}
+
+// pruneGoneSharesLocked removes only those durable deletion markers for acct
+// whose disposition state now records on disk: any id still present in acct's
+// unsettled ShareWrites (or in Mirror.Shares when mirrorFresh is false) stays
+// masked until a commit retires it. d.storeMu must be held.
+func (d *Desk) pruneGoneSharesLocked(acct string, state syncState, mirrorFresh bool) {
+	if acct == "" {
+		return
+	}
+	m, err := d.loadGoneSharesLocked()
+	if err != nil || len(m[acct]) == 0 {
+		return
+	}
+	owed := map[string]bool{}
+	for _, op := range state.ShareWrites {
+		if op.Account == acct {
+			owed[op.ID] = true
+		}
+	}
+	inMirror := map[string]bool{}
+	if !mirrorFresh && state.AccountID == acct {
+		for _, s := range state.Mirror.Shares {
+			inMirror[s.ID] = true
+		}
+	}
+	kept := slices.DeleteFunc(slices.Clone(m[acct]), func(id string) bool {
+		return !owed[id] && !inMirror[id]
+	})
+	if len(kept) == len(m[acct]) {
+		return
+	}
+	if len(kept) == 0 {
+		delete(m, acct)
+	} else {
+		m[acct] = kept
+	}
+	_ = d.saveGoneSharesLocked(m)
+}
+
+// clearGoneShareLocked removes a single share id from acct's durable deletion
+// markers (e.g. after a fresh local accept replaces it). d.storeMu must be held.
+func (d *Desk) clearGoneShareLocked(acct, id string) {
+	if acct == "" || id == "" {
+		return
+	}
+	m, err := d.loadGoneSharesLocked()
+	if err != nil || !slices.Contains(m[acct], id) {
+		return
+	}
+	kept := slices.DeleteFunc(slices.Clone(m[acct]), func(x string) bool { return x == id })
+	if len(kept) == 0 {
+		delete(m, acct)
+	} else {
+		m[acct] = kept
+	}
+	_ = d.saveGoneSharesLocked(m)
+}
+
+// goneSharesLocked returns the durable observed-deleted share ids for acct.
+// d.storeMu must be held.
+func (d *Desk) goneSharesLocked(acct string) (map[string]bool, error) {
+	if acct == "" {
+		return nil, nil
+	}
+	m, err := d.loadGoneSharesLocked()
+	if err != nil {
+		return nil, err
+	}
+	if len(m[acct]) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]bool, len(m[acct]))
+	for _, id := range m[acct] {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -265,7 +380,10 @@ func (d *Desk) SyncedShares() ([]SyncedShare, error) {
 	}
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
-	gone := d.goneSharesLocked(cur.AccountID)
+	var gone map[string]bool
+	if err == nil {
+		gone, err = d.goneSharesLocked(cur.AccountID)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -380,16 +498,16 @@ func (d *Desk) withAccountShares(list []guest.Access) ([]guest.Access, error) {
 	}
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
-	goneByAcct := map[string]map[string]bool{}
-	for acct, set := range d.accountSync.goneShares {
-		goneByAcct[acct] = maps.Clone(set)
+	var goneAll map[string][]string
+	if err == nil {
+		goneAll, err = d.loadGoneSharesLocked()
 	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	for i := range list {
-		if goneByAcct[list[i].Account][list[i].ShareID()] {
+		if slices.Contains(goneAll[list[i].Account], list[i].ShareID()) {
 			list[i].AccountShare, list[i].AccountShareProblem = "", ""
 			continue
 		}
@@ -616,7 +734,7 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 		}
 		err = d.storeSyncState(state)
 		if err == nil && !leave && op.Account != "" {
-			d.clearGoneSharesLocked(op.Account, map[string]bool{op.ID: true})
+			d.clearGoneShareLocked(op.Account, op.ID)
 		}
 	}
 	d.storeMu.Unlock()
@@ -725,7 +843,9 @@ func (d *Desk) dropGoneShares(acct string, gone map[string]bool) ([]detached, er
 	if len(gone) == 0 {
 		return nil, nil
 	}
-	d.noteGoneSharesLocked(acct, gone)
+	if err := d.recordGoneSharesLocked(acct, gone); err != nil {
+		return nil, err
+	}
 	grants, err := d.guestStore.List()
 	if err != nil {
 		return nil, err
@@ -779,7 +899,10 @@ func (d *Desk) OpenSyncedShare(ctx context.Context, id string) error {
 func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Access, error) {
 	d.storeMu.Lock()
 	state, err := d.loadSyncState()
-	gone := d.goneSharesLocked(acct)
+	var gone map[string]bool
+	if err == nil {
+		gone, err = d.goneSharesLocked(acct)
+	}
 	d.storeMu.Unlock()
 	if err != nil {
 		return guest.Access{}, err
@@ -821,7 +944,11 @@ func (d *Desk) openSyncedShare(ctx context.Context, acct, id string) (guest.Acce
 	if err != nil {
 		return guest.Access{}, err
 	}
-	if d.goneSharesLocked(access.Account)[id] || liveShare(state, access.Account, id) == nil {
+	gone, err = d.goneSharesLocked(access.Account)
+	if err != nil {
+		return guest.Access{}, err
+	}
+	if gone[id] || liveShare(state, access.Account, id) == nil {
 		return guest.Access{}, errShareGone
 	}
 	if err := d.guestStore.Save(access); err != nil {

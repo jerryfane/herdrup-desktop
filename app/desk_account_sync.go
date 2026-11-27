@@ -561,12 +561,6 @@ type accountSync struct {
 	// writeState writes account-sync.json for storeSyncState; nil is
 	// writeFileAtomic. Tests make it fail. Set before any sync.
 	writeState func(path string, raw []byte) error
-	// goneShares are share ids whose deletion a sync observed and dropped
-	// locally (dropGoneShares) before the updated sync state committed to
-	// disk, by account. SyncedShares and OpenSyncedShare exclude them until
-	// a sync state for that account commits or a fresh accept replaces the
-	// share. Protected by d.storeMu.
-	goneShares map[string]map[string]bool
 	// background are the syncs syncMachinesSoon started that haven't
 	// ended: a caller that must see everything a change of its sent (a
 	// test counting an accept's pushes) waits for them.
@@ -1019,7 +1013,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		// The record holds what the merge paid, even if a file failed.
 		d.accountSync.owed = nil
 		d.dropSendMarkers(state)
-		d.clearGoneSharesLocked(acct, nil)
+		d.pruneGoneSharesLocked(acct, state, true)
 	}
 	if err != nil {
 		d.storeMu.Unlock()
@@ -1272,8 +1266,15 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				decideSends(&state, it)
 			}
 		}
+		// liveShares indexes the final post-readback mirror shares once for
+		// both full-readback checks and the single removal filter below.
+		liveShares := map[string]bool{}
+		for _, s := range state.Mirror.Shares {
+			liveShares[s.ID] = true
+		}
 		// A full readback is the account's history started over (a
-		// restore): present is what the restored account holds.
+		// restore): present is what the restored account holds for hosts and
+		// prompts (shares use liveShares above).
 		present := map[string]bool{}
 		if readBack.Full {
 			for _, h := range state.Mirror.Hosts {
@@ -1282,16 +1283,13 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			for _, p := range state.Mirror.Prompts {
 				present["prompts/"+p.ID] = true
 			}
-			for _, s := range state.Mirror.Shares {
-				present["shares/"+s.ID] = true
-			}
 		}
 		// A delete the service took stays pending when the restored history
 		// still holds the item: the next round deletes it there again.
 		state.Deletes = slices.DeleteFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] && !present["hosts/"+id] })
 		state.PromptDeletes = slices.DeleteFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] && !present["prompts/"+id] })
 		state.ShareDeletes = slices.DeleteFunc(state.ShareDeletes, func(op shareOp) bool {
-			return op.Account == acct && pushed["shares/"+op.ID] && !present["shares/"+op.ID]
+			return op.Account == acct && pushed["shares/"+op.ID] && (!readBack.Full || !liveShares[op.ID])
 		})
 		if unsent == nil && (slices.ContainsFunc(state.Deletes, func(id string) bool { return pushed["hosts/"+id] }) ||
 			slices.ContainsFunc(state.PromptDeletes, func(id string) bool { return pushed["prompts/"+id] }) ||
@@ -1360,23 +1358,18 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				was[id] = true
 			}
 			for i, op := range state.ShareWrites {
-				if op.Account == acct && !present["shares/"+op.ID] && needsProof(op, true, readBack.Rev) {
+				if op.Account == acct && !liveShares[op.ID] && needsProof(op, true, readBack.Rev) {
 					state.ShareWrites[i].Unproven, proofsOwed = true, true
 				}
 			}
 			for _, id := range slices.Sorted(maps.Keys(was)) {
-				if key := "shares/" + id; !present[key] && !pushed[key] {
+				if !pushed["shares/"+id] {
 					goneShareCandidates = append(goneShareCandidates, id)
 				}
 			}
 		}
-		// Subtract the final live mirror shares once so every downstream
-		// step (retiring writes, recording SharesGone, dropping grants)
-		// acts on the exact same set of gone share ids.
-		liveShares := map[string]bool{}
-		for _, s := range state.Mirror.Shares {
-			liveShares[s.ID] = true
-		}
+		// Subtract liveShares once so every downstream step (retiring writes,
+		// recording SharesGone, dropping grants) acts on the exact same set.
 		var goneShares []string
 		goneShareSet := map[string]bool{}
 		for _, id := range goneShareCandidates {
@@ -1434,7 +1427,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	err = d.storeSyncState(state)
 	if err == nil && len(acked) > 0 {
-		d.clearGoneSharesLocked(acct, nil)
+		d.pruneGoneSharesLocked(acct, state, true)
 	}
 	d.storeMu.Unlock()
 	d.finishGuests(dropped)

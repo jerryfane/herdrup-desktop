@@ -1875,6 +1875,21 @@ func TestFailedReadbackSaveKeepsRemovedShareGone(t *testing.T) {
 		t.Fatal("OpenSyncedShare reconnected removed share")
 	}
 
+	// Restart Desktop on the same data dir before any recovery sync commits:
+	// the durable deletion marker must still keep the removed share hidden and
+	// unopenable from the stale on-disk mirror.
+	restarted := newDesk(d2.dir)
+	restarted.account = d2.account
+	if shares, err := restarted.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("after restart, SyncedShares listed removed share: %+v, %v", shares, err)
+	}
+	if err := restarted.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
+		t.Fatalf("after restart, OpenSyncedShare = %v, want %v", err, errShareGone)
+	}
+	if grants, err := restarted.guestStore.List(); err != nil || len(grants) != 0 {
+		t.Fatalf("after restart, OpenSyncedShare recreated removed grant: %+v, %v", grants, err)
+	}
+
 	// Once disk writes recover, the next sync commits the mirror and the
 	// share remains absent.
 	d2.accountSync.writeState = nil
@@ -1886,5 +1901,79 @@ func TestFailedReadbackSaveKeepsRemovedShareGone(t *testing.T) {
 	}
 	if err := d2.OpenSyncedShare(ctx, id); !errors.Is(err, errShareGone) {
 		t.Fatalf("OpenSyncedShare after recovery = %v, want %v", err, errShareGone)
+	}
+}
+
+// When settleShareProofs drops a grant and saving the updated sync state fails,
+// a subsequent sync whose history probe fails (503) commits a merge that still
+// keeps the unsettled ShareWrite. Pruning must NOT clear the durable deletion
+// marker for that unsettled write until a commit actually retires it.
+func TestFailedProofSaveMaskSurvivesInconclusiveMerge(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`)
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+		t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+
+	// Send the share create so the service holds it to land late, then abandon.
+	syncGivingUpTheUpload(t, w, d)
+	for i := range account.MaxPushChanges {
+		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 0
+	w.afterPush = func() {
+		w.landHeldLocked()
+		w.tombstone(id)
+		w.prune(id)
+	}
+	w.mu.Unlock()
+	// Fail settleShareProofs's sync-state save after it drops the grant so the
+	// ShareWrite stays on disk as Unproven.
+	d.accountSync.writeState = func(path string, raw []byte) error {
+		var state syncState
+		if err := json.Unmarshal(raw, &state); err == nil && !slices.ContainsFunc(state.ShareWrites, func(op shareOp) bool { return op.ID == id }) {
+			return errors.New("disk full on settleShareProofs save")
+		}
+		return writeFileAtomic(path, raw)
+	}
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("sync with failed settleShareProofs save succeeded")
+	}
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.mu.Unlock()
+	if grants, err := d.guestStore.List(); err != nil || len(grants) != 0 {
+		t.Fatalf("grant survived proof drop: %+v, %v", grants, err)
+	}
+	if shares, err := d.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("SyncedShares listed dropped share: %+v, %v", shares, err)
+	}
+
+	// Now allow state writes, but fail the history probe (503) so the next
+	// merge commits while keeping the unsettled ShareWrite.
+	d.accountSync.writeState = nil
+	w.mu.Lock()
+	w.onPull = func() { w.failPull = true }
+	w.mu.Unlock()
+	_ = d.SyncMachines(ctx)
+	if shares, err := d.SyncedShares(); err != nil || len(shares) != 0 {
+		t.Fatalf("inconclusive merge relisted dropped share: %+v, %v", shares, err)
 	}
 }
