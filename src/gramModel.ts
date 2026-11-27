@@ -347,42 +347,6 @@ export function menuItems(s: { hasFile: boolean; hasText: boolean; saved: boolea
   return items;
 }
 
-export type LinkRun = { text: string; href: string | null };
-
-/**
- * Plain text split into prose and links, as NSDataDetector finds them in herdrup's `linkified`:
- * `http(s)://…` and `www.…` up to whitespace, without trailing punctuation or an unmatched
- * closing bracket. A `www.` link opens over https.
- */
-export function linkRuns(text: string): LinkRun[] {
-  const out: LinkRun[] = [];
-  const re = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
-  let last = 0;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
-    let url = m[0];
-    for (;;) {
-      const tail = url[url.length - 1]!;
-      if (".,;:!?'\"".includes(tail)) {
-        url = url.slice(0, -1);
-        continue;
-      }
-      const pair = ({ ")": "(", "]": "[", "}": "{" } as Record<string, string>)[tail];
-      if (pair && url.split(tail).length > url.split(pair).length) {
-        url = url.slice(0, -1);
-        continue;
-      }
-      break;
-    }
-    if (/^www\.$/i.test(url) || /^https?:\/\/$/i.test(url)) continue;
-    if (m.index > last) out.push({ text: text.slice(last, m.index), href: null });
-    out.push({ text: url, href: /^www\./i.test(url) ? `https://${url}` : url });
-    last = m.index + url.length;
-    re.lastIndex = last;
-  }
-  if (last < text.length) out.push({ text: text.slice(last), href: null });
-  return out;
-}
-
 // MARK: - Avatars and the sidebar
 
 /** The first routing name of each distinct bare name, in order, at most `limit`. */

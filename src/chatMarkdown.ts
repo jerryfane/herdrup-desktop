@@ -2,6 +2,7 @@ import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
+import { prepareMarkdownTables } from "./markdownTable";
 import { accessibilityLabel, diagramKind, sanitizeSVG, svgVariables } from "./svgDiagram";
 
 type Mermaid = { initialize(options: object): void; render(id: string, text: string): Promise<{ svg: string }> };
@@ -87,19 +88,12 @@ export function markdown(text: string): HTMLElement {
  }
  // ChatMarkdownTable: a horizontal scroller around a rounded, clipped frame whose
  // columns share the width but never shrink below 96 pt (scaled) each.
- for (const table of body.querySelectorAll("table")) {
-  const scroller = document.createElement("div"); scroller.className = "chat-table";
-  const frame = document.createElement("div"); frame.className = "chat-table-frame";
-  const columns = Math.max(1, ...[...table.rows].map(row => row.cells.length));
-  frame.style.setProperty("--table-columns", String(columns));
-  // ChatView.swift ChatStyle.ok for gains; not a generated design token (as the plan card).
-  frame.style.setProperty("--chat-ok", "#7fc89a");
-  table.replaceWith(scroller); frame.append(table); scroller.append(frame);
-  for (const cell of table.querySelectorAll("td")) {
-   const value = cell.textContent?.trim() ?? "";
-   if (/^[0-9+\-−$]/.test(value) && /[0-9]/.test(value)) cell.classList.add("chat-table-number", ...(value.startsWith("+") ? ["chat-table-gain"] : []));
-  }
- }
+ prepareMarkdownTables(body, {
+  scroller: "chat-table",
+  frame: "chat-table-frame",
+  number: "chat-table-number",
+  gain: "chat-table-gain",
+ });
  return body;
 }
 

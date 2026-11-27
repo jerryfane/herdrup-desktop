@@ -140,16 +140,6 @@ describe("cards", () => {
     expect(m.middleTruncate("abcdefghij", 6, (s) => s.length)).toBe("abc…ij");
     expect(m.middleTruncate("abc", 6, (s) => s.length)).toBe("abc");
   });
-  test("links: http(s) and www, without trailing punctuation", () => {
-    expect(m.linkRuns("see https://x.dev/a), and www.y.io.")).toEqual([
-      { text: "see ", href: null },
-      { text: "https://x.dev/a", href: "https://x.dev/a" },
-      { text: "), and ", href: null },
-      { text: "www.y.io", href: "https://www.y.io" },
-      { text: ".", href: null },
-    ]);
-    expect(m.linkRuns("(https://x.dev/a_(b))")[1]!.text).toBe("https://x.dev/a_(b)");
-  });
 });
 
 describe("avatars and the sidebar", () => {
