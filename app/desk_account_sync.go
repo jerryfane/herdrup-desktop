@@ -1301,28 +1301,32 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 					gonePrompts = append(gonePrompts, p.ID)
 				}
 			}
+			// Shares, decided once, over every id this device had cause to
+			// think the account held: the mirror before (held), those the
+			// account acknowledged (SharesHeld, this round's writes it took
+			// among them) and the creates sent whose landing the history
+			// since can't rule out (unprovenCreate). One the full readback
+			// lacks was deleted, its tombstone pruned (or restored away)
+			// since, unless this device deleted it this round: gone, as a
+			// tombstone would say, before the held ids are discarded below.
+			// Its owed write goes with it, never written afresh, and its
+			// grant here at the next merge (mergeShares), so no list or
+			// accept confirms it.
+			was := map[string]bool{}
 			for _, s := range held.Shares {
-				if key := "shares/" + s.ID; !present[key] && !wrote[key] && !pushed[key] {
-					goneShares = append(goneShares, s.ID)
+				was[s.ID] = true
+			}
+			for _, id := range state.SharesHeld[acct] {
+				was[id] = true
+			}
+			for _, op := range state.ShareWrites {
+				if op.Account == acct && unprovenCreate(op, readBack.Rev) {
+					was[op.ID] = true
 				}
 			}
-			// A share the account acknowledged holding (SharesHeld, this
-			// round's writes it took among them) that the full readback
-			// lacks was deleted, its tombstone pruned (or restored away)
-			// since: gone, as a tombstone would say, before the held ids
-			// are discarded below, so its grant here goes at the next merge
-			// (mergeShares) and no list or accept confirms it.
-			for _, id := range state.SharesHeld[acct] {
+			for _, id := range slices.Sorted(maps.Keys(was)) {
 				if key := "shares/" + id; !present[key] && !pushed[key] && !slices.Contains(goneShares, id) {
 					goneShares = append(goneShares, id)
-				}
-			}
-			// So is a create sent whose landing the history since can't
-			// rule out (unprovenCreate): it goes as superseded, never
-			// written afresh, and its grant with it.
-			for _, op := range state.ShareWrites {
-				if key := "shares/" + op.ID; op.Account == acct && unprovenCreate(op, readBack.Rev) && !present[key] && !slices.Contains(goneShares, op.ID) {
-					goneShares = append(goneShares, op.ID)
 				}
 			}
 			state.ShareWrites = slices.DeleteFunc(state.ShareWrites, func(op shareOp) bool {

@@ -756,6 +756,53 @@ func TestAShareDeletedAndPrunedBeforeAFullReadbackIsLetGo(t *testing.T) {
 	}
 }
 
+// A full readback decides once whether a share it lacks is gone, however
+// many ways this device knew the account held it (the mirror before, the
+// account's acknowledgement, a tombstone the readback lists): the saved
+// sync state names a share left elsewhere gone once, and one this device
+// left that round not at all (its grant went with the leave).
+func TestAFullReadbackNamesAShareGoneOnce(t *testing.T) {
+	for _, here := range []bool{false, true} {
+		t.Run(map[bool]string{false: "left elsewhere", true: "left here"}[here], func(t *testing.T) {
+			w, _, _, _, d, access := acceptBound(t)
+			held := sharesOf(t, d)
+			if len(held) != 1 {
+				t.Fatalf("synced shares %+v; want the one accepted", held)
+			}
+			id := held[0].ID
+			if here {
+				if err := d.ForgetGuestConnection(access.ID()); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := d.SavePrompt(SavedPrompt{Text: "to push"}); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			w.afterPush = func() {
+				// Another device leaves the share (unless this one just
+				// did); the history from before the device's mirror is
+				// compacted, the tombstone kept, so the readback starts
+				// over and lists that tombstone.
+				if !here {
+					w.tombstone(id)
+				}
+				w.floor = w.rev
+			}
+			w.mu.Unlock()
+			if err := d.SyncMachines(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := []string{id}
+			if here {
+				want = nil
+			}
+			if gone := savedSyncState(t, d).SharesGone; !slices.Equal(gone, want) {
+				t.Fatalf("shares gone after the full readback: %q; want %q", gone, want)
+			}
+		})
+	}
+}
+
 // savedSyncState is d's sync state as saved: what a restart of the app
 // loads, with nothing owed in d's memory.
 func savedSyncState(t *testing.T, d *Desk) syncState {
