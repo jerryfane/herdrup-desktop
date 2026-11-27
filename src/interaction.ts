@@ -858,6 +858,7 @@ class Detail {
   this.dictation.button.disabled = paused || this.sending;
   // The working row goes with the poll (ChatView live).
   if (this.chat && this.mode === "chat") this.drawChat(false);
+  this.topics?.refreshLiveness();
   this.relayout();
  }
  changeTextSize(surface: TextSurface, delta: number | "reset") {
@@ -1172,8 +1173,9 @@ class Detail {
   const pane = new TopicsPane({
    token: this.token, guest: view.guest, guestSelf: view.guestSelf ?? "", agentName: view.name,
    harness: view.harness,
+   paused: () => !!this.guestPaused,
    topicSessions: view.topicSessions,
-   renderRow: (row, unfolded, live) => this.renderRow(row, unfolded, live && !this.guestPaused),
+   renderRow: (row, unfolded, live) => this.renderRow(row, unfolded, live),
    // The Inbox's own cards, drawn into the topic's transcript; a topic's subagents don't open.
    renderPlan: (items, container, session) => this.renderPlan(items, container, session),
    renderSubagents: (agents, container) => this.renderSubagents(agents, container, false),
@@ -1907,7 +1909,7 @@ class Detail {
   const live = this.chatLive();
   const nodes = rows.slice(start).map(row => {
    const old = this.transcript.querySelector<HTMLElement>(`[data-id="${CSS.escape(row.id)}"]`);
-   const rowLive = row.kind === "work" && row.live && live;
+   const rowLive = row.kind === "work" && row.steps.length > 0 && row.live && live;
    const signature = JSON.stringify(row.kind === "entry" && row.entry.kind === "ask" ? [row, ...this.questionKey(row.entry.id)]
     : row.kind === "suggestion" ? [row, this.suggestionBusy === row.suggestion.id, this.suggestionProblem?.id === row.suggestion.id ? this.suggestionProblem.message : null]
     : row.kind === "work" ? [rowShown(row, now), rowLive]
