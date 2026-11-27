@@ -1,4 +1,4 @@
-import { Desk, type PairedMachine, type PairingOffer, type PairingPreview, type PairRequestMachine, type PairRequestView, type SavedMachine, type SyncedMachine } from "./mygo";
+import { Desk, type PairedMachine, type PairingOffer, type PairingPreview, type PairOpenTarget, type PairRequestMachine, type PairRequestView, type SavedMachine, type SyncedMachine } from "./mygo";
 import { hostRowChevron, hostRowIcon, hostRowLines, hostRowValue, hostSection } from "./hostHome";
 import { scanQR } from "./qrScanner";
 import "./pairing.css";
@@ -295,10 +295,10 @@ export function pairRequestCard(view: PairRequestView, here: string, account: st
 }
 
 export interface PairResultActions {
-  open(id: string): void;
+  open(target: PairOpenTarget): void;
   qr(): void;
   /** The saved host's menu (Edit, Delete), at x, y. */
-  menu(id: string, x: number, y: number): void;
+  menu(target: PairOpenTarget, x: number, y: number): void;
 }
 
 /** A machine the approver couldn't add, as the account's row under FROM YOUR ACCOUNT says it. */
@@ -317,6 +317,19 @@ export function pairResultTarget(m: PairRequestMachine, saved: readonly SavedMac
   return saved.find(s => s.localId === m.profileId && s.user === m.user && s.host === m.host && s.port === m.port)?.id ?? null;
 }
 
+/** What a result row opens, as Go checks it again before selecting it (Desk.selectPairedMachine):
+ *  the saved profile's id now (pairResultTarget), with the profile id and address the row joined
+ *  it by; null when the row opens nothing. */
+export function pairOpenTarget(m: PairRequestMachine, saved: readonly SavedMachine[] | null): PairOpenTarget | null {
+  const id = pairResultTarget(m, saved);
+  return id && m.profileId ? { id, profileId: m.profileId, user: m.user, host: m.host, port: m.port } : null;
+}
+
+/** Whether a saved machine is still the one target names: same id, profile id and address. */
+export function isOpenTarget(s: SavedMachine, target: PairOpenTarget): boolean {
+  return s.id === target.id && s.localId === target.profileId && s.user === target.user && s.host === target.host && s.port === target.port;
+}
+
 /** n4: "PAIRED BY ‹APPROVER›", one row per machine of the list: saved ones open, with the saved
  *  host's menu (Edit, Delete); one this computer can't reach is dimmed with "Join its network to
  *  connect" and Use herdr pair; one it kept, couldn't save or no longer has says why. A machine
@@ -330,7 +343,7 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
     // A machine saved here opens from its row (a dimmed one too, once its network is joined) and
     // has the saved host's menu; the rest only say why. Use herdr pair sits beside the row's
     // button, not in it.
-    const id = pairResultTarget(m, saved);
+    const target = pairOpenTarget(m, saved), id = target?.id ?? null;
     const gone = (m.result === "saved" || m.result === "kept") && id === null;
     const changed = gone && (m.reach === "changed" || (saved?.some(s => s.localId === m.profileId) ?? false));
     let second: string, value: HTMLElement | null = null, off = false, pair = false;
@@ -347,12 +360,12 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
       default: second = notAddedLine(view, m); off = true;
     }
     const row = el("div", "host-home-row host-home-paired-row");
-    const body = id ? button("", () => actions.open(id)) : el("span", "");
-    if (id) {
-      body.oncontextmenu = event => { event.preventDefault(); actions.menu(id, event.clientX, event.clientY); };
+    const body = target ? button("", () => actions.open(target)) : el("span", "");
+    if (target) {
+      body.oncontextmenu = event => { event.preventDefault(); actions.menu(target, event.clientX, event.clientY); };
       body.onkeydown = event => {
         if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-        event.preventDefault(); const rect = body.getBoundingClientRect(); actions.menu(id, rect.left + 20, rect.bottom);
+        event.preventDefault(); const rect = body.getBoundingClientRect(); actions.menu(target, rect.left + 20, rect.bottom);
       };
     }
     body.className = off ? "host-home-paired-body host-home-row-off" : "host-home-paired-body";
@@ -363,9 +376,15 @@ export function pairResultSection(view: PairRequestView, here: string, synced: r
     if (pair) { const qr = button("Use herdr pair", actions.qr); qr.className = "host-home-pair-synced"; row.append(qr); }
     rows.append(row);
   }
-  // The list's problem shows even when no row does (each one the account's row says).
   const out = rows.childElementCount ? [root] : [];
   if (away.length) out.push(el("p", "host-home-note", `${nameList(away)} ${away.length === 1 ? "is" : "are"} on another network. Join it from ${here} (same Wi-Fi or Tailscale), then open ${away.length === 1 ? away[0] : "them"}. Nothing to approve again.`));
-  if (view.problem) { const problem = el("p", "host-home-note"); problem.textContent = view.problem; problem.setAttribute("role", "status"); out.push(problem); }
   return out;
+}
+
+/** The request's own problem once it has no card to say it (pairLayout's card null): drawn
+ *  under the results, or alone when no result has a row (a first list that was empty, say). */
+export function pairProblemNote(view: PairRequestView): HTMLElement | null {
+  if (pairLayout(view).card !== null || !view.problem) return null;
+  const problem = el("p", "host-home-note"); problem.textContent = view.problem; problem.setAttribute("role", "status");
+  return problem;
 }

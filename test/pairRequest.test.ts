@@ -4,8 +4,8 @@
 // document (Bun has no DOM); the host home (src/hosts.ts) places them.
 import { afterEach, expect, test } from "bun:test";
 import { FakeDocument, type FakeElement } from "./fakeDom";
-import type { PairRequestMachine, PairRequestView, SavedMachine, SyncedMachine } from "../src/mygo";
-import { minutesLeft, nameList, notAddedLine, pairChoiceParts, pairFailuresAfter, pairLayout, pairNextStep, pairReadDelay, pairRequestCard, pairResultSection, pairResultTarget, showPairChoice, thisDevice, untried } from "../src/pairing";
+import type { PairOpenTarget, PairRequestMachine, PairRequestView, SavedMachine, SyncedMachine } from "../src/mygo";
+import { isOpenTarget, minutesLeft, nameList, notAddedLine, pairChoiceParts, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairReadDelay, pairRequestCard, pairResultSection, pairResultTarget, showPairChoice, thisDevice, untried } from "../src/pairing";
 
 const G = globalThis as { document?: unknown };
 const saved = G.document;
@@ -135,7 +135,7 @@ test("n3b: approved, the card says where and what it connects to, without Cancel
 
 test("n4: the saved machines open with their menu; one off this network says so with Use herdr pair; the rest say why", () => {
  const doc = page();
- const opened: string[] = [], qr: string[] = [], menus: string[] = [];
+ const opened: PairOpenTarget[] = [], qr: string[] = [], menus: string[] = [];
  const synced: SyncedMachine[] = [{ id: "s1", host: "pi.lan", port: 22, user: "pi", key: true }];
  const list = view({ phase: "done", approver: "Jerry's iPhone", machines: [
   machine({ id: "jerry@studio.lan:22", profileId: "p-studio", reach: "online" }),
@@ -155,7 +155,7 @@ test("n4: the saved machines open with their menu; one off this network says so 
  const saved = [savedAs("jerry@studio.lan:22", "p-studio"), savedAs("jerry@mini.lan:22", "p-mini"), savedAs("jerry@old.lan:22", "p-old"),
   savedAs("jerry@kept.lan:22", "p-kept"), savedAs("jerry@gone.lan:22", "p-gone-again"), savedAs("jerry@deleted.lan:22", ""),
   savedAs("jerry@edited.lan:2222", "p-edited"), savedAs("jerry@retyped.lan:2200", "p-retyped")];
- const actions = { open: (id: string) => opened.push(id), qr: () => qr.push("qr"), menu: (id: string, x: number, y: number) => menus.push(`${id} ${x},${y}`) };
+ const actions = { open: (t: PairOpenTarget) => opened.push(t), qr: () => qr.push("qr"), menu: (t: PairOpenTarget, x: number, y: number) => menus.push(`${t.id} ${t.profileId} ${x},${y}`) };
  expect(pairLayout(list)).toEqual({ card: null, results: true });
  // The SAVED rows that step aside (hosts.ts): only the profiles a result row opens.
  expect(list.machines.flatMap(m => pairResultTarget(m, saved) ?? [])).toEqual(["jerry@studio.lan:22", "jerry@mini.lan:22", "jerry@old.lan:22", "jerry@kept.lan:22"]);
@@ -168,11 +168,17 @@ test("n4: the saved machines open with their menu; one off this network says so 
  expect(rowOf("studio").querySelector(".host-home-value")!.text()).toBe("Online");
  const studio = rowOf("studio").querySelector("button")!;
  studio.click();
- expect(opened).toEqual(["jerry@studio.lan:22"]);
+ // It opens the profile it drew (its id, profile id and address), which Go checks again.
+ const studioTarget = { id: "jerry@studio.lan:22", profileId: "p-studio", user: "jerry", host: "studio.lan", port: 22 };
+ expect(opened).toEqual([studioTarget]);
  // The saved host's menu (Edit, Delete), as its SAVED row has it: right click, or the menu key.
  (studio.oncontextmenu as unknown as (e: object) => void)({ preventDefault() {}, clientX: 5, clientY: 7 });
  (studio.onkeydown as unknown as (e: object) => void)({ key: "ContextMenu", shiftKey: false, preventDefault() {} });
- expect(menus).toEqual(["jerry@studio.lan:22 5,7", "jerry@studio.lan:22 20,0"]);
+ expect(menus).toEqual(["jerry@studio.lan:22 p-studio 5,7", "jerry@studio.lan:22 p-studio 20,0"]);
+ // The page finds the row's profile only while it is still that one.
+ expect(saved.filter(s => isOpenTarget(s, studioTarget)).map(s => s.id)).toEqual(["jerry@studio.lan:22"]);
+ expect(isOpenTarget(savedAs("jerry@studio.lan:22", "p-studio-again"), studioTarget)).toBe(false);
+ expect(isOpenTarget(savedAs("jerry@studio.lan:22", "p-studio"), { ...studioTarget, port: 2222 })).toBe(false);
  const mini = rowOf("mini");
  expect(mini.querySelector(".host-home-address")!.text()).toBe("Join its network to connect");
  expect(mini.querySelector(".host-home-paired-body")!.className).toContain("host-home-row-off");
@@ -196,11 +202,25 @@ test("n4: the saved machines open with their menu; one off this network says so 
  expect(rowOf("moved").querySelector("button")).toBeNull();
  expect(rowOf("nas").querySelector(".host-home-address")!.text()).toBe("Jerry's iPhone couldn't add the key: unreachable");
  expect(notAddedLine(list, list.machines[7]!)).toBe("Jerry's iPhone couldn't add the key: herdr is too old");
- // A list with only an account-listed failure draws no rows, but still its problem.
+ // A list with only an account-listed failure draws no rows; its problem is the request's note.
  expect(pairResultSection(view({ phase: "done", machines: [list.machines[7]!] }), "this Mac", synced, saved, glyphs, "", actions)).toEqual([]);
- const problem = holder(doc, pairResultSection(view({ phase: "done", machines: [list.machines[7]!], problem: "A later machine list was tampered with on its way, so this device saved none of it." }), "this Mac", synced, saved, glyphs, "", actions));
- expect(problem.querySelector("h2")).toBeNull();
- expect(problem.text()).toBe("A later machine list was tampered with on its way, so this device saved none of it.");
+ const tampered = view({ phase: "done", machines: [list.machines[7]!], problem: "A later machine list was tampered with on its way, so this device saved none of it." });
+ expect(pairResultSection(tampered, "this Mac", synced, saved, glyphs, "", actions)).toEqual([]);
+ expect(pairProblemNote(tampered)!.textContent).toBe("A later machine list was tampered with on its way, so this device saved none of it.");
+});
+
+test("the request's problem shows without a card even when the list had no machines", () => {
+ page();
+ // A first list that was empty: done, no rows to draw, and the problem final.
+ const empty = view({ phase: "done", approver: "Jerry's iPhone", machines: [], problem: "Jerry's iPhone sent no machines." });
+ expect(pairLayout(empty)).toEqual({ card: null, results: false });
+ const note = pairProblemNote(empty)!;
+ expect(note.textContent).toBe("Jerry's iPhone sent no machines.");
+ expect(note.getAttribute("role")).toBe("status");
+ expect(pairProblemNote(view({ phase: "done", machines: [] }))).toBeNull();
+ // A card says its own problem: no second note.
+ expect(pairProblemNote(view({ phase: "approved", saveFailed: true, problem: "This device couldn't save those machines (disk full). Trying again." }))).toBeNull();
+ expect(pairProblemNote(view({ phase: "failed", problem: "The approved list didn't open on this Mac." }))).toBeNull();
 });
 
 test("the page tries saved machines, then reads, never at once, and stops once settled", () => {

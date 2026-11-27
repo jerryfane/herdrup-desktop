@@ -1,8 +1,8 @@
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
-import type { Machine, PairingOffer, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
+import type { Machine, PairingOffer, PairOpenTarget, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
-import { notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice } from "./pairing";
+import { isOpenTarget, notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
@@ -129,9 +129,11 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    cancel: () => void cancelRequest(), again: () => void startRequest(), qr: () => startPairing(),
   }));
   if (layout.results) parts.push(...pairResultSection(view, here, syncedMachines, savedList, glyphs, spinner, {
-   open: id => void openPaired(id), qr: () => startPairing(),
-   menu: (id, x, y) => { const machine = savedList?.find(m => m.id === id); if (machine) openMachineMenu(machine, x, y); },
+   open: target => void openPaired(target), qr: () => startPairing(),
+   // The row's profile as it drew it: one changed since gets the redrawn list, not a menu.
+   menu: (target, x, y) => { const machine = savedList?.find(m => isOpenTarget(m, target)); if (machine) openMachineMenu(machine, x, y); else void refresh(); },
   }));
+  const problem = pairProblemNote(view); if (problem) parts.push(problem);
   pairBox.replaceChildren(...parts);
  }
  function showRequest(view: PairRequestView | null) {
@@ -176,12 +178,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   clearTimeout(pairTimer); pairView = null; drawSynced();
   try { await Desk.pairRequestCancel(view.id); } catch (failure) { report(failure); }
  }
- async function openPaired(id: string) {
+ /** Opens a result row's profile only while it is the one the row drew (Go checks again as it
+  *  selects it); one changed or replaced since redraws the list instead. */
+ async function openPaired(target: PairOpenTarget) {
   message.hidden = true;
   try {
-   const machine = (await Desk.machines()).find(m => m.id === id); if (!machine) return;
+   const machine = (await Desk.machines()).find(m => isOpenTarget(m, target)); if (!machine) { void refresh(); return; }
    const secret = machine.keyPath ? "" : await password(machine); if (secret === null) return;
-   beginAttempt(); await Desk.selectMachine(id, secret);
+   beginAttempt(); if (!await Desk.selectPairedMachine(target, secret)) void refresh();
   } catch (failure) { report(failure); }
  }
  void Desk.pairRequestCurrent().then(view => { if (view) showRequest(view); }, () => undefined);
