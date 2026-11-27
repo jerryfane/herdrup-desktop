@@ -669,16 +669,32 @@ var errNeedsKey = errors.New("needs a key file")
 // ownerBridge is ownerClient's SSH connection: this computer's own, never a
 // guest's. A new session checks the host key with pins.
 func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
-	id := machineID(m)
-	d.mu.Lock()
-	if d.link != nil && d.link.id == id && d.link.client != nil {
-		c := d.link.client
-		d.mu.Unlock()
+	if c := d.linkClient(m); c != nil {
 		return c, func() {}, nil
 	}
-	d.mu.Unlock()
+	cfg, err := ownerConfig(m, pins)
+	if err != nil {
+		return nil, nil, err
+	}
+	return dialOwner(ctx, cfg)
+}
+
+// linkClient is the session connected now when it is m's, else nil.
+func (d *Desk) linkClient(m Machine) *bridge.Client {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.link != nil && d.link.id == machineID(m) {
+		return d.link.client
+	}
+	return nil
+}
+
+// ownerConfig is a new session to m with its key file, checking the host
+// key with pins as m was pinned (pairingHostKeyAlgorithms for a Paired
+// machine, SSH's defaults otherwise).
+func ownerConfig(m Machine, pins bridge.PinStore) (bridge.Config, error) {
 	if m.KeyPath == "" {
-		return nil, nil, errNeedsKey
+		return bridge.Config{}, errNeedsKey
 	}
 	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
 	if m.Paired {
@@ -686,8 +702,12 @@ func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore)
 	}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
-		return nil, nil, err
+		return bridge.Config{}, err
 	}
+	return cfg, nil
+}
+
+func dialOwner(ctx context.Context, cfg bridge.Config) (*bridge.Client, func(), error) {
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c, err := bridge.Dial(dctx, cfg)

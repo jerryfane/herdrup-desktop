@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/http"
@@ -134,47 +137,59 @@ func certHostKey(t *testing.T, principalBytes int) ssh.Signer {
 	return s
 }
 
-// bigHostKey is one RSA 4096 host key the tests' machines share: the
-// longest plain key a test can make quickly, so a few of them fill the
-// list.
-var bigHostKey = sync.OnceValues(func() (ssh.Signer, error) {
-	k, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return nil, err
-	}
-	return ssh.NewSignerFromKey(k)
-})
-
-// bigMachines saves machines with bigHostKey ("big0", "big1", …) until
-// the list for studio and them, each at its longest, no longer fits: the
-// last one saved is the one with no room.
+// bigMachines saves machines that share one ECDSA P-521 host key, the
+// longest the list carries, each with the longest nickname and user
+// ("big00-xxx…"), until the checked wire list (PairEnvelope.Marshal) for
+// studio and them, each "already" with its host key, is too long: the
+// one before still fits, and the last one saved is the one with no room.
 func (w *pairWorld) bigMachines(t *testing.T) []string {
 	t.Helper()
-	key, err := bigHostKey()
+	priv, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	key, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := func(m Machine, hostKey string) account.PairMachine {
+		return account.PairMachine{Nickname: m.Nickname, Host: m.Host, Port: m.Port, User: m.User, HostKey: hostKey, Status: account.PairAlready}
 	}
 	studio, err := w.d.savedMachine(w.ids["studio"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := []pairRow{{m: studio, entry: pairEntry(studio), hostKey: hostKeyLine(w.machines["studio"].hostKey)}}
+	e := account.PairEnvelope{V: account.PairEnvelopeVersion, Machines: []account.PairMachine{wire(studio, hostKeyLine(w.machines["studio"].hostKey))}}
+	if _, err := e.Marshal(); err != nil {
+		t.Fatalf("studio alone: %v", err)
+	}
 	var names []string
-	for i := 0; pairFits(rows) == nil; i++ {
-		name := "big" + strconv.Itoa(i)
+	for i := 0; ; i++ {
+		if i == 64 {
+			t.Fatalf("%d machines still fit the list", i)
+		}
+		name := fmt.Sprintf("big%02d-", i)
+		name += strings.Repeat("x", 64-len(name))
 		w.keyMachineWith(t, name, key, true, true)
 		m, err := w.d.savedMachine(w.ids[name])
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows = append(rows, pairRow{m: m, entry: pairEntry(m), hostKey: hostKeyLine(key.PublicKey())})
+		m.User = strings.Repeat("u", 64)
+		w.save(t, name, m)
 		names = append(names, name)
+		e.Machines = append(e.Machines, wire(m, hostKeyLine(key.PublicKey())))
+		if _, err := e.Marshal(); errors.Is(err, account.ErrPairEnvelopeTooLong) {
+			return names
+		} else if err != nil {
+			t.Fatalf("the list with %s: %v", name, err)
+		}
 	}
-	return names
 }
 
-// keyMachineWith is keyMachine with hostKey as the machine's host key.
-func (w *pairWorld) keyMachineWith(t *testing.T, name string, hostKey ssh.Signer, pairOK, pinned bool) {
+// keyMachineWith is keyMachine with hostKey as the machine's host key
+// (the one pinned), and more as its other host keys.
+func (w *pairWorld) keyMachineWith(t *testing.T, name string, hostKey ssh.Signer, pairOK, pinned bool, more ...ssh.Signer) {
 	t.Helper()
 	_, clientPriv, _ := ed25519.GenerateKey(rand.Reader)
 	client, _ := ssh.NewSignerFromKey(clientPriv)
@@ -187,7 +202,7 @@ func (w *pairWorld) keyMachineWith(t *testing.T, name string, hostKey ssh.Signer
 		t.Fatal(err)
 	}
 	h := &pairHerdr{hostKey: hostKey.PublicKey(), keyPath: keyPath}
-	h.srv = &fakeherdr.Server{HostKey: hostKey, Authorized: client.PublicKey(), Handle: h.handle(pairOK, noMethod)}
+	h.srv = &fakeherdr.Server{HostKey: hostKey, AdditionalHostKeys: more, Authorized: client.PublicKey(), Handle: h.handle(pairOK, noMethod)}
 	addr, err := h.srv.Listen("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -818,6 +833,42 @@ func TestPairApproveTryAgainOnlyReachesMachinesStillSaved(t *testing.T) {
 	}
 }
 
+// A store Try again can't read says why and keeps Try again: only a read
+// that finds no such machine ends its retries. Once the store reads, the
+// retry reaches the machine.
+func TestPairApproveTryAgainKeepsARowWhenTheStoreIsUnread(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	w.machines["fleet"].failing.Store(1)
+	if res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["fleet"]}); err != nil || !res.Sent {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	adds := w.machines["fleet"].adds.Load()
+	saved, err := os.ReadFile(w.d.machinesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(w.d.machinesPath(), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if fleet := rowsByLabel(res)["fleet"]; err != nil || !strings.HasPrefix(fleet.Reason, "couldn't read the machines saved here") || !fleet.Retryable {
+		t.Fatalf("retry with the store unread %+v, %v", res, err)
+	}
+	if w.machines["fleet"].adds.Load() != adds {
+		t.Fatal("Try again reached a machine it couldn't read")
+	}
+	if err := os.WriteFile(w.d.machinesPath(), saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err = w.d.PairApproveRetry(ctx, id, []string{w.ids["fleet"]})
+	if err != nil || rowsByLabel(res)["fleet"].Status != account.PairAdded || w.machines["fleet"].adds.Load() != adds+1 {
+		t.Fatalf("retry with the store read %+v, %v", res, err)
+	}
+}
+
 // A machine the list can't carry (a user with an @ can't split back from
 // user@host) is found before any machine changes: shown failed with why,
 // never given the key, never sealed, never tried again.
@@ -954,6 +1005,111 @@ func TestPairApproveSendsACertificateHostsPlainKey(t *testing.T) {
 	k, err := m.HostPublicKey()
 	if _, isCert := k.(*ssh.Certificate); err != nil || isCert || bridge.Fingerprint(k) != bridge.Fingerprint(plain) {
 		t.Fatalf("sent key %v, %v: want the plain key's fingerprint", k, err)
+	}
+}
+
+func rsaHostKey(t *testing.T) ssh.Signer {
+	t.Helper()
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewSignerFromKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func ed25519HostKey(t *testing.T) ssh.Signer {
+	t.Helper()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A host with only an RSA host key is held out before any key is added
+// there: the new device checks ed25519 and ECDSA keys only.
+func TestPairApproveHoldsOutAnRSAOnlyHost(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	w.keyMachineWith(t, "rsa", rsaHostKey(t), true, true)
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsa"]); err != nil || p.State != "unsendable" || p.Reason != string(errHostKeyType) {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["rsa"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded ||
+		rows["rsa"].Status != account.PairFailed || rows["rsa"].Reason != string(errHostKeyType) || rows["rsa"].Retryable {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["rsa"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on the RSA host", n)
+	}
+	if env := w.delivered(t).Envelope; len(env.Machines) != 1 || env.Machines[0].Nickname != "studio" {
+		t.Fatalf("envelope %+v", env)
+	}
+}
+
+// A host with RSA and ed25519 keys shows a pair approval its ed25519 key
+// (SSH's defaults would get its RSA one), the key the new device
+// negotiates; that is the key added over and sent.
+func TestPairApproveSendsTheEd25519KeyOfAHostWithRSAToo(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	ed := ed25519HostKey(t)
+	w.keyMachineWith(t, "both", ed, true, true, rsaHostKey(t))
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["both"]); err != nil || p.State != "ready" {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["both"]})
+	if err != nil || !res.Sent || res.Machines[0].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if m := w.delivered(t).Envelope.Machines[0]; m.HostKey != hostKeyLine(ed.PublicKey()) {
+		t.Fatalf("sent host key %q, want the ed25519 key", m.HostKey)
+	}
+}
+
+// A host this computer pinned by its RSA key (as SSH's defaults pick it)
+// still has that key: the ed25519 key a pair approval gets isn't the one
+// pinned, and nothing here vouches for it. The host is held out with why,
+// not shown as a changed host key, and its pin stays as it was.
+func TestPairApproveHoldsOutAHostPinnedByAnotherKeyType(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	rsaKey := rsaHostKey(t)
+	w.keyMachineWith(t, "rsapin", rsaKey, true, true, ed25519HostKey(t))
+	id := w.start(t)
+	w.typeCode(t, id)
+	why := "can't share this machine: this computer pinned its RSA host key, not the one the new device checks"
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsapin"]); err != nil || p.State != "unsendable" || p.Reason != why {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["rsapin"]})
+	rows := rowsByLabel(res)
+	if err != nil || !res.Sent || rows["rsapin"].Status != account.PairFailed || rows["rsapin"].Reason != why || rows["rsapin"].Retryable {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["rsapin"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on the host pinned by its RSA key", n)
+	}
+	if env := w.delivered(t).Envelope; len(env.Machines) != 1 || env.Machines[0].Nickname != "studio" {
+		t.Fatalf("envelope %+v", env)
+	}
+	m, err := w.d.savedMachine(w.ids["rsapin"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port))); err != nil || !ok || pin != bridge.Fingerprint(rsaKey.PublicKey()) {
+		t.Fatalf("pin %q %v %v: want the RSA key's, as it was", pin, ok, err)
 	}
 }
 
