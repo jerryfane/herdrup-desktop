@@ -42,11 +42,11 @@ export function shellParts(browser: boolean): ShellParts {
 export const parts = shellParts(webGuest);
 
 /** Whether the window shows a share (the guest home) rather than the owner's machine. On the desktop
- *  a guest connection is a share. In the browser the shell is the owner's only (a guest gets the
- *  guest page, web/main.ts): its owner links carry a GuestConnection for the agent page (the scope,
- *  paused, reconnecting) but are never a share. */
+ *  a guest connection is a share. In the browser, an owner link carries `ownerScope` ("chat" or
+ *  "terminal"), whereas a shared-agent connection has no `ownerScope` and uses the same guest home
+ *  inside the unified shell (main.ts). */
 export function shareShown(state: Pick<ConnState, "guest">, browser = webGuest): boolean {
-  return !browser && !!state.guest;
+  return !!state.guest && (!browser || !state.guest.ownerScope);
 }
 
 /** Whether next is another connection than previous: another share, or another of a web owner's

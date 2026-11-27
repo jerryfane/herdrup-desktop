@@ -44,6 +44,8 @@
 /* sharedBy (GuestHomeView.swift 180-194): the machine in app 20 bold, tracking -0.2, over
    "Shared by <owner> · 1 agent" in app 14 textDim, 2 apart; 20 sides, 4 above, 10 below. */
 .guest-home-header { display: flex; flex-direction: column; gap: 2px; padding: 4px 20px 10px; }
+.guest-home-header.guest-home-header-other { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--color-hairline-quiet); }
+.guest-switch-error { margin: 8px 16px 0; color: var(--status-died); font: 400 calc(13px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); }
 .guest-home-header h2, .guest-home-header p { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .guest-home-header h2 { font: 700 calc(20px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); letter-spacing: -0.2px; color: var(--color-text); }
 .guest-home-header p { font: 400 calc(14px * var(--ui-font-scale, 1))/var(--leading-app) var(--font-app); color: var(--color-text-dim); }

@@ -30,6 +30,9 @@ import { badge, initialTile, placeInitials, rowAvatar, spinnerSVG } from "./face
 import { barSlot, commitTabBar, commitTopBar, placeTitle, tabNode } from "./bars";
 import { enableLongPress } from "./longPress";
 import { boardAfter, connectionChanged, deskOffers, ownerWrites, parts, shareShown } from "./shellModel";
+import { openShared, sharedListStale, sharedMachines, syncedSharesNow, type ShareOpen } from "./sharedWithYou";
+import { webGuest } from "./platform";
+import { grantKey } from "./grantKey";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -87,6 +90,12 @@ let settingsAsked = false;
 // The owner's tab bar and the sidebar rail choose a tab here, which also leaves that request
 // (review of #167).
 function selectTab(next: typeof tab) {
+  if (shareShown(state) && !choosingHost) {
+    if (next === "settings") guestActions.settings();
+    else if (next === "gram" && guestGramOffer().offered) guestActions.gram();
+    else guestActions.agents();
+    return;
+  }
   tab = next; choosingHost = false; settingsAsked = false; settingsPushed = false;
   buildTabBar(); void buildTopBar(); render();
 }
@@ -125,6 +134,25 @@ let pageReady = false;
 let renderReady = false;
 let guestHome: ReturnType<typeof initGuestHome> | null = null;
 let guestTab: "agents" | "gram" | "settings" = "agents";
+let accountSignedIn = false;
+let autoOpenShareID: string | null = null;
+let sharedVersion = 0;
+async function refreshShared() {
+  const at = ++sharedVersion;
+  const [grants, synced] = await Promise.all([
+    Desk.sharedConnections().catch(() => []),
+    syncedSharesNow(accountSignedIn),
+  ]);
+  if (at === sharedVersion) guestHome?.setShares(sharedMachines(grants, synced));
+}
+async function refreshAccountSignedIn() {
+  const s = await Desk.accountState().catch(() => null);
+  const next = s?.signedIn === true;
+  const changed = next !== accountSignedIn;
+  accountSignedIn = next;
+  if (changed && guestBar) void buildTopBar();
+  void refreshShared();
+}
 // The guest home's top and tab bars as last built (render): its tab and whether its Gram tab is
 // offered; null while the owner's bars show.
 let guestBar: { tab: "agents" | "gram" | "settings"; gram: boolean } | null = null;
@@ -133,8 +161,31 @@ const guestActions = {
   settings: () => { closeWriter(); guestTab = "settings"; settingsPushed = false; render(); },
   // The guest's one Gram (#697): every shared agent's, with one selected or All agents.
   gram: (grant: string | null = null) => { closeWriter(); selectGuestGram(grant); guestTab = "gram"; settingsPushed = false; render(); },
-  hosts: () => { closeWriter(); closeInteraction(); choosingHost = true; render(); },
+  hosts: () => {
+    closeWriter(); closeInteraction();
+    if (webGuest && !accountSignedIn) {
+      void Desk.sharedConnections().then(grants => {
+        const next = grants[0];
+        if (next) {
+          autoOpenShareID = grantKey(next);
+          void Desk.connectGuest(autoOpenShareID).catch(() => location.reload());
+          void refreshShared();
+        } else {
+          location.reload();
+        }
+      }).catch(() => location.reload());
+      return;
+    }
+    choosingHost = true; render();
+  },
   open: (target: AgentTarget) => { guestTab = "agents"; void selectInteraction(target).then(render); },
+  switchShare: async (open: ShareOpen) => {
+    closeWriter(); closeInteraction();
+    autoOpenShareID = open.id;
+    guestTab = "agents";
+    await openShared(open);
+    void refreshShared();
+  },
 };
 // Disclosure rows ("Idle", "Archived") start closed, as in herdrup.
 const open: Record<"idle" | "archived", boolean> = { idle: false, archived: false };
@@ -172,7 +223,11 @@ async function buildTopBar() {
     actionNodes = await barActions(() => rail?.minimize());
   } else if (guestView) {
     titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
-    actionNodes = [];
+    const minimize = await slot("sidebar.leading", "Minimise sidebar");
+    minimize.tabIndex = 0; minimize.setAttribute("role", "button"); minimize.setAttribute("aria-label", "Minimise sidebar");
+    minimize.onclick = () => rail?.minimize();
+    minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
+    actionNodes = [minimize];
   } else if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
@@ -206,8 +261,9 @@ async function buildTopBar() {
   }
   // Symbol loads can overlap another tab change. Commit one complete, current bar.
   if (generation !== topBarGeneration) return;
-  // Agents and Gram carry the back to the host list.
-  commitTopBar(selectedTab !== "settings", back, titleNodes, actionNodes);
+  // Agents and Gram carry the back to the host list (hidden for a signed-out browser guest who has no host list).
+  const showBack = selectedTab !== "settings" && !(guestView && webGuest && !accountSignedIn);
+  commitTopBar(showBack, back, titleNodes, actionNodes);
 }
 
 // ---- Tab bar ----
@@ -533,12 +589,12 @@ function render() {
   guestHome?.update(state, board, guestTab === "gram" ? "agents" : guestTab, guestVisible && guestTab !== "gram", interactionVisible() ? selectedAgent?.paneID ?? null : null);
   if (guestVisible) {
     connectView.hidden = true; document.body.classList.remove("host-home-visible");
-    rail?.update("agents", null, false);
+    rail?.update(guestTab, board?.board ?? null, true);
     field.hidden = true; select.hidden = guestTab !== "agents" || interactionVisible();
     $("roster").hidden = true;
     updateAsks(false);
     // The app's own Settings, with the share's card and page in place of the machine's.
-    const share = guestTab === "settings" && guestHome ? guestHome.shareSettings(state.guest!, guestActions.hosts) : null;
+    const share = guestTab === "settings" && guestHome ? guestHome.shareSettings(state.guest!, (!webGuest || accountSignedIn) ? guestActions.hosts : undefined) : null;
     settings?.show(guestTab === "settings", state, board, share);
     showGram(guestTab === "gram");
     showInteraction(guestTab === "agents");
@@ -596,19 +652,31 @@ events.stateChanged.on((s) => {
   // Another connection (a share, or a web owner's machine switched): its own tab, and the last
   // connection's agents must not show as this one's until its first list (boardAfter).
   if (connectionChanged(state, s)) guestTab = "agents";
+  const staleShares = sharedListStale(state, s);
   board = boardAfter(state, s, board);
   state = s;
   if (writesChanged) void buildTopBar();
   if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
   if (s.phase === "idle") board = null;
+  if (staleShares) void refreshShared();
   render();
 });
 events.boardChanged.on((b) => {
   boardShown(b.session);
   board = b;
   interactionBoard(b);
+  if (autoOpenShareID !== null && b.machineID === `guest:${autoOpenShareID}`) {
+    const first = b.board.sections.find(sec => sec.rows.length > 0)?.rows[0] ?? b.board.archived[0];
+    if (first) {
+      autoOpenShareID = null;
+      guestActions.open({ machineID: b.machineID, session: b.session, paneID: first.id });
+      return;
+    }
+  }
   render();
 });
+events.syncedSharesChanged.on(() => { void refreshShared(); });
+events.accountChanged.on(() => { void refreshAccountSignedIn(); });
 
 // Retain activation until the originating board has actually rendered. The
 // backend also retains it, so an event before this page exists is not lost.
@@ -785,6 +853,7 @@ async function init(rendered: () => void) {
   if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
+  void refreshAccountSignedIn();
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone

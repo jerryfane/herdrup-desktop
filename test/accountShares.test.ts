@@ -11,7 +11,7 @@ import { acceptChoices, showGuestAccept, type Keep } from "../src/guestAccept";
 import { accountNote, addsDevice, sharedLine, sharedListStale, sharedMachines, sharedSection, syncedSharesNow } from "../src/sharedWithYou";
 import { accountShareNotice, accountShareWords, showAccountShareNotice } from "../src/notices";
 import { initHosts } from "../src/hosts";
-import { initGuestHome, leaveWords } from "../src/guestHome";
+import { combinedGuestMachines, initGuestHome, leaveWords } from "../src/guestHome";
 import { errorText } from "../src/errors";
 import { bindRequest, CHECK_FAILED, PENDING_BIND_KEY, pendingBindWaits, start, startAccount, takePendingBind, type Started, type StartAccount } from "../src/web/start";
 import { WebAccount } from "../src/web/account";
@@ -653,4 +653,77 @@ test("the browser guest's Settings, where Leave deletes a bound share's item fro
  home.update({ phase: "connecting", message: "", machine: "", herdr: "", live: false, guest }, null, "settings", true, null);
  await settle();
  expect(detail.all().find(n => n.className === "guest-settings-note guest-leave-note")?.textContent).toBe("You stop seeing enyo on all your devices. To come back, jerry has to send a new invite.");
+});
+
+test("combinedGuestMachines merges all shares on the active machine and keeps other machines below", () => {
+ const active = grant("H1", "g2", "fleetup", "jerry", "dev2306", true);
+ const shares = sharedMachines(
+  [grant("H1", "g1", "jarvis", "jerry", "dev2306", true), active],
+  [share("H2", "g3", "landing", "maya", "mac-mini", false)],
+ );
+ const combined = combinedGuestMachines(active, shares);
+ expect(combined.map(m => [m.hostID, m.machine, m.owner, m.grants.map(g => [g.agent, g.open.id])])).toEqual([
+  ["H1", "dev2306", "jerry", [["jarvis", "H1/g1"], ["fleetup", "H1/g2"]]],
+  ["H2", "mac-mini", "maya", [["landing", "H2/g3"]]],
+ ]);
+ // Active share not yet in shares is still included, and its machine stays first.
+ const otherActive = grant("H2", "g3", "landing", "maya", "Studio Mac", true);
+ const reordered = combinedGuestMachines(otherActive, shares);
+ expect(reordered.map(m => [m.hostID, m.machine])).toEqual([["H2", "Studio Mac"], ["H1", "dev2306"]]);
+});
+
+test("the guest sidebar lists all shared agents together by machine and switches on click", async () => {
+ const { doc } = bridge({});
+ const sidebar = doc.createElement("div"), detail = doc.createElement("div");
+ doc.body.append(sidebar, detail);
+ const switched: string[] = [];
+ let failNext = false;
+ const home = initGuestHome(sidebar as unknown as HTMLElement, detail as unknown as HTMLElement, {
+  symbol: async () => doc.createElement("span") as unknown as HTMLElement,
+  rowAvatar: () => doc.createElement("span") as unknown as HTMLElement,
+  placeInitials: async () => {},
+  spinner: "",
+ }, {
+  hosts() {},
+  open() {},
+  switchShare: async open => {
+   switched.push(`${open.kind}:${open.id}`);
+   if (failNext) throw new Error("relay offline");
+  },
+ }, { settings: false });
+ const active = grant("H1", "g1", "jarvis", "jerry", "dev2306", true);
+ const shares = sharedMachines(
+  [active],
+  [share("H1", "g2", "fleetup", "jerry", "dev2306", false), share("H2", "g3", "landing", "maya", "mac-mini", false)],
+ );
+ home.setShares(shares);
+ const guest = { access: active, features: {} as Features, fingerprint: "AB:CD", availability: "" };
+ const board = {
+  machineID: "guest:H1/g1",
+  session: "default",
+  board: {
+   total: 1, needsYou: 0, sections: [{ key: "idle", label: "Idle", agentCount: 1, rows: [{ id: "p1", name: "jarvis", agent: "omp", badge: "", preview: "" }] }], archived: [],
+  },
+ };
+ home.update({ phase: "connected", message: "", machine: "dev2306", herdr: "", live: true, guest }, board as never, "agents", true, null);
+ await settle();
+ const text = shown(sidebar);
+ expect(text).toContain("dev2306");
+ expect(text).toContain("Shared by jerry · 2 agents");
+ expect(text).toContain("jarvis");
+ expect(text).toContain("fleetup");
+ expect(text).toContain("mac-mini");
+ expect(text).toContain("Shared by maya · 1 agent");
+ expect(text).toContain("landing");
+ const fleetupRow = sidebar.all().find(n => n.dataset?.shareId === "H1/g2")!;
+ expect(fleetupRow).toBeDefined();
+ fleetupRow.click();
+ await settle();
+ expect(switched).toEqual(["synced:H1/g2"]);
+ failNext = true;
+ const landingRow = sidebar.all().find(n => n.dataset?.shareId === "H2/g3")!;
+ landingRow.click();
+ await settle();
+ expect(switched).toEqual(["synced:H1/g2", "synced:H2/g3"]);
+ expect(sidebar.all().find(n => n.className === "guest-switch-error")?.textContent).toBe("relay offline");
 });
