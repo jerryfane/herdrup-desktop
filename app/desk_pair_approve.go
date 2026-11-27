@@ -252,7 +252,7 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 	hostKey, err := d.verifiedHostKey(ctx, c)
 	if err != nil {
 		var unread *pinsUnreadError
-		if errors.Is(err, errHostKeyType) || errors.Is(err, errNotPinned) || errors.As(err, &unread) {
+		if errors.Is(err, errHostKeyType) || errors.Is(err, errCertNoPlainKey) || errors.Is(err, errNotPinned) || errors.As(err, &unread) {
 			return PairProbe{State: "unsendable", Reason: truncate(err.Error(), pairReasonRunes)}, nil
 		}
 		return PairProbe{State: "unreachable"}, nil
@@ -405,6 +405,11 @@ func pairHostKeySupported(algo string) bool {
 // can't check (an RSA key, say): it is held out of the list before any
 // key is added there.
 var errHostKeyType = errors.New("can't share this machine: its host key type isn't supported")
+
+// errCertNoPlainKey is a machine pinned by a host certificate that does
+// not offer the exact plain key certified by that certificate: held out
+// before any key is added, because the new device negotiates plain keys only.
+var errCertNoPlainKey = errors.New("can't share this machine: it doesn't offer the plain host key in its certificate")
 
 // pairTrialHostKey stands for a machine's host key when its entry is
 // checked before the machine is reached.
@@ -1028,7 +1033,7 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	defer done()
 	hostKey, err := d.verifiedHostKey(ctx, c)
 	switch {
-	case errors.Is(err, errHostKeyType):
+	case errors.Is(err, errHostKeyType), errors.Is(err, errCertNoPlainKey):
 		return hold(err.Error())
 	case errors.Is(err, errNotPinned):
 		return fail(err.Error(), false)
@@ -1054,14 +1059,16 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	return row
 }
 
-// errPlainKeyVerified ends probePlainHostKey cleanly once SSH key exchange
-// and host-key signature verification succeed, before user authentication.
+// errPlainKeyVerified ends probePlainHostKey immediately inside HostKeyCallback
+// once SSH key exchange has verified the server's host-key signature, without
+// starting user authentication (so servers that disconnect unknown users never
+// break the probe).
 var errPlainKeyVerified = errors.New("plain host key verified")
 
 // probePlainHostKey verifies that addr offers plain as a plain (non-cert)
 // SSH host key and proves possession during key exchange. A host that only
 // offers certificates, or offers a different plain key of that type, gets
-// errHostKeyType; transport or context errors are returned as themselves.
+// errCertNoPlainKey; transport or context errors are returned as themselves.
 func probePlainHostKey(ctx context.Context, addr string, plain ssh.PublicKey) error {
 	var d net.Dialer
 	tcp, err := d.DialContext(ctx, "tcp", addr)
@@ -1076,36 +1083,27 @@ func probePlainHostKey(ctx context.Context, addr string, plain ssh.PublicKey) er
 	defer stop()
 
 	want := plain.Marshal()
-	var matched bool
 	sc, _, _, err := ssh.NewClientConn(tcp, addr, &ssh.ClientConfig{
-		User:              "herdrup-probe",
 		HostKeyAlgorithms: []string{plain.Type()},
 		HostKeyCallback: func(_ string, _ net.Addr, got ssh.PublicKey) error {
 			if _, isCert := got.(*ssh.Certificate); isCert || got.Type() != plain.Type() || !bytes.Equal(got.Marshal(), want) {
-				return errHostKeyType
+				return errCertNoPlainKey
 			}
-			matched = true
-			return nil
-		},
-		AuthCallback: func(*ssh.ClientAuthContext) (ssh.AuthMethod, error) {
-			return nil, errPlainKeyVerified
+			return errPlainKeyVerified
 		},
 	})
 	if sc != nil {
 		_ = sc.Close()
 	}
-	if err == nil && matched {
+	if errors.Is(err, errPlainKeyVerified) {
 		return nil
 	}
-	if errors.Is(err, errPlainKeyVerified) && matched {
-		return nil
-	}
-	if errors.Is(err, errHostKeyType) {
-		return errHostKeyType
+	if errors.Is(err, errCertNoPlainKey) {
+		return errCertNoPlainKey
 	}
 	var neg *ssh.AlgorithmNegotiationError
 	if errors.As(err, &neg) && neg.What == "host key" {
-		return errHostKeyType
+		return errCertNoPlainKey
 	}
 	return err
 }

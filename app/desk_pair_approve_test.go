@@ -1243,13 +1243,13 @@ func TestPairApproveHoldsOutACertificateOnlyHost(t *testing.T) {
 			w.keyMachineWith(t, "certonly", certOf(t, ec, 8), true, true, tc.extra(t)...)
 			id := w.start(t)
 			w.typeCode(t, id)
-			if p, err := w.d.PairApproveProbe(ctx, id, w.ids["certonly"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
-				t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errHostKeyType.Error())
+			if p, err := w.d.PairApproveProbe(ctx, id, w.ids["certonly"]); err != nil || p.State != "unsendable" || p.Reason != errCertNoPlainKey.Error() {
+				t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errCertNoPlainKey.Error())
 			}
 			res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["certonly"]})
 			rows := rowsByLabel(res)
 			if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded ||
-				rows["certonly"].Status != account.PairFailed || rows["certonly"].Reason != errHostKeyType.Error() || rows["certonly"].Retryable {
+				rows["certonly"].Status != account.PairFailed || rows["certonly"].Reason != errCertNoPlainKey.Error() || rows["certonly"].Retryable {
 				t.Fatalf("approve %+v, %v", res, err)
 			}
 			if n := w.machines["certonly"].adds.Load(); n != 0 {
@@ -1273,16 +1273,60 @@ func TestPairApproveHoldsOutACertificateHostWithDifferentPlainKey(t *testing.T) 
 	w.keyMachineWith(t, "mismatch", certOf(t, certified, 8), true, true, otherPlain)
 	id := w.start(t)
 	w.typeCode(t, id)
-	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["mismatch"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
-		t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errHostKeyType.Error())
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["mismatch"]); err != nil || p.State != "unsendable" || p.Reason != errCertNoPlainKey.Error() {
+		t.Fatalf("probe %+v, %v: want unsendable (%q)", p, err, errCertNoPlainKey.Error())
 	}
 	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["mismatch"]})
 	rows := rowsByLabel(res)
-	if err != nil || !res.Sent || rows["mismatch"].Status != account.PairFailed || rows["mismatch"].Reason != errHostKeyType.Error() || rows["mismatch"].Retryable {
+	if err != nil || !res.Sent || rows["mismatch"].Status != account.PairFailed || rows["mismatch"].Reason != errCertNoPlainKey.Error() || rows["mismatch"].Retryable {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
 	if n := w.machines["mismatch"].adds.Load(); n != 0 {
 		t.Fatalf("%d adds on the mismatched plain-key host, want 0", n)
+	}
+}
+
+// Plain-key verification ends inside HostKeyCallback without starting user
+// authentication, so a server that disconnects any unknown user still passes
+// the probe when it offers the exact plain key.
+func TestProbePlainHostKeyDoesNotStartUserAuth(t *testing.T) {
+	ed := ed25519HostKey(t)
+	var authAttempted atomic.Bool
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
+			authAttempted.Store(true)
+			return nil, errors.New("disconnect")
+		},
+		NoClientAuthCallback: func(ssh.ConnMetadata) (*ssh.Permissions, error) {
+			authAttempted.Store(true)
+			return nil, errors.New("disconnect")
+		},
+	}
+	cfg.AddHostKey(ed)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				if sc, _, _, err := ssh.NewServerConn(c, cfg); err == nil {
+					sc.Close()
+				}
+			}()
+		}
+	}()
+	if err := probePlainHostKey(context.Background(), ln.Addr().String(), ed.PublicKey()); err != nil {
+		t.Fatalf("probePlainHostKey: %v; want nil", err)
+	}
+	if authAttempted.Load() {
+		t.Fatal("probePlainHostKey entered user authentication")
 	}
 }
 
