@@ -279,6 +279,7 @@ export class HerdrUpAccountPanel {
   nodes.push(group("DEVICES", deviceRows));
   if (this.deviceNote) { const line = footnote(this.deviceNote); line.setAttribute("role", "status"); nodes.push(line); }
   const signOut = row(glyph("rectangle.portrait.and.arrow.right"), this.busy === "signing-out" ? "Signing out…" : "Sign out", "", null, () => { void this.confirmSignOut(); });
+  signOut.classList.add("account-sign-out-row");
   signOut.disabled = this.busy !== "";
   nodes.push(group(null, [signOut]));
   // Delete is confirmed by a fresh sign-in in the browser (herdrup #783), once the service lists

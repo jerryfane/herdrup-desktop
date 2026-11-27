@@ -12,7 +12,7 @@ import { HerdrAPIError } from "../src/webguest/errors";
 import type { ConnState } from "../src/mygo";
 
 const owner = (scope?: string): Pick<ConnState, "guest"> => ({
- guest: { access: { guestID: "g1", guestName: "", machineLabel: "dev", ownerName: "", agentName: "", agentTarget: "", endpoint: { relay: "", hostID: "h", hostPublic: "" }, acceptedAt: "" }, features: { gram: true, push: false, multi_request: true }, fingerprint: "", ...(scope ? { ownerScope: scope } : {}) },
+ guest: { access: { guestID: "g1", guestName: "", machineLabel: "dev", ownerName: "", agentName: "", agentTarget: "", endpoint: { relay: "", hostID: "h", hostPublic: "" }, acceptedAt: "" }, features: { gram: true, push: false, multi_request: true }, fingerprint: "", ...(scope !== undefined ? { ownerScope: scope } : {}) },
 });
 
 test("the desktop keeps every desktop-only part; the browser has none", () => {
@@ -25,6 +25,7 @@ test("a guest share shows the guest home on desktop and browser; a browser owner
  expect(shareShown(owner(), true)).toBe(true);
  expect(shareShown({}, false)).toBe(false);
  expect(shareShown({}, true)).toBe(false);
+ expect(shareShown(owner(""), true)).toBe(false);
  expect(shareShown(owner("terminal"), true)).toBe(false);
  expect(shareShown(owner("chat"), true)).toBe(false);
 });

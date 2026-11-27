@@ -466,7 +466,7 @@ export function createGuestDesk(env: DeskEnv) {
  const connection = (l: Pick<Active, "access" | "owner" | "transport">, print: string, phase: string, message: string, availability: string): ConnState => ({
   phase, message, machine: l.access.machineLabel, herdr: "", live: false,
   guest: { access: pageAccess(l.access), features: pageFeatures(l.transport.features), fingerprint: print, ...(availability !== "" ? { availability } : {}),
-   ...(l.owner && l.transport.scope !== "" ? { ownerScope: l.transport.scope } : {}) },
+   ...(l.owner ? { ownerScope: l.transport.scope } : {}) },
  });
  /** l's connection is s from now (not once l has ended), told to the page while l is the open link. */
  const setState = (l: Active, s: ConnState) => {
@@ -658,7 +658,7 @@ export function createGuestDesk(env: DeskEnv) {
   if (!l.owner || active !== l || l.conn.phase !== "connected" || !guest || guest.availability === "reconnecting") return;
   const next: GuestConnection = { ...guest, ...change };
   if (!next.availability) delete next.availability;
-  if (!next.ownerScope) delete next.ownerScope;
+  if (!l.owner) delete next.ownerScope;
   if (next.availability === guest.availability && next.ownerScope === guest.ownerScope) return;
   setState(l, { ...l.conn, guest: next });
  }

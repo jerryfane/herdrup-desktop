@@ -230,7 +230,18 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
 
  new MutationObserver(() => {
   if (!container.hidden) {
-   if (!signedIn && ownerAccess.account.current === null) { startOver(true); return; }
+   if (!signedIn && ownerAccess.account.current === null) {
+    // Do not wipe an open modal (e.g., Leave confirmation showing an unsent-delete warning).
+    const openDialog = document.querySelector("dialog[open]");
+    if (openDialog) {
+     openDialog.addEventListener("close", () => {
+      if (!container.hidden && !signedIn && ownerAccess.account.current === null) startOver(true);
+     }, { once: true });
+     return;
+    }
+    startOver(true);
+    return;
+   }
    if (!approvalStarted) { approvalStarted = true; begin(); }
   }
   probe();

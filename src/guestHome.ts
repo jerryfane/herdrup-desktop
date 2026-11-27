@@ -8,22 +8,17 @@ import { guestRowLine, rowStatus } from "./rowStatus";
 import { grantKey } from "./grantKey";
 import { errorText } from "./errors";
 import { openShared, type SharedMachine, type ShareOpen } from "./sharedWithYou";
+import { initial as avatarInitial, tintIndex as nameTintIndex } from "./web/board";
 // The guest's Settings page reuses the owner's Settings styles (its machine card, page body);
 // the browser guest loads no owner Settings, so it imports them here.
 import "./settings.css";
 
 type GuestState = NonNullable<ConnState["guest"]>;
 
-/** FNV-1a 64-bit tint index (0..3) matching Go board.go TintIndex & HerdrKit colorIndex. */
-function nameTintIndex(name: string): number {
- let h = 0xcbf29ce484222325n;
- for (const b of new TextEncoder().encode(name)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
- return Number((h ^ (h >> 32n)) % 4n);
-}
-
 /** Combines the currently open share with all saved/synced shares grouped by machine so every
  *  shared agent on the same machine (and other machines) appears together in the Agents sidebar
- *  in a stable order (active machine first; agent order within a machine preserved). */
+ *  in a stable order (active machine first; grants within each machine ordered deterministically
+ *  by agent name and share id, independent of grant-store resume priority). */
 export function combinedGuestMachines(active: GuestState["access"], shares: readonly SharedMachine[]): SharedMachine[] {
  const activeID = grantKey(active);
  const activeHost = active.endpoint.hostID;
@@ -49,10 +44,18 @@ export function combinedGuestMachines(active: GuestState["access"], shares: read
    if (active.agentName && !existing.agents.includes(active.agentName)) existing.agents.unshift(active.agentName);
   }
  }
+ // Keep sibling order deterministic across switches (grant store lists the last-opened grant first).
+ for (const m of byHost.values()) {
+  m.grants.sort((a, b) => a.agent.localeCompare(b.agent, undefined, { sensitivity: "base" }) || a.open.id.localeCompare(b.open.id));
+  m.agents = [...new Set(m.grants.map(g => g.agent).filter(Boolean))];
+ }
  // Keep the active machine first so switching between two shares on the same machine never jumps,
- // while preserving the relative order of all other machines.
+ // while ordering all other machines stably by machine label then hostID.
  const activeMachine = byHost.get(activeHost)!;
- return [activeMachine, ...[...byHost.values()].filter(m => m.hostID !== activeHost)];
+ const others = [...byHost.values()]
+  .filter(m => m.hostID !== activeHost)
+  .sort((a, b) => a.machine.localeCompare(b.machine, undefined, { sensitivity: "base" }) || a.hostID.localeCompare(b.hostID));
+ return [activeMachine, ...others];
 }
 
 /** Leave share's words. A share herdr bound to the HerdrUp account (Access.accountBound, #700)
@@ -155,8 +158,8 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   if (row) face = deps.rowAvatar(running ? row : { ...row, badge: "" });
   else {
    // No listed agent: the default tile with the share's initial (AgentAvatarView(agent: nil)).
-   face = node("div", "avatar"); const tile = node("div", "tile tint-0");
-   tile.append(node("span", "initial", (name.trim()[0] ?? "?").toUpperCase())); face.append(tile);
+   face = node("div", "avatar"); const tile = node("div", `tile tint-${nameTintIndex(name)}`);
+   tile.append(node("span", "initial", avatarInitial(name))); face.append(tile);
   }
   // Decorative: the name and the second line beside it say who it is and its status.
   face.setAttribute("aria-hidden", "true");
@@ -186,7 +189,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   }
   const face = node("div", "avatar");
   const tile = node("div", `tile tint-${nameTintIndex(name)}`);
-  tile.append(node("span", "initial", (name.trim()[0] ?? "?").toUpperCase()));
+  tile.append(node("span", "initial", avatarInitial(name)));
   face.append(tile);
   face.setAttribute("aria-hidden", "true");
   const text = node("div", "text"), line1 = node("div", "line1"), chev = node("span", "chev");

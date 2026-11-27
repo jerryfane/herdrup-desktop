@@ -13,6 +13,8 @@
 .account-panel-full .account-row { cursor: pointer; }
 .account-panel-full .account-row-static { cursor: default; }
 .account-panel-full .account-row:disabled { opacity: 0.6; cursor: default; }
+.account-panel-full .account-sign-out-row { justify-content: center; text-align: center; }
+.account-panel-full .account-sign-out-row .settings-row-lines { flex: 0 1 auto; }
 /* Delete account: Swift's died ink on the label and glyph (destructive, not a coloured card). */
 .account-panel-full .account-row-destructive, .account-panel-full .account-row-destructive .settings-glyph { color: var(--status-died); }
 .account-footnote { margin: 8px 32px 0; color: var(--color-text-faint); font: 400 13px/1.4 var(--font-app); }
