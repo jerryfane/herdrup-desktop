@@ -655,8 +655,18 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return &dirSyncError{err: err}
+	}
+	return nil
 }
+
+// dirSyncError marks a writeFileAtomic failure after os.Rename already put
+// the new file in place: only the directory sync failed.
+type dirSyncError struct{ err error }
+
+func (e *dirSyncError) Error() string { return e.err.Error() }
+func (e *dirSyncError) Unwrap() error { return e.err }
 
 // syncDir makes the names written in dir durable (an fsync of the folder).
 // A system that doesn't sync folders is not an error (dirSyncUnsupported);
@@ -771,6 +781,14 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		}
 	}
 	if err := d.store(st); err != nil {
+		var syncErr *dirSyncError
+		if errors.As(err, &syncErr) {
+			// The new file is already in place on disk while d.undurable is
+			// true: record any legacy online-rename provenance on the live
+			// link now (without sending while undurable), so recovery or a
+			// retry sends guest.update once the exact revision is durable.
+			_, _ = d.publishLabelLocked(nil, st, cause)
+		}
 		return err
 	}
 	// The live link shows its profile as saved now, and a label its guests

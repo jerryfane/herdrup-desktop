@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1466,36 +1467,47 @@ func offlineRenamedLegacy(t *testing.T) (*relabelHerdr, Machine) {
 
 // #594 round 12, probe 1: a herdr without guest_relabel_rev is sent no
 // rename made before its connection's first list read the profile: not by
-// saves (here, as SaveMachine stores and publishes) that held the store
-// while that first list waited for it, an unrelated one or a rename of the
-// machine itself. The healthy control, the first list not held up, sends
-// nothing either, nor does a save then that renames nothing; a rename saved
-// once it read the profile is sent.
+// a real SaveMachine held at syncDir while that first list installed its
+// route and waited for storeMu. The healthy control, the first list not
+// held up, sends nothing either, nor does a save then that renames nothing;
+// a rename saved once it read the profile is sent.
 func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		h, m := offlineRenamedLegacy(t)
 		before, _ := h.labels(t)
 		if held {
-			h.d.storeMu.Lock()
-			st, err := h.d.load()
-			if err != nil {
-				h.d.storeMu.Unlock()
-				t.Fatal(err)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var once sync.Once
+			origSync := syncDir
+			syncDir = func(dir string) error {
+				once.Do(func() {
+					close(entered)
+					<-release
+				})
+				return origSync(dir)
 			}
+			t.Cleanup(func() { syncDir = origSync })
+
+			during := m
+			during.Nickname = "During"
+			saveDone := make(chan error, 1)
+			go func() {
+				saveDone <- h.d.SaveMachine(during, machineID(m))
+			}()
+			<-entered
 			h.d.start(m, "")
-			waitFor(t, "the first list waiting for the store", func() bool {
-				buf := make([]byte, 1<<20)
-				return bytes.Contains(buf[:runtime.Stack(buf, true)], []byte("(*Desk).publishLabel("))
+			// Wait until this connection's own link installed its relabel route
+			// under d.mu (right before calling publishLabel for its first list).
+			waitFor(t, "this connection installed its relabel route", func() bool {
+				h.d.mu.Lock()
+				defer h.d.mu.Unlock()
+				return h.d.link != nil && h.d.link.relabelVia.view != nil
 			})
-			_, _ = h.d.publishLabelLocked(nil, st, publishCause{})
-			i := st.findProfile(m.LocalID)
-			st.Machines[i].Nickname, st.Machines[i].LabelRev = "During", nextLabelRev(st.Machines[i].LabelRev)
-			if err := h.d.store(st); err != nil {
-				h.d.storeMu.Unlock()
-				t.Fatal(err)
+			close(release)
+			if err := <-saveDone; err != nil {
+				t.Fatalf("held SaveMachine: %v", err)
 			}
-			_, _ = h.d.publishLabelLocked(nil, st, publishCause{renamed: m.LocalID})
-			h.d.storeMu.Unlock()
 		} else {
 			h.d.start(m, "")
 		}
@@ -1520,6 +1532,61 @@ func TestALegacyHerdrIsSentNoRenameMadeBeforeItsFirstListRead(t *testing.T) {
 		if p := h.answered(t, 1)[0]; *p.MachineLabel != "Online" || p.MachineLabelRev != nil {
 			t.Fatalf("held %v: sent %+v; want Online without a revision", held, p)
 		}
+	}
+}
+
+// #594 round 12: an online rename on a herdr without guest_relabel_rev
+// whose machines.json rename succeeded while directory sync returned EIO
+// must not send while undurable, and must still relabel existing shares
+// once the store becomes durable again (either on a retry of SaveMachine
+// or on directory-sync recovery).
+func TestLegacyOnlineRenameSurvivesDirSyncFailure(t *testing.T) {
+	for _, viaRetry := range []bool{true, false} {
+		name := "recover"
+		if viaRetry {
+			name = "retry"
+		}
+		t.Run(name, func(t *testing.T) {
+			h, m := offlineRenamedLegacy(t)
+			h.d.start(m, "")
+			h.listed(t)
+			h.drain(t)
+
+			var failDir atomic.Bool
+			failDir.Store(true)
+			origSync := syncDir
+			syncDir = func(dir string) error {
+				if failDir.Load() {
+					return errors.New("input/output error")
+				}
+				return origSync(dir)
+			}
+			t.Cleanup(func() { syncDir = origSync })
+
+			renamed := m
+			renamed.Nickname = "New"
+			if err := h.d.SaveMachine(renamed, machineID(m)); err == nil {
+				t.Fatal("first SaveMachine with failing syncDir succeeded, want error")
+			}
+			h.drain(t)
+			if got := h.updates(); len(got) != 0 {
+				t.Fatalf("sent while undurable: %+v; want none", got)
+			}
+
+			failDir.Store(false)
+			if viaRetry {
+				if err := h.d.SaveMachine(renamed, machineID(renamed)); err != nil {
+					t.Fatalf("retry SaveMachine: %v", err)
+				}
+			} else {
+				if _, err := h.d.Machine(); err != nil {
+					t.Fatalf("recovery read: %v", err)
+				}
+			}
+			if p := h.answered(t, 1)[0]; *p.MachineLabel != "New" || p.MachineLabelRev != nil {
+				t.Fatalf("sent %+v; want New without a revision", p)
+			}
+		})
 	}
 }
 
