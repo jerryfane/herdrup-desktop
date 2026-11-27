@@ -1006,16 +1006,75 @@ test("reconciliation revalidates under the shares lock so a newer live revision 
  const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
  const id = `${h.relay.hostID}/${access.guestID}`;
  const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
- // Simulate a second tab committing a newer live revision while tab 1 is about to run dropLocked.
+ // Tab A observes deletion at rev 2 (creating a tab-local in-memory mask) while IndexedDB fails
+ // transiently so the grant is still present; Tab B then commits a newer live revision (rev 3)
+ // with no drop marker before Tab A's reconciliation retries dropLocked.
+ const origRemove = mac.grants.remove.bind(mac.grants);
+ mac.grants.remove = async () => { throw new Error("transient idb error"); };
+ w.seedTombstone(id, "shares"); // rev 2
+ await mac.shares.sync().catch(() => {});
+ expect(mac.shares.isMasked("acct", id)).toBe(true);
+ // Now Tab B commits live rev 3 with no drop marker.
+ mac.grants.remove = origRemove;
  const rec = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { rev: number; shares: { id: string; rev: number; body: object }[]; gone: Record<string, number>; pending: unknown[]; drop?: string[] };
- rec.shares = [{ id, rev: 5, body: liveBody }];
- rec.drop = [id]; // stale drop marker from tab 1's older snapshot
+ rec.rev = 3;
+ rec.shares = [{ id, rev: 3, body: liveBody }];
+ rec.gone = {};
+ rec.drop = [];
  mac.storage.setItem(SHARES_KEY_PREFIX + "acct", JSON.stringify(rec));
+ // Tab A's stale reconciliation / dropLocked must see live rev 3 > mask rev 2, clear its stale mask,
+ // keep the grant, and list the share again.
  let removed = false;
- await mac.shares.dropLocked("acct", id, async () => { removed = true; await mac.grants.remove(id); });
+ await mac.shares.dropLocked("acct", id, async () => { removed = true; await origRemove(id); });
  expect(removed).toBe(false);
  expect(await mac.grants.get(id)).toBeDefined();
+ expect(mac.shares.isMasked("acct", id)).toBe(false);
+ expect(mac.shares.list().map(s => s.id)).toEqual([id]);
 }, CONNECTS_LIMIT_MS);
+
+test("a conflict tombstone does not disconnect a live guest when post-push readback returns a newer live row", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ w.failPush = true;
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const liveBody = {
+  relay: access.endpoint.relay,
+  host_id: access.endpoint.hostID,
+  node_pub: Buffer.from(access.endpoint.hostPublicKey).toString("base64url"),
+  guest_id: access.guestID,
+ };
+ // Guest is actively connected.
+ expect((await mac.desk.state()).guest).not.toBeNull();
+ // Push hits a tombstone conflict (rev 2), then same-round readback returns a newer live row (rev 3).
+ w.failPush = false;
+ w.seedTombstone(id, "shares");
+ w.serverNow += 121_000;
+ w.onPull = () => {
+  w.onPull = () => {
+   w.seedShare(id, liveBody);
+  };
+ };
+ await mac.shares.sync();
+ // Guest was NEVER disconnected and still holds both grant and account listing.
+ expect((await mac.desk.state()).guest).not.toBeNull();
+ expect(await mac.grants.get(id)).toBeDefined();
+ expect(mac.shares.list().map(s => s.id)).toEqual([id]);
+}, CONNECTS_LIMIT_MS);
+
+test("firstBatch lazily stops before examining entry 101 of a 100+1 pending queue", async () => {
+ const { firstBatch } = await import("../src/web/account");
+ let examined = 0;
+ function* gen() {
+  for (let i = 0; i < 105; i++) {
+   examined++;
+   yield { collection: "shares" as const, id: `h/g${i}`, base_rev: 0, deleted: true as const };
+  }
+ }
+ const batch = firstBatch(gen(), c => c);
+ expect(batch.length).toBe(100);
+ expect(examined).toBe(100);
+});
 
 test("retrying an unsent Leave after local grant removal still retries the account deletion", async () => {
  const w = worker(), h = host();

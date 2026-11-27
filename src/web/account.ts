@@ -638,18 +638,21 @@ const MAX_PUSH_CHANGES = 100, MAX_PUSH_BYTES = 256 * 1024;
 const PUSH_OVERHEAD = `{"changes":[],"not_after":${Number.MAX_SAFE_INTEGER}}`.length;
 
 /** How many leading changes fit into one push the service takes (at most 100 changes, and at most
- *  256 KiB serialized). Stops serializing as soon as the first batch hits either limit. */
-export function firstBatch<T>(items: readonly T[], encode: (item: T) => SyncChange): T[] {
- let count = 0, size = PUSH_OVERHEAD;
+ *  256 KiB serialized). Iterates lazily and stops examining items as soon as the first batch hits
+ *  either limit. */
+export function firstBatch<T>(items: Iterable<T>, encode: (item: T) => SyncChange): T[] {
+ const out: T[] = [];
+ let size = PUSH_OVERHEAD;
  const enc = new TextEncoder();
- for (let i = 0; i < items.length; i++) {
-  const raw = enc.encode(JSON.stringify(encode(items[i]!))).byteLength;
-  const n = raw + (i > 0 ? 1 : 0); // the comma
-  if (i > 0 && (i === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) break;
+ for (const item of items) {
+  const raw = enc.encode(JSON.stringify(encode(item))).byteLength;
+  const n = raw + (out.length > 0 ? 1 : 0); // the comma
+  if (out.length > 0 && size + n > MAX_PUSH_BYTES) break;
   size += n;
-  count = i + 1;
+  out.push(item);
+  if (out.length === MAX_PUSH_CHANGES) break;
  }
- return items.slice(0, count);
+ return out;
 }
 
 /** changes split into pushes the service takes (account.Batches): at most 100 each, and each

@@ -426,9 +426,6 @@ export function createGuestDesk(env: DeskEnv) {
   let failed: { error: unknown } | null = null;
   if (acct !== null) {
    for (const id of shares.dropping(acct)) {
-    const grant = await env.grants.get(id);
-    const bound = grant?.accountBound === true && grant.account === acct;
-    if (bound && active?.id === "guest:" + id) { disconnect(); publishIdle(); }
     try {
      await shares.dropLocked(acct, id, async () => {
       const latest = await env.grants.get(id);
@@ -449,7 +446,7 @@ export function createGuestDesk(env: DeskEnv) {
     publishIdle();
    }
   }
-  await publishShares(change.shares);
+  await publishShares(acct !== null ? shares.list() : change.shares);
   if (failed !== null) throw (failed as { error: unknown }).error;
  }
 

@@ -67,11 +67,10 @@ async function refreshShared() {
  const [grants, synced] = await Promise.all([Desk.sharedConnections().catch(() => []), syncedSharesNow(signedIn)]);
  if (at === sharedVersion) {
   const machines = sharedMachines(grants, synced);
-  const changed = (machines.length > 0) !== (sharedCount > 0);
   sharedCount = machines.length;
   sharedProblem.hidden = true;
   await sharedList.draw(machines);
-  if (shownWelcome && changed) showWelcome(shownWelcome);
+  if (shownWelcome) showWelcome(shownWelcome);
  }
 }
 events.syncedSharesChanged.on(() => { void refreshShared(); });
@@ -225,6 +224,7 @@ window.addEventListener("guest-gram", event => {
 // Photos that failed are asked for again once the connection is back up (avatars.ts).
 trackPhotoConnections(events);
 events.stateChanged.on((s) => {
+ const hadGuest = !!state.guest;
  // Another share (shellModel.ts, the shell's rule too): its own tab, and not the last one's board.
  if (connectionChanged(state, s)) guestTab = "agents";
  // The shares list names the share open now, and its machine as its owner names it now.
@@ -233,6 +233,14 @@ events.stateChanged.on((s) => {
  state = s;
  if (s.phase !== "connected") { closeWriter(); closeInteraction(); }
  if (s.phase === "idle") board = null;
+ // Leaving or losing the active share transitions to idle outside the invite flow: populate the
+ // welcome screen (which renders the remaining saved shares chooser) even if Leave threw
+ // LeaveUnsent and its error dialog is dismissed later.
+ if (hadGuest && !s.guest && shownWelcome === null && ready) {
+  showWelcome({ owner: localOwnerHint.get() });
+  void refreshShared();
+  return;
+ }
  render();
 });
 events.boardChanged.on((b) => {
