@@ -27,6 +27,8 @@
    and back out over 0.2 s. */
 .host-home .host-home-row { transition:background-color var(--motion-settle-duration) var(--motion-settle-ease); }
 .host-home .host-home-row:active { background:var(--color-surface-raised); transition-duration:calc(var(--motion-settle-duration) / 4); }
+/* SHARED WITH YOU's machine over its agent rows (sharedWithYou.ts): a heading, never pressed. */
+.host-home .host-home-row.host-shared-machine:active { background:none; }
 .host-home-icon { width:22px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--color-text-dim); }
 .host-computer-glyph { width:19px; height:19px; display:block; background:currentColor; mask:var(--host-computer) center/contain no-repeat; -webkit-mask:var(--host-computer) center/contain no-repeat; }
 .host-home-lines { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
@@ -121,6 +123,9 @@ body.host-home-visible > .sidebar { display:none; }
 .host-empty-command code { flex:1; min-width:0; overflow-wrap:anywhere; font:400 calc(13px * var(--ui-font-scale, 1)) var(--font-machine); }
 .host-empty-copy { flex:none; display:flex; padding-top:2px; color:var(--color-text-faint); }
 .host-empty-copy.copied { color:var(--status-done); }
+
+/* SHARED WITH YOU: a grant's queued or refused account write, muted under its row's lines, whole. */
+.host-home-address.host-shared-state { white-space:normal; }
 
 /* 1B-dk "Welcome back": the account's machines to pair; neutral rows, one button each. */
 .host-home-synced-row { display: flex; align-items: center; gap: 12px; cursor: default; }

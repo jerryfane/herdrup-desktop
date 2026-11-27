@@ -1,3 +1,5 @@
+import type { Access } from "./mygo";
+
 /** The window's notices, the Topics switch's (agentActions.ts) and a browser asking to be approved
  *  (webAccess.ts): one region at the window's level, so no pane's hidden or inert state reaches
  *  them, as the minimised sidebar's would (#486). style.css .notices places it: over the
@@ -19,4 +21,46 @@ export function noticeRegion(): HTMLElement {
     }).observe(region);
   }
   return region;
+}
+
+/** What a bound grant's account write says (Access.accountShare, #596). Only "confirmed" says the
+ *  share is in the account; "queued" says it goes with the next sync; "refused", the problem as
+ *  the desk words it. A plain share, or one bound with no write known (accountBound alone says only
+ *  that herdr bound it), says nothing of the account: null. */
+export function accountShareWords(access: Pick<Access, "accountShare" | "accountShareProblem">): string | null {
+  switch (access.accountShare) {
+    case "confirmed": return "Added to your HerdrUp account.";
+    case "queued": return "Adding to your HerdrUp account at the next sync.";
+    case "refused": return access.accountShareProblem || null;
+    default: return null;
+  }
+}
+
+/** The words after a share went into the HerdrUp account (frame com-g3). */
+export const accountShareNotice = (agentName: string) => `${agentName} is in your HerdrUp account. Sign in on your other devices to open it there.`;
+
+let accountNotice: HTMLElement | null = null;
+/** After an accept its account took (Access.accountShare "confirmed"; accountBound alone isn't
+ *  that): one quiet line among the window's notices, with OK, until read. A second accept replaces
+ *  the first's. */
+export function showAccountShareNotice(agentName: string): HTMLElement {
+  return showAccountNotice(accountShareNotice(agentName));
+}
+
+/** The account notice with words of its own: the browser's after an accept it bound, which says
+ *  whether the account took the share (web/shares.ts boundNotice). */
+export function showAccountNotice(words: string): HTMLElement {
+  const region = noticeRegion();
+  accountNotice?.remove();
+  const notice = document.createElement("div");
+  notice.className = "account-share-notice"; notice.setAttribute("role", "status");
+  const text = document.createElement("span");
+  text.className = "account-share-notice-text"; text.textContent = words;
+  const ok = document.createElement("button");
+  ok.type = "button"; ok.className = "button-secondary button-compact"; ok.textContent = "OK";
+  ok.onclick = () => notice.remove();
+  notice.append(text, ok);
+  region.prepend(notice);
+  accountNotice = notice;
+  return notice;
 }

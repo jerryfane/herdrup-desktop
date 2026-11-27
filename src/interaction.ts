@@ -58,6 +58,7 @@ import arrowCircleDownIcon from "../third_party/phosphor/web/arrow-circle-down.s
 import fileTextIcon from "../third_party/phosphor/web/file-text.svg?url";
 import { appleSymbols } from "./platform";
 import { sharesAgent } from "./shellModel";
+import { grantKey } from "./grantKey";
 
 const noteStyles: Record<string, { label: string; symbol: string; icon?: string }> = {
  gitmoot: { label: "Gitmoot", symbol: "envelope", icon: envelopeIcon },
@@ -795,7 +796,7 @@ class Detail {
     this.guestModes = modes;
     // The guest's one Gram with this shared agent selected (#697); the grant is Access.ID().
     const share = (await Desk.state().catch(() => null))?.guest?.access;
-    const grant = share ? `${share.endpoint.hostID}/${share.guestID}` : null;
+    const grant = share ? grantKey(share) : null;
     const gram = button("Gram", () => window.dispatchEvent(new CustomEvent("guest-gram", { detail: grant })));
     gram.hidden = !view.guestGram; this.guestGramButton = gram;
    }

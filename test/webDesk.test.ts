@@ -39,19 +39,22 @@ function fakeDesk(kept: Access[], accept: (text: string) => Promise<Access>) {
  };
 }
 
+/** A start with no "Add to my account" in play. */
+const plain = { signedIn: async () => false, pending: null, signIn: null };
+
 test("first visit redeems and connects; a later visit resumes; nothing kept says whom to ask", async () => {
  const first = fakeDesk([], async () => access("G1"));
- expect(await start(first.desk, "PAYLOAD", "https://guest.herdrup.app", () => null)).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(first.desk, "PAYLOAD", "https://guest.herdrup.app", () => null, plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  expect(first.log).toEqual(["accept herdrup://guest-invite#PAYLOAD", "connect HOST/G1"]);
 
  const later = fakeDesk([access("G1")], async () => { throw new Error("unreachable"); });
- expect(await start(later.desk, "", "https://guest.herdrup.app", () => null)).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(later.desk, "", "https://guest.herdrup.app", () => null, plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  expect(later.log).toEqual(["connect HOST/G1"]);
 
  const none = fakeDesk([], async () => access("G1"));
- expect(await start(none.desk, "", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null } });
+ expect(await start(none.desk, "", "https://x", () => null, plain)).toEqual({ kind: "welcome", welcome: { owner: null } });
  expect(welcome({ owner: null }).title).toBe("Open the invite link the owner sent you");
- expect(await start(none.desk, "", "https://x", () => "Jerry")).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
+ expect(await start(none.desk, "", "https://x", () => "Jerry", plain)).toEqual({ kind: "welcome", welcome: { owner: "Jerry" } });
  expect(welcome({ owner: "Jerry" }).title).toBe("Ask Jerry for a new invite");
  expect(none.log).toEqual([]);
 });
@@ -59,9 +62,9 @@ test("first visit redeems and connects; a later visit resumes; nothing kept says
 test("a link opened again resumes the kept grant; a failed first redemption says why", async () => {
  const used = new GuestError("other", "This invitation was already used. Ask the owner for a new one.");
  const again = fakeDesk([access("G1")], async () => { throw used; });
- expect(await start(again.desk, "PAYLOAD", "https://x", () => "Jerry")).toEqual({ kind: "connected", id: "HOST/G1" });
+ expect(await start(again.desk, "PAYLOAD", "https://x", () => "Jerry", plain)).toEqual({ kind: "connected", id: "HOST/G1" });
  const fresh = fakeDesk([], async () => { throw used; });
- expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null)).toEqual({ kind: "welcome", welcome: { owner: null, error: used.message } });
+ expect(await start(fresh.desk, "PAYLOAD", "https://x", () => null, plain)).toEqual({ kind: "welcome", welcome: { owner: null, error: used.message } });
 });
 
 test("availability reads the transport's errors as desk_guest.go guestAvailability does", () => {
@@ -106,6 +109,11 @@ test("the grant reads as Go's JSON Access; the device key's fingerprint is ident
  const page = pageAccess({ guestID: "G", guestName: "ada", machineLabel: "m", ownerName: "o", agentName: "a", agentTarget: "t", endpoint: { relay: "https://r", hostID: "H", hostPublicKey: new Uint8Array([0xfb, 0xff]) }, acceptedAt: new Date(Date.UTC(2026, 10, 3, 1, 2, 3, 500)) });
  expect(page.endpoint.hostPublicKey).toBe("+/8=");
  expect(page.acceptedAt).toBe("2026-11-03T01:02:03.5Z");
+ expect(page.accountBound).toBe(false);
+ expect("account" in page).toBe(false);
+ // A bound share names its account, as Go's Access does (session.go Account, omitempty).
+ const bound = pageAccess({ guestID: "G", guestName: "ada", machineLabel: "m", ownerName: "o", agentName: "a", agentTarget: "t", endpoint: { relay: "https://r", hostID: "H", hostPublicKey: new Uint8Array([0xfb, 0xff]) }, acceptedAt: new Date(0), accountBound: true, account: "acct-1" });
+ expect([bound.accountBound, bound.account]).toEqual([true, "acct-1"]);
  expect(goTime(new Date(Date.UTC(2026, 0, 1)))).toBe("2026-01-01T00:00:00Z");
  // sha256 of 32 zero bytes is 66687aadf862bd77…
  expect(fingerprint(new Uint8Array(32))).toBe("SHA256:6668·7aad·f862·bd77");

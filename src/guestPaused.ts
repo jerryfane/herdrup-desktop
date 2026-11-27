@@ -3,6 +3,7 @@
 // guest_running false (desk_guest.go runGuest publishes availability "paused"), or refused a
 // call with guest_paused (apply(error), :765-780).
 import { herdrCode } from "./errors";
+import { grantKey } from "./grantKey";
 
 /** What a guest's agent page shows for the share's availability; null while the agent runs. */
 export interface GuestPausedPage {
@@ -45,5 +46,5 @@ export function guestSendFailure(message: string, agent: string): string | null 
  *  that machine ("owner:<host>", web/desk.ts connectOwner). Its availability applies only then. */
 export function connectionOfView(machineID: string, access: { endpoint: { hostID: string }; guestID: string } | undefined): boolean {
  if (!access) return false;
- return machineID === `guest:${access.endpoint.hostID}/${access.guestID}` || machineID === `owner:${access.endpoint.hostID}`;
+ return machineID === `guest:${grantKey(access)}` || machineID === `owner:${access.endpoint.hostID}`;
 }

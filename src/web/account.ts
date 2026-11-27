@@ -365,10 +365,11 @@ export class WebAccount {
  }
 
  /** One call to the service as this session: the access token as Bearer, and once more with a
-  *  fresh token when the service says the one sent is no longer good (401). The call is bound to
-  *  account, else to the account this page already signed in to, before any refresh; only with
-  *  none yet does the first token's account bind it. A token for another account (the cookie now
-  *  holds another sign-in) is refused before anything is sent, so a write never goes there.
+  *  fresh token when the service says the one sent is no longer good (401), unless once: a call
+  *  sent at most once takes that 401 as its answer. The call is bound to account, else to the
+  *  account this page already signed in to, before any refresh; only with none yet does the first
+  *  token's account bind it. A token for another account (the cookie now holds another sign-in) is
+  *  refused before anything is sent, so a write never goes there.
   *  signal, when it aborts, stops the call: nothing is sent once it has, not even the retry, and a
   *  request in flight is cancelled. A push (dispatch, in place of body) makes its body right before
   *  each request (the retry included), once the token is in hand; null sends nothing and the call
@@ -376,7 +377,7 @@ export class WebAccount {
  *  is read (which may stall until the call is aborted); what it throws ends the call, as itself.
  *  Errors are AccountServiceError with the service's code, SignedOutError, or the abort's
  *  reason. */
- private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void): Promise<T> {
+ private async authed<T>(method: string, path: string, body?: unknown, account?: string, signal?: AbortSignal, dispatch?: PushDispatch, generation?: number, heard?: (response: Response) => void, once = false): Promise<T> {
   let bound = account ?? this.session?.accountID;
   for (let attempt = 0; ; attempt++) {
    signal?.throwIfAborted();
@@ -411,16 +412,21 @@ export class WebAccount {
    if (dispatch && response.status >= 400 && response.status < 500) await dispatch.refused();
    if (response.status === 401 && attempt === 0) {
     if (this.access === token) { this.access = ""; this.accessUntil = 0; }
-    continue;
+    if (!once) continue;
    }
    if (!response.ok) {
+    // A call sent once has its answer on the status line: an abort while its error body is read
+    // (one that stalls) leaves that status, with no code, never the abort.
+    if (once) throw new AccountServiceError(response.status, signal ? await untilAborted(errorCode(response), signal).catch(() => "") : await errorCode(response));
     const code = await errorCode(response);
     // An abort while the error body was read is the caller's, not the service's answer.
     signal?.throwIfAborted();
     throw new AccountServiceError(response.status, code);
    }
-   // 204 (a device removed) has no body.
-   return response.status === 204 ? undefined as T : await response.json() as T;
+   // 204 (a device removed) has no body. A call sent once stops reading one that stalls when its
+   // signal aborts.
+   if (response.status === 204) return undefined as T;
+   return await (once && signal ? untilAborted(response.json(), signal) : response.json()) as T;
   }
  }
 
@@ -539,6 +545,13 @@ export class WebAccount {
   return this.authed("POST", "/v1/sync", undefined, account, signal, dispatch, generation);
  }
 
+ /** POST /v1/sync of body as account, sent at most once: the token is refreshed before it when
+  *  it is near expiry (accessToken), and a 401 is the answer (AccountServiceError 401), not a
+  *  reason to send it again. The answer is the service's JSON as it came, for the caller to read. */
+ syncPushOnce(body: SyncPushBody, account: string, signal?: AbortSignal): Promise<unknown> {
+  return this.authed("POST", "/v1/sync", body, account, signal, undefined, undefined, undefined, true);
+ }
+
  /** Calls changed whenever this page's session or sign-out attempt changes, at the moment it does
   *  (a sign-out tells at once, before its request completes), with what changed. Returns what
   *  stops it. */
@@ -556,6 +569,14 @@ export class WebAccount {
   this.epoch++; this.sessionGeneration++; this.access = ""; this.accessUntil = 0; this.session = null; this.flight = null;
   if (had || change !== "session") this.notify(change);
  }
+}
+
+/** Binds this sign-in's session, on acct, to key as an account device (enrolling it the first
+ *  time, as name); a session bound already (session_has_device) is fine. The service serves a
+ *  browser's own endpoints and a bound share's statements only to a session bound to its device. */
+export async function bindSessionDevice(account: Pick<WebAccount, "enrol">, key: StaticKey, name: string, acct: string, signal?: AbortSignal): Promise<void> {
+ try { await account.enrol(key, name, acct, signal); }
+ catch (error) { if (!(error instanceof AccountServiceError && error.code === "session_has_device")) throw error; }
 }
 
 async function errorCode(response: Response): Promise<string> {

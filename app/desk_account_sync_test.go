@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,15 +22,19 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jerryfane/herdrup-desktop/internal/account"
 )
 
 // syncWorker is the account service's sync as AccountService src/sync.ts
 // keeps it: one revision per write, last write wins, tombstones for deletes,
-// the hosts and prompts allowlists and field rules (a bad change refuses the
-// whole push, 400), base_rev (a stale change is not written and comes back
-// in conflicts) and the account's caps (403 quota, the push rolled back).
+// the hosts, prompts and shares allowlists and field rules (a bad change
+// refuses the whole push, 400), base_rev (a stale change is not written and
+// comes back in conflicts) and the account's caps (403 quota, the push
+// rolled back). It also gives a guest share's statements (/v1/statements),
+// "stmt.<account>.<host>", for 10 minutes.
 type syncWorker struct {
 	mu      sync.Mutex
 	rev     int64
@@ -38,6 +43,13 @@ type syncWorker struct {
 	account string // "acct" when empty
 	// failPush answers the next pushes 503 (the service down mid-sync).
 	failPush bool
+	// invalidNextPush answers the next push 400 invalid_item, as the
+	// service refuses a batch with one change it won't store: none of it is
+	// written.
+	invalidNextPush bool
+	// dropReadback answers the first pull after the next push it applies
+	// 503: the push's readback lost; failPull is that pull owed.
+	dropReadback, failPull bool
 	// onPull, when set, runs once inside the next pull, before it answers.
 	onPull func()
 	// onPush, when set, runs once inside the next push, before it is applied.
@@ -381,6 +393,23 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 		}
 		reply(200, map[string]any{"account_id": acct, "access_token": fmt.Sprintf("a1.%022d.%043d", marker, w.n), "access_expires_in": 3600,
 			"refresh_token": fmt.Sprintf("r1.%022d.%043d", marker, w.n), "refresh_expires_in": 1})
+	case r.URL.Path == "/v1/statements":
+		var body struct {
+			Hosts []string `json:"hosts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		acct := cmp.Or(w.account, "acct")
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer a1."+fmt.Sprintf("%022d", 2)+".") {
+			acct = "acct-2"
+		}
+		statements := []any{}
+		for _, h := range body.Hosts {
+			statements = append(statements, map[string]any{"host": h, "jws": "stmt." + acct + "." + h})
+		}
+		reply(200, map[string]any{"statements": statements, "exp": 600})
+	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet && w.failPull:
+		w.failPull = false
+		reply(503, map[string]string{"error": "unavailable"})
 	case r.URL.Path == "/v1/sync" && r.Method == http.MethodGet:
 		// sync.ts reads now_ms before the snapshot it pages.
 		now := w.nowMs()
@@ -423,6 +452,11 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 		if status := w.breakNextRefusal; status != 0 {
 			w.breakNextRefusal = 0
 			cutAnswer(rw, r, status)
+			return
+		}
+		if w.invalidNextPush {
+			w.invalidNextPush = false
+			reply(400, map[string]any{"error": "invalid_item", "index": 0, "field": "body"})
 			return
 		}
 		if w.unauthorizeNextPush {
@@ -514,6 +548,7 @@ func (w *syncWorker) serve(rw http.ResponseWriter, r *http.Request) {
 			w.muteApplied = false
 			applied = nil
 		}
+		w.failPull, w.dropReadback = w.dropReadback, false
 		reply(200, w.withNow(map[string]any{"rev": w.rev, "applied": applied, "conflicts": conflicts}, w.nowMs()))
 	default:
 		reply(404, map[string]string{"error": "not_found"})
@@ -559,6 +594,36 @@ func validSyncBody(collection string, raw json.RawMessage) bool {
 		}
 		_, hasText := fields["text"]
 		return hasText
+	case "shares":
+		// sync.ts SCHEMAS.shares (themartianapp/herdrup AccountService
+		// src/sync.ts:219-235): the allowlist, the four ids present, and
+		// the labels as text() takes them (:90-97): well formed, no control
+		// character, at most 128, 64 and 128 code points.
+		labels := map[string]int{"agent_name": 128, "owner_name": 64, "machine_label": 128}
+		for k, v := range fields {
+			switch k {
+			case "relay", "host_id", "node_pub", "guest_id", "agent_name", "owner_name", "machine_label":
+				s, ok := v.(string)
+				if !ok {
+					return false
+				}
+				if max, label := labels[k]; label && (!utf8.ValidString(s) || utf8.RuneCountInString(s) > max || strings.ContainsFunc(s, unicode.IsControl)) {
+					return false
+				}
+			case "share_gram":
+				if _, ok := v.(bool); !ok {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+		for _, k := range []string{"relay", "host_id", "node_pub", "guest_id"} {
+			if s, _ := fields[k].(string); s == "" {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

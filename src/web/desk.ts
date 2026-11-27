@@ -30,6 +30,7 @@ import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
 import { boundShareStatements } from "./statements";
+import type { AcceptedAccess, ShareAdder } from "./shares";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
@@ -231,6 +232,8 @@ export function pageAccess(a: Access): PageAccess {
   guestID: a.guestID, guestName: a.guestName, machineLabel: a.machineLabel, ownerName: a.ownerName, agentName: a.agentName, agentTarget: a.agentTarget,
   endpoint: { relay: a.endpoint.relay, hostID: a.endpoint.hostID, hostPublicKey: btoa(String.fromCharCode(...a.endpoint.hostPublicKey)) },
   acceptedAt: goTime(a.acceptedAt), accountBound: a.accountBound === true,
+  // Go's `account,omitempty`: present only for a share bound to an account.
+  ...(a.account ? { account: a.account } : {}),
  };
 }
 
@@ -279,6 +282,9 @@ export interface DeskEnv {
  /** This page's account statements (statements.ts statementCache, the owner links' cache): a
   *  share bound to the account connects with them. None: a bound share is account_required. */
  statements?: StatementSource;
+ /** "Add to my account" (shares.ts): binds this browser to the account as a device, and writes a
+  *  share herdr bound to it into the account's shares in one request. None: no share is bound. */
+ shares?: ShareAdder;
 }
 
 interface Active {
@@ -351,6 +357,13 @@ export function createGuestDesk(env: DeskEnv) {
  /** connectOwner while it reads the key: cancelled by a newer one, a disconnect or its session's end. */
  let ownerPending: AbortController | null = null;
  const mutedPanes = env.mutedPanes ?? machineLists(MUTED_PANES_KEY);
+
+ /** What binding a share to the account needs: the account's shares and its statements, as a
+  *  bound share asks them (signed out is account_required; boundShareStatements). */
+ function accountShares(): { shares: ShareAdder; statements: StatementSource } {
+  if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
+  return { shares: env.shares, statements: boundShareStatements(env.statements) };
+ }
 
  /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */
  function publishBoard(l: Active) {
@@ -634,7 +647,7 @@ export function createGuestDesk(env: DeskEnv) {
   async inspectGuestInvitation(text: string): Promise<GuestInvitation> {
    const invite = await resolveInvite(text, { now: now(), fetchSealed: env.fetchSealed });
    await guestIdentity();
-   return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint() };
+   return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint(), account: invite.accounts };
   },
 
   async sharedConnections(): Promise<PageAccess[]> {
@@ -642,12 +655,21 @@ export function createGuestDesk(env: DeskEnv) {
    return grant === undefined ? [] : [pageAccess(grant)];
   },
 
-  acceptGuestInvitation(text: string): Promise<PageAccess> {
+  /** keep: "account" binds the share to the signed-in HerdrUp account when the invite offers it
+   *  (its statement in the hello) and, once herdr bound it, writes its item to that account in
+   *  one request (ShareAdder.add), whose outcome the result carries (added). "device" (or an
+   *  invite without acct) is this browser's alone, as before. The grant is saved here either way,
+   *  before the write. */
+  acceptGuestInvitation(text: string, keep: string): Promise<AcceptedAccess> {
    // guestAcceptMu: one redemption at a time.
    const run = accepting.then(async () => {
+    if (keep !== "account" && keep !== "device") throw new Error(`Unknown choice for the shared access: ${keep}`);
     const invite = await resolveInvite(text, { now: now(), fetchSealed: env.fetchSealed });
     const identity = await guestIdentity();
-    const access = await acceptInvite(invite, identity, BROWSER_DEVICE, { now: now(), webSocket: env.webSocket });
+    const bound = keep === "account" && invite.accounts ? accountShares() : null;
+    // The statements are issued only to a session with this browser's key as its device.
+    if (bound) await bound.shares.bindDevice(identity);
+    const access = await acceptInvite(invite, identity, BROWSER_DEVICE, { now: now(), webSocket: env.webSocket, ...(bound ? { account: bound.statements } : {}) });
     // A successful redemption is irrevocable: saved even if the page moved on meanwhile.
     try {
      await env.grants.put(access);
@@ -655,7 +677,9 @@ export function createGuestDesk(env: DeskEnv) {
      throw new Error(`Access was accepted but could not be saved: ${message(error)}. Keep this device's guest identity and ask the owner for a new invitation`);
     }
     env.owner.set(access.ownerName);
-    return pageAccess(access);
+    // Written to the account herdr bound it to (the admitted statement's), never to another.
+    const added = bound && access.accountBound ? await bound.shares.add(access) : undefined;
+    return added === undefined ? pageAccess(access) : { ...pageAccess(access), added };
    });
    accepting = run.then(() => undefined, () => undefined);
    return run;

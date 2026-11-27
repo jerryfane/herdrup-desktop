@@ -60,6 +60,10 @@ func (s *StatementCache) Live(st HostStatement) bool {
 	return st.JWS != "" && s.client.Holds(st.round)
 }
 
+// Account is the account st was issued for (the statement's sub): its
+// session's.
+func (st HostStatement) Account() string { return st.round.Account }
+
 // Drop forgets jws for host if it is still the statement held: the machine
 // refused it, so the next Get asks for a new one. A newer one another
 // connection already took stays.

@@ -1,11 +1,11 @@
 import { AccountWelcome } from "./herdrupAccount";
 import { Desk, events } from "./mygo";
-import type { Machine, PairingOffer, PairOpenTarget, PairRequestView, SavedMachine, SyncedMachine } from "./mygo";
+import type { Machine, PairingOffer, PairOpenTarget, PairRequestView, SavedMachine, SyncedMachine, SyncedShare } from "./mygo";
 import { element, hostGlyph, hostHomeHeader, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type BrowserAccess, type SymbolRenderer } from "./hostHome";
 import { isOpenTarget, machineWrites, notAddedLine, pairFailuresAfter, pairLayout, pairNextStep, pairProblemNote, pairRequestCard, pairResultSection, pairResultTarget, showPairing, showPairChoice, thisDevice, type MachineAt } from "./pairing";
 import { showGuestAccept, showGuestScan } from "./guestAccept";
 import desktopIcon from "../third_party/phosphor/web/desktop.svg?url";
-import usersIcon from "../third_party/phosphor/web/users.svg?url";
+import { sharedMachines, sharedSection, syncedSharesNow } from "./sharedWithYou";
 import networkIcon from "../third_party/phosphor/web/network.svg?url";
 import lockOpenIcon from "../third_party/phosphor/web/lock-open.svg?url";
 
@@ -201,11 +201,17 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
   header.showAccount(state, providers === null || providers.length > 0);
   syncedMachines = accountHint === null ? [] : await Desk.syncedMachines().catch(() => []);
   drawSynced();
+  syncedShareList = await syncedSharesNow(accountHint !== null);
+  if (at === accountVersion) void refresh();
  };
  events.syncedMachinesChanged.on(list => { syncedMachines = list; drawSynced(); });
+ events.syncedSharesChanged.on(list => { syncedShareList = accountHint === null ? [] : list; void refresh(); });
  events.accountChanged.on(() => { void refreshAccount(); });
  void refreshAccount();
- const { root: shared, rows: sharedRows } = hostSection("SHARED WITH YOU");
+ // SHARED WITH YOU (sharedWithYou.ts): the grants held here and the account's synced shares.
+ let syncedShareList: SyncedShare[] = [];
+ const sharedList = sharedSection(symbol, showAgents, report, () => connecting);
+ const shared = sharedList.root;
  const invite = action("Scan invite", () => showGuestScan(refresh, showAgents)); invite.className = "host-invite button-secondary button-large";
  let pasting = false;
  const paste = action("Paste", () => {
@@ -416,25 +422,14 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
    if (generation !== version) return;
    if (welcomed !== null) { welcome.commit(welcomed); home.hidden = welcomed.show; }
    container.dataset.welcome = "settled";
-   shared.hidden = shares.length === 0;
-   placeOwnerSetup(shares.length > 0);
+   const sharedNow = sharedMachines(shares, syncedShareList);
+   placeOwnerSetup(sharedNow.length > 0);
    // Without shares the instructions show only while nothing is saved; inside the
    // owner-setup disclosure they always do.
-   empty.hidden = shares.length === 0 && machines.length > 0;
-   // Native sharedSection row: person.2, machine label over "agents · shared by owner",
-   // chevron. Several grants on one machine would open Swift's combined machine home,
-   // which needs simultaneous guest connections; until then each grant keeps its own row.
-   const sharedNodes: HTMLElement[] = [];
-   for (const access of shares) {
-    const row = action("", () => { row.disabled = true; void Desk.connectGuest(`${access.endpoint.hostID}/${access.guestID}`).then(showAgents).catch(report).finally(() => { row.disabled = connecting; }); });
-    row.className = "host-home-row"; row.disabled = connecting;
-    const icon = hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon));
-    const lines = hostRowLines(access.machineLabel, `${access.agentName} · shared by ${access.ownerName}`);
-    const chevron = hostRowChevron(await symbol("chevron.right", 13, "semibold"));
-    row.append(icon, lines, chevron); sharedNodes.push(row);
-   }
-   if (generation !== version) return;
-   sharedRows.replaceChildren(...sharedNodes);
+   empty.hidden = sharedNow.length === 0 && machines.length > 0;
+   // One row per machine. Several grants on one machine would open Swift's combined machine
+   // home, which needs simultaneous guest connections; until then its row opens the first.
+   if (!await sharedList.draw(sharedNow) || generation !== version) return;
    const paired = pairShown();
    const listed = machines.filter(machine => !paired.has(machine.id));
    section.hidden = listed.length === 0;
