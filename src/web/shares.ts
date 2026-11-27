@@ -470,6 +470,7 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      }),
      sending() { for (const s of sent) dispatched.add(writeKey(s)); },
      refused: async () => {
+      for (const s of sent) dispatched.delete(writeKey(s));
       const out = new Set(sent.map(sentKey));
       if (out.size > 0) await update(acct, r => { r.sent = (r.sent ?? []).filter(e => !out.has(sentKey(e))); });
      },
@@ -491,17 +492,24 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
    *  write queued and its share has none journaled; else none. */
   const still = (r: SharesRecord, w: SentWrite): SentWrite[] => (r.sent ?? []).some(e => e.id === w.id)
    ? [] : r.pending.filter(p => writeKey(p) === writeKey(w)).map(p => based(r, p));
-  /** Lazily yields queued writes whose share has none journaled and none taken yet this round so
-   *  firstBatch stops examining and serializing entries as soon as the first batch fills. */
-  function* eligible(r: SharesRecord): Iterable<SentWrite> {
+  /** Lazily yields queued writes of the given kind (deletes or puts) whose share has none
+   *  journaled and none taken yet this round so firstBatch stops examining and serializing
+   *  entries as soon as the first batch fills. */
+  function* eligible(r: SharesRecord, deletes: boolean): Iterable<SentWrite> {
    const held = new Set((r.sent ?? []).map(e => e.id));
    for (const p of r.pending) {
+    if (Boolean(p.deleted) !== deletes) continue;
     if (held.has(p.id)) continue;
     if (taken.size > 0 && taken.has(writeKey(p))) continue;
     yield based(r, p);
    }
   }
-  const next = (r: SharesRecord) => firstBatch(eligible(r), change);
+  // Push quota-reducing deletes in their own batches before puts so blocked/over-quota puts can
+  // never roll back or starve an unrelated Leave.
+  const next = (r: SharesRecord) => {
+   const deletes = firstBatch(eligible(r, true), change);
+   return deletes.length > 0 ? deletes : firstBatch(eligible(r, false), change);
+  };
   // Cancelled, or another sign-in now: nothing more goes for this one.
   while (await push(next) > 0 && !signal.aborted && account.generation === generation);
   if (failed !== null) throw (failed as { error: unknown }).error;
@@ -614,9 +622,14 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
     pushError = { error };
    }
   }
+  const clearUnconfirmedDeletes = () => {
+   try {
+    for (const p of read(acct).pending) if (p.deleted && appliedDeletes.has(writeKey(p))) dispatched.delete(writeKey(p));
+   } catch { /* ignore */ }
+  };
   if (pushError !== null) {
-   // Even when a later batch fails (e.g. 429), adjudicate any earlier conflict candidates or
-   // applied deletes before reconciliation runs.
+   // Even when a later batch fails (e.g. 403 quota or 429), adjudicate any earlier conflict
+   // candidates or applied deletes before reconciliation runs.
    if (!signal.aborted && account.generation === generation) {
     let needsReadback = appliedDeletes.size > 0;
     try { needsReadback ||= (read(acct).pendingDrop?.length ?? 0) > 0; } catch { /* ignore */ }
@@ -624,12 +637,13 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
      try { await pullInto(acct, signal, generation, appliedDeletes); } catch { /* pendingDrop stays durable for next sync */ }
     }
    }
+   clearUnconfirmedDeletes();
    throw pushError.error;
   }
   const pulled = await pullInto(acct, signal, generation, appliedDeletes);
   unproven ??= pulled.unproven;
   const r = read(acct), queued = new Set(r.pending.map(p => p.id));
-  for (const p of r.pending) if (p.deleted && appliedDeletes.has(writeKey(p))) dispatched.delete(writeKey(p));
+  clearUnconfirmedDeletes();
   const holding = (r.sent ?? []).filter(e => e.not_after > 0 && queued.has(e.id)).map(e => e.not_after);
   if (holding.length > 0 && pulled.newestMs !== null) followUp(Math.min(...holding) - pulled.newestMs);
   if (unproven !== undefined) throw unproven.error;

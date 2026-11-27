@@ -635,23 +635,29 @@ test("a label the service can't store is left out of the share, and a refused pu
  await linux.shares.sync();
  expect(linux.shares.list()).toEqual([{ id, rev: 1, body }]);
 
- // This browser's record holds a put the service refuses (an earlier version wrote it) ahead of a
- // leave not yet taken (refused, 429: nothing of it written): the leave still goes, and the
- // refused put alone is dropped.
+ // This browser's record holds a put the service refuses (an earlier version wrote it) alongside
+ // another valid put and a leave not yet taken (refused, 429: nothing of it written, so Leave
+ // reports LeaveUnsent): deletes go in their own batch ahead of puts, and the refused put splits
+ // on 400 without dropping the valid put.
  w.rateLimit = 1; w.windowPosts = 1;
- await mac.desk.forgetGuestConnection(id);
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow(LeaveUnsent);
  w.rateLimit = 0;
  const key = SHARES_KEY_PREFIX + "acct";
  const record: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
  const other = toB64url(new Uint8Array(16).fill(9));
- record.pending.unshift({ id: `${h.relay.hostID}/${other}`, body: { ...body, guest_id: other, agent_name: long } });
+ const good = toB64url(new Uint8Array(16).fill(10));
+ const goodId = `${h.relay.hostID}/${good}`;
+ record.pending.unshift(
+  { id: `${h.relay.hostID}/${other}`, body: { ...body, guest_id: other, agent_name: long } },
+  { id: goodId, body: { ...body, guest_id: good } },
+ );
  mac.storage.setItem(key, JSON.stringify(record));
  await mac.shares.sync();
- // Refused whole, then each change alone: the leave is taken.
- expect(w.pushed.slice(-3).map(p => p.map(c => c.id === id ? "leave" : "refused"))).toEqual([["refused", "leave"], ["refused"], ["leave"]]);
- expect(sharesOn(w).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
+ // Leave goes in its own delete batch first; then the put batch is refused whole and retried alone.
+ expect(w.pushed.slice(-4).map(p => p.map(c => c.id === id ? "leave" : c.id === goodId ? "good" : "refused"))).toEqual([["leave"], ["refused", "good"], ["refused"], ["good"]]);
+ expect(sharesOn(w).filter(c => c.id === id).at(-1)).toEqual({ collection: "shares", id, base_rev: 1, deleted: true });
  const after: { pending: object[] } = JSON.parse(mac.storage.getItem(key)!);
- expect([w.sharesIn("acct"), after.pending]).toEqual([[], []]);
+ expect([w.sharesIn("acct"), after.pending]).toEqual([[goodId], []]);
 }, CONNECTS_LIMIT_MS);
 
 test("a backlog of more share writes than one push takes goes in pushes the service takes, each settled as it is answered", async () => {
@@ -1330,4 +1336,44 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   expect((await mac.desk.state()).phase).not.toBe("idle");
   w.failPullSince = null;
  }
+}, CONNECTS_LIMIT_MS);
+
+test("over-quota queued puts cannot block an unrelated Leave, and a 4xx-refused Leave throws LeaveUnsent", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ // Cap the account at 2 live shares, fill it to capacity, then queue two more puts that exceed
+ // the cap (net increase > 0 even if one existing share is deleted in the same transaction).
+ w.maxItems = 2;
+ const first = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "one"), "account");
+ const firstId = `${h.relay.hostID}/${first.guestID}`;
+ const second = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "two"), "account");
+ const secondId = `${h.relay.hostID}/${second.guestID}`;
+ expect(w.sharesIn("acct").sort()).toEqual([firstId, secondId].sort());
+
+ const extra1 = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "extra-1"), "account");
+ const extra2 = await mac.desk.acceptGuestInvitation(inviteText(h.relay, true, "extra-2"), "account");
+ expect([extra1.added?.outcome, extra2.added?.outcome]).toEqual(["unknown", "unknown"]);
+ expect(w.sharesIn("acct").sort()).toEqual([firstId, secondId].sort());
+
+ // Leaving an existing share sends its quota-reducing delete independently ahead of the blocked
+ // puts, removes it from the account, and resolves once readback confirms deletion.
+ await mac.desk.forgetGuestConnection(firstId);
+ expect(w.sharesIn("acct")).toEqual([secondId]);
+ expect(recordOf(mac.storage).pending.some(p => p.id === firstId)).toBe(false);
+
+ // If the delete push itself is refused with a 4xx (e.g. 403 quota / 429), Leave must NOT treat
+ // dispatch of a rejected delete as success: it throws LeaveUnsent and keeps the delete queued.
+ w.refuseNextPush = [403, "quota"];
+ await expect(mac.desk.forgetGuestConnection(secondId)).rejects.toThrow(LeaveUnsent);
+ expect(w.sharesIn("acct")).toEqual([secondId]);
+ expect(recordOf(mac.storage).pending.some(p => p.id === secondId && p.deleted)).toBe(true);
+
+ // Once the transient refusal clears, the next sync delivers the delete and frees room for the
+ // two queued puts.
+ await mac.shares.sync();
+ expect(w.sharesIn("acct").sort()).toEqual([
+  `${h.relay.hostID}/${extra1.guestID}`,
+  `${h.relay.hostID}/${extra2.guestID}`,
+ ].sort());
+ expect(recordOf(mac.storage).pending).toEqual([]);
 }, CONNECTS_LIMIT_MS);
