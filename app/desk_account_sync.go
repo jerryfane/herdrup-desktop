@@ -744,6 +744,10 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if err != nil {
 		return err
 	}
+	// The share writes owed as loaded, of every account (a switch keeps
+	// them): what the pull may need the service's history for
+	// (shareProofs), the locked reload below merging what they are then.
+	owed := state.ShareWrites
 	switched := state.AccountID != acct
 	if switched {
 		// Another account (or the first sync): pull everything first and
@@ -772,7 +776,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// the same, those creates kept as they are, and the round fails at
 	// its end (probeErr); one of another account's session applies
 	// nothing.
-	proofs, probeErr := d.shareProofs(ctx, round, acct, pull)
+	proofs, probeErr := d.shareProofs(ctx, round, acct, pull, owed)
 	if errors.Is(probeErr, account.ErrAccountChanged) {
 		return errSyncAbandoned
 	}
@@ -1181,7 +1185,6 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 	}
 	var readBack account.Pull
-	var readProofs map[int64]bool
 	if len(acked) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, round, mirror.Rev)
@@ -1193,16 +1196,6 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 		if err != nil {
 			return err
-		}
-		if readBack.Full {
-			// As for the pull (shareProofs): what the full readback
-			// settles is applied whether or not the service answers.
-			var readErr error
-			readProofs, readErr = d.shareProofs(ctx, round, acct, readBack)
-			if errors.Is(readErr, account.ErrAccountChanged) {
-				return errSyncAbandoned
-			}
-			probeErr = cmp.Or(probeErr, readErr)
 		}
 	}
 	// The readback, the turned-down copies and the round's result are
@@ -1231,6 +1224,10 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// next merge (confirmConflicts).
 	var turnedDownGone []account.Conflict
 	newTombstones := false
+	// proofsOwed is whether the full readback left a sent create whose
+	// landing only the service's history can rule out (Unproven): asked
+	// once all the rest is committed (settleShareProofs).
+	proofsOwed := false
 	// The 410s seen and not yet folded (the readback's among them)
 	// replaced the history.
 	d.foldResets(&state)
@@ -1323,18 +1320,17 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				}
 			}
 			// Shares, decided once, over every id this device had cause to
-			// think the account held: the mirror before (held), those the
-			// account acknowledged (SharesHeld, this round's writes it took
-			// among them) and the creates sent whose landing neither the
-			// history since nor what the service retains of it can rule
-			// out (needsProof, readProofs). One the full readback
-			// lacks was deleted, its tombstone pruned (or restored away)
-			// since, unless this device deleted it this round: gone, as a
-			// tombstone would say, before the held ids are discarded below.
-			// Its owed write goes with it, never written afresh, and its
-			// grant here at the next merge (mergeShares), so no list or
-			// accept confirms it. A create the service didn't answer for
-			// is kept as it is, for a later ask to settle (Unproven).
+			// think the account held: the mirror before (held), and those
+			// the account acknowledged (SharesHeld, this round's writes it
+			// took among them). One the full readback lacks was deleted,
+			// its tombstone pruned (or restored away) since, unless this
+			// device deleted it this round: gone, as a tombstone would say,
+			// before the held ids are discarded below. Its owed write goes
+			// with it, never written afresh, and its grant here at the next
+			// merge (mergeShares), so no list or accept confirms it. A
+			// create sent whose landing the history since can't rule out
+			// (needsProof) is kept as it is, unsent (Unproven), for the
+			// service's history to settle once this is committed.
 			was := map[string]bool{}
 			for _, s := range held.Shares {
 				was[s.ID] = true
@@ -1343,13 +1339,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 				was[id] = true
 			}
 			for i, op := range state.ShareWrites {
-				if op.Account != acct || present["shares/"+op.ID] || !needsProof(op, true, readBack.Rev) {
-					continue
-				}
-				retained, answered := readProofs[retainedFrom(op)]
-				state.ShareWrites[i].Unproven = !answered
-				if answered && !retained {
-					was[op.ID] = true
+				if op.Account == acct && !present["shares/"+op.ID] && needsProof(op, true, readBack.Rev) {
+					state.ShareWrites[i].Unproven, proofsOwed = true, true
 				}
 			}
 			for _, id := range slices.Sorted(maps.Keys(was)) {
@@ -1392,8 +1383,10 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	// A round that left a change unsent did not finish well: the status
 	// keeps the last one that did, and so does a pass whose turned-down
 	// changes the next pass sends again, or one that kept a sent create
-	// whose proof the service didn't give (probeErr).
-	if unsent == nil && probeErr == nil && !turnedDown && !unsendable {
+	// whose proof the service didn't give (probeErr, proofsOwed, until
+	// settleShareProofs settles it).
+	finished := unsent == nil && probeErr == nil && !turnedDown && !unsendable
+	if finished && !proofsOwed {
 		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	}
 	err = d.storeSyncState(state)
@@ -1403,6 +1396,24 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	publishSyncedMachines(unsavedHosts(st.Machines, state.Mirror.Hosts))
 	d.announceShares()
+	if proofsOwed {
+		// Only now, the readback committed whatever comes of it, the
+		// service is asked of its history: an ask that fails, or ends
+		// with the round, leaves those creates as they are (Unproven),
+		// for the next merge to ask again.
+		proofs, err := d.shareProofs(ctx, round, acct, readBack, state.ShareWrites)
+		if errors.Is(err, account.ErrAccountChanged) {
+			return errSyncAbandoned
+		}
+		probeErr = cmp.Or(probeErr, err)
+		if len(proofs) > 0 {
+			if err := d.settleShareProofs(ctx, still, acct, proofs, finished && probeErr == nil); err != nil {
+				probeErr = cmp.Or(probeErr, err)
+			} else {
+				d.announceShares()
+			}
+		}
+	}
 	switch {
 	case unsent != nil:
 		return unsent

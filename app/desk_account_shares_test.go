@@ -1112,6 +1112,10 @@ func TestASentCreateThatLandedLateBeforeAFullReadbackIsLetGo(t *testing.T) {
 	if !landedLate {
 		t.Fatal("the held create did not land on the account")
 	}
+	// The readback's own ask settled it: pruned past it, let go.
+	if owed := savedSyncState(t, d).ShareWrites; slices.ContainsFunc(owed, func(op shareOp) bool { return op.ID == id }) {
+		t.Fatalf("after the readback's ask: owed %+v; want the create let go", owed)
+	}
 	w.mu.Lock()
 	w.rateLimit = 0
 	posts := w.posts
@@ -1162,6 +1166,10 @@ func TestASentCreateAFullReadbackLacksIsKeptWhileItsHistoryIs(t *testing.T) {
 	w.mu.Unlock()
 	if err := d.SyncMachines(ctx); err == nil {
 		t.Fatal("a sync whose second push was rate limited: no error")
+	}
+	// The readback's own ask settled it: never landed, owed as unsent.
+	if owed := savedSyncState(t, d).ShareWrites; !slices.ContainsFunc(owed, func(op shareOp) bool { return op.ID == id && !op.Unproven }) {
+		t.Fatalf("after the readback's ask: owed %+v; want the create owed, proven", owed)
 	}
 	w.mu.Lock()
 	w.rateLimit = 0
@@ -1298,6 +1306,129 @@ func TestAFullReadbackWhoseHistoryAskFailsStillAppliesWhatItSettles(t *testing.T
 	}
 	if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
 		t.Fatalf("after the next sync: %+v, %v; want both grants gone", grants, err)
+	}
+}
+
+// An accept's round commits what its full readback settled before it
+// asks the service's history, so however the ask ends, the accept says
+// what the readback found. Share A is owed, sent with no answer and its
+// proof owed (Unproven). B is accepted: its round's own ask for A
+// answers 503, B goes alone, is acknowledged, then deleted elsewhere and
+// pruned, so the readback starts over and lacks both; then the ask for
+// A's history answers 503, or holds until the accept's deadline. Either
+// way B is not confirmed and A stays owed as it is, unwritten, until the
+// next sync's ask settles it (pruned past it: let go, with no write).
+func TestAnAcceptsReadbackIsCommittedBeforeItsHistoryAsk(t *testing.T) {
+	for _, hang := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the ask answers 503", true: "the ask holds until the deadline"}[hang], func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			w.seedPrompt("prompt-1", `{"text":"held"}`)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+			accept := func() (guest.Access, string) {
+				t.Helper()
+				relay, base := shareRelay(t, true)
+				access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+				if err != nil || !access.AccountBound {
+					t.Fatalf("bound accept: %+v, %v", access, err)
+				}
+				return access, relay.HostID() + "/" + access.GuestID
+			}
+			w.mu.Lock()
+			w.failPush = true
+			w.mu.Unlock()
+			_, idA := accept() // sent, no answer
+			w.mu.Lock()
+			w.failPush = false
+			w.mu.Unlock()
+			// Back from another account, this one moved on meanwhile: the
+			// full pull can't rule A out, and the ask for its history
+			// answers 503, so A's proof is owed.
+			signInAs(t, w, d, "")
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.seedPrompt("prompt-2", `{"text":"meanwhile"}`)
+			signInAs(t, w, d, "acct")
+			w.mu.Lock()
+			w.onPull = func() { w.failPull = true }
+			w.mu.Unlock()
+			if err := d.SyncMachines(ctx); err == nil {
+				t.Fatal("a round whose history ask failed: no error")
+			}
+			unproven := func() bool {
+				return slices.ContainsFunc(savedSyncState(t, d).ShareWrites, func(op shareOp) bool { return op.ID == idA && op.Unproven })
+			}
+			if !unproven() {
+				t.Fatalf("A after a failed ask: owed %+v; want its proof owed", savedSyncState(t, d).ShareWrites)
+			}
+			if hang {
+				wait := acceptShareWait
+				acceptShareWait = 2 * time.Second
+				t.Cleanup(func() { acceptShareWait = wait })
+			}
+			stalled := make(chan struct{}, 1)
+			var idB string
+			w.mu.Lock()
+			w.onPull = func() { w.failPull = true } // the round's own ask for A
+			w.afterPush = func() {
+				for id, it := range w.items {
+					if it.Collection == "shares" && !it.Deleted {
+						idB = id
+					}
+				}
+				w.tombstone(idB)
+				w.prune(idB)
+				// The readback's 410, its pull from 0, then the ask.
+				w.onPull = func() {
+					w.onPull = func() {
+						if hang {
+							w.stall, w.stalled = make(chan struct{}), stalled
+						} else {
+							w.failPull = true
+						}
+					}
+				}
+			}
+			w.mu.Unlock()
+			b, wantB := accept()
+			w.mu.Lock()
+			if w.stall != nil {
+				close(w.stall)
+				w.stall = nil
+			}
+			gotB := idB
+			w.mu.Unlock()
+			if hang && len(stalled) == 0 {
+				t.Fatal("the ask for A's history was never held")
+			}
+			if gotB != wantB {
+				t.Fatalf("the share acknowledged and deleted: %q; want B's", gotB)
+			}
+			if b.AccountShare == shareConfirmed {
+				t.Fatalf("B, deleted before the readback the accept committed: the accept says %q", b.AccountShare)
+			}
+			if _, live := w.live()[idA]; live || !unproven() {
+				t.Fatalf("A: live %v, owed %+v; want it unwritten, its proof owed", live, savedSyncState(t, d).ShareWrites)
+			}
+			w.mu.Lock()
+			posts := w.posts
+			w.mu.Unlock()
+			if err := d.SyncMachines(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w.mu.Lock()
+			sent := w.posts - posts
+			w.mu.Unlock()
+			if _, live := w.live()[idA]; live || sent != 0 {
+				t.Fatalf("A, its history pruned past it: live %v, in %d pushes; want neither", live, sent)
+			}
+			if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
+				t.Fatalf("after the next sync: %+v, %v; want A's and B's grants gone", grants, err)
+			}
+		})
 	}
 }
 

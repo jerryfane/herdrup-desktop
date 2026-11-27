@@ -91,23 +91,16 @@ func retainedFrom(op shareOp) int64 {
 	return max(op.SentAt, 1)
 }
 
-// shareProofs asks the service, for each sent create of acct that pull p
-// doesn't list and can't settle by itself (needsProof), whether it still
-// holds its history from where the create was sent (retainedFrom): one
-// page each (account.Retains), lowest first; once it does, it does from
-// every later one. proofs maps each revision answered to the answer. One
-// missing is unknown: the error that left it so comes back with what was
-// answered, and the merge or readback settles the rest as before, the
-// creates it leaves unknown kept as they are (Unproven).
-func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string, p account.Pull) (map[int64]bool, error) {
-	if !d.storeMu.LockCtx(ctx) {
-		return nil, ctx.Err()
-	}
-	state, err := d.loadSyncState()
-	d.storeMu.Unlock()
-	if err != nil {
-		return nil, err
-	}
+// shareProofs asks the service, for each sent create of acct in writes
+// (the caller's snapshot of syncState.ShareWrites, nothing read here)
+// that pull p doesn't list and can't settle by itself (needsProof),
+// whether it still holds its history from where the create was sent
+// (retainedFrom): one page each (account.Retains), lowest first; once it
+// does, it does from every later one. proofs maps each revision answered
+// to the answer. One missing is unknown: the error that left it so comes
+// back with what was answered, and the creates it leaves unknown are kept
+// as they are (Unproven).
+func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string, p account.Pull, writes []shareOp) (map[int64]bool, error) {
 	listed := map[string]bool{}
 	for _, it := range p.Items {
 		if it.Collection == "shares" {
@@ -115,7 +108,7 @@ func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string
 		}
 	}
 	var froms []int64
-	for _, op := range state.ShareWrites {
+	for _, op := range writes {
 		if op.Account == acct && !listed[op.ID] && needsProof(op, p.Full, p.Rev) {
 			froms = append(froms, retainedFrom(op))
 		}
@@ -137,6 +130,54 @@ func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string
 		proofs[from] = false
 	}
 	return proofs, nil
+}
+
+// settleShareProofs settles, by the service's answers (proofs,
+// shareProofs), the sent creates of acct a committed full readback left
+// Unproven: one whose history from its sending is kept never landed (the
+// readback would list it), owed again as never proven otherwise, and goes
+// at the next push; one whose history was pruned past it may have landed
+// and been deleted: it goes, superseded, as the readback would have let
+// it go (SharesGone, so its grant goes at the next merge). One unanswered
+// is left as it is. Only a round still running (still) settles anything;
+// finished, with nothing left unproven, the round's status is the
+// readback's (LastSync).
+func (d *Desk) settleShareProofs(ctx context.Context, still func() bool, acct string, proofs map[int64]bool, finished bool) error {
+	if !d.storeMu.LockCtx(ctx) {
+		return ctx.Err()
+	}
+	defer d.storeMu.Unlock()
+	if !still() {
+		return errSyncAbandoned
+	}
+	state, err := d.loadSyncState()
+	if err != nil {
+		return err
+	}
+	if state.AccountID != acct {
+		return nil
+	}
+	writes, left := state.ShareWrites[:0:0], false
+	for _, op := range state.ShareWrites {
+		if op.Account == acct && op.Unproven && op.Sent != nil && *op.Sent == 0 {
+			retained, answered := proofs[retainedFrom(op)]
+			switch {
+			case !answered:
+				left = true
+			case retained:
+				op.Unproven = false
+			default:
+				state.SharesGone = append(state.SharesGone, op.ID)
+				continue
+			}
+		}
+		writes = append(writes, op)
+	}
+	state.ShareWrites = writes
+	if finished && !left {
+		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
+	}
+	return d.storeSyncState(state)
 }
 
 // errShareGone is an open of a share the account no longer lists.
