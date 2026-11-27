@@ -217,6 +217,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   refresh: async () => draw(),
   /** No hold: the shell shows the agents once a link opens, with its spinner until the list. */
   holdsHome: () => false,
+  pairingActive: () => false,
   async reconnect() {
    if (opened === null) throw new Error("Choose a machine before reconnecting.");
    open(opened, true);

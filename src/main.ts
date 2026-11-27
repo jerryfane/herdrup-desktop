@@ -783,7 +783,6 @@ async function init(rendered: () => void) {
   await buildTopBar();
   if (parts.starAsk) starAsk = initStarAsk($("sidebar"), symbol, render);
   if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
-  initWebAccess();
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
   initInteraction($("detail"), symbol, target => {
@@ -794,6 +793,7 @@ async function init(rendered: () => void) {
   });
   const hosts = initHosts(connectView, form, () => { closeInteraction(); choosingHost = false; tab = "agents"; buildTabBar(); void buildTopBar(); render(); }, symbol, spinnerSVG, () => render(), () => openSettingsPage("herdrupAccount"));
   hostsHold = hosts.holdsHome;
+  initWebAccess(undefined, hosts.pairingActive);
   hostsReady = true;
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar

@@ -16,6 +16,29 @@ export function nextRequest<R extends { kind: string; browser?: Waiting; pair?: 
  return requests.find(r => { const w = waiting(r); return w !== undefined && w.claimed === "no" && w.expiresIn > 0 && !closed.has(w.id); }) ?? null;
 }
 
+/** How often to look for requests while the window is in front: the service allows 30 approval
+ *  calls a minute per account, and a request lasts 10 minutes. */
+export const APPROVAL_POLL_MS = 8000;
+
+/** Cap on the wait between approval list polls after rate-limit or transient errors. */
+export const APPROVAL_BACKOFF_MAX_MS = 60_000;
+
+/** Whether an approval poll failure came from HTTP 429 rate limiting (internal/account APIError). */
+export function isApprovalRateLimited(error: unknown): boolean {
+ const text = error instanceof Error ? error.message : String(error ?? "");
+ return /\b429\b|too_many_requests|rate_limited|rate limit/i.test(text);
+}
+
+/** How long to wait before the next approval list poll after `failures` consecutive errors
+ *  (0 on success). Rate limits back off exponentially up to APPROVAL_BACKOFF_MAX_MS so a spent
+ *  approval budget recovers instead of being re-triggered every 8 s. */
+export function approvalPollDelay(failures: number, rateLimited: boolean): number {
+ if (failures <= 0) return APPROVAL_POLL_MS;
+ const shift = Math.min(failures, 5);
+ const base = rateLimited ? APPROVAL_POLL_MS : APPROVAL_POLL_MS;
+ return Math.min(base * (1 << shift), APPROVAL_BACKOFF_MAX_MS);
+}
+
 /** How long a "not offered" answer from the account service holds before the page asks again, so a
  *  rollout is seen without signing in again. */
 export const OFFERED_RECHECK_MS = 10 * 60_000;
