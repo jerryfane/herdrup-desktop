@@ -200,6 +200,13 @@ type Desk struct {
 	notifications notificationSettings
 	pairingMu     sync.Mutex
 
+	// undurable: machines.json as read may not survive a crash, a label
+	// revision in it included, so no relabel goes out and no invite of the
+	// machine opens (desk_guest_relabel.go). Set at start (nothing synced
+	// yet) and by a store that failed; cleared by a store, or a sync of the
+	// folder, that fully succeeded. Changed under storeMu.
+	undurable atomic.Bool
+
 	guestAcceptMu sync.Mutex
 	guestStore    *guest.Store
 	// inviteTransport fetches short invite links' sealed invites; nil is
@@ -325,9 +332,9 @@ type link struct {
 	// it, which an invite of this machine carries; 0 for a guest's link.
 	shareLabelRev uint64
 	// profile is the local id (Machine.LocalID) of the saved profile the
-	// link was started with; "" while that id is not stored (load), until
-	// a first list stores and binds it: the link then relabels nothing
-	// and opens no invite of its machine (desk_guest_relabel.go).
+	// link was started with; "" when that id was not stored (load): the
+	// link then relabels nothing and opens no invite of its machine for
+	// its run (desk_guest_relabel.go).
 	profile string
 	// relabelVia is the route a machine-wide relabel takes now: the SSH
 	// connection's view whose list reported its capabilities, and that
@@ -488,6 +495,7 @@ func newDesk(dir string) *Desk {
 	d.openBrowser = mygo.Shell.OpenExternal
 	d.publishTopics = broadcastTopics
 	d.crash = newCrashReporter(filepath.Join(dir, "crash-reports"), d.usage, mygo.App.Version())
+	d.undurable.Store(true)
 	return d
 }
 
@@ -502,39 +510,57 @@ func (d *Desk) legacyMachinePath() string { return filepath.Join(d.dir, "machine
 // id is given one, and an older build's relabel queue is folded in
 // (tagProfiles, desk_guest_relabel.go), both stored at once. When that
 // store fails, the machines go as read: a local id is only ever one that
-// is stored, and the next load tries again. d.storeMu must be held.
+// is stored, and the next load tries again. The queue goes once what is
+// read is durable (Desk.undurable), so its fold can't be lost after.
+// d.storeMu must be held.
 func (d *Desk) load() (machineStore, error) {
 	st, err := d.readMachines()
 	if err != nil {
 		return st, err
 	}
+	d.syncStored()
 	tagged := st
 	tagged.Machines = slices.Clone(st.Machines)
-	changed, queue := d.tagProfiles(&tagged)
-	if queue == nil {
-		if changed {
-			if err := d.store(tagged); err != nil {
-				log.Printf("saved machines: storing their local ids: %v", err)
-				return st, nil
-			}
-		}
-		return tagged, nil
-	}
-	// The older queue is still here: its fold, this load's or one an
-	// earlier load wrote, is durable once a store or, with nothing to
-	// change, a sync of the folder fully succeeds. Only then does the queue
-	// go and the folded revisions with it reach anyone.
+	changed, queued := d.tagProfiles(&tagged)
 	if changed {
-		err = d.store(tagged)
-	} else {
-		err = syncDir(d.dir)
+		if err := d.store(tagged); err != nil {
+			log.Printf("saved machines: storing their local ids and label revisions: %v", err)
+			return st, nil
+		}
 	}
-	if err != nil {
-		log.Printf("saved machines: storing the older relabel queue's fold: %v", err)
-		return withoutQueuedRevs(st, queue), nil
+	if queued && !d.undurable.Load() {
+		d.retireRelabelQueue()
 	}
-	d.retireRelabelQueue()
 	return tagged, nil
+}
+
+// syncStored retries, while machines.json may not be durable
+// (Desk.undurable), the sync of its folder that makes it so. d.storeMu
+// must be held.
+func (d *Desk) syncStored() {
+	if !d.undurable.Load() {
+		return
+	}
+	if err := syncDir(d.dir); err != nil {
+		log.Printf("saved machines: syncing their folder: %v", err)
+		return
+	}
+	d.undurable.Store(false)
+}
+
+// durable reports whether machines.json as read is durable, retrying its
+// folder's sync while it may not be; false too once ctx ends while the
+// store is busy.
+func (d *Desk) durable(ctx context.Context) bool {
+	if !d.undurable.Load() {
+		return true
+	}
+	if !d.storeMu.LockCtx(ctx) {
+		return false
+	}
+	defer d.storeMu.Unlock()
+	d.syncStored()
+	return !d.undurable.Load()
 }
 
 // readMachines is load's read, as the file holds them.
@@ -570,8 +596,11 @@ func (d *Desk) readMachines() (machineStore, error) {
 
 // store writes the saved machines (atomically, after any commit a failure
 // left). d.storeMu must be held. machine.json is left as it was, so an
-// older build still finds its machine.
-func (d *Desk) store(st machineStore) error {
+// older build still finds its machine. A failure, even after the file is
+// in place (its folder's sync), leaves the store not durable
+// (Desk.undurable); a success makes it so.
+func (d *Desk) store(st machineStore) (err error) {
+	defer func() { d.undurable.Store(err != nil) }()
 	if err := d.replayCommit(); err != nil {
 		return err
 	}

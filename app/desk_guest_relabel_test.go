@@ -1091,19 +1091,51 @@ func TestARelabelGoesByTheRouteItWasScheduledOn(t *testing.T) {
 	}
 }
 
-// #594 rounds 7 and 8: the older queue goes only once the fold is durable.
-// With nothing to change (the fold already in the file, maybe not yet
-// durable) that takes a sync of the folder alone, no rewrite: while it
-// fails, the queue stays.
-func TestTheOlderQueueOutlivesAFailedFolderSync(t *testing.T) {
+// writeRaw rewrites machines.json with change as another writer does
+// (account sync), no load in between: no local id is given.
+func (h *relabelHerdr) writeRaw(t *testing.T, change func(*machineStore)) {
+	t.Helper()
+	h.d.storeMu.Lock()
+	defer h.d.storeMu.Unlock()
+	st, err := h.d.readMachines()
+	if err != nil {
+		t.Fatal(err)
+	}
+	change(&st)
+	data, err := encodeMachines(st)
+	if err == nil {
+		err = writeFileAtomic(h.d.machinesPath(), data)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// refused reports whether err is the desk's refusal want, by its words.
+func refused(err error, want string) bool { return err != nil && err.Error() == want }
+
+const (
+	unboundRefusal   = "Couldn't save this machine's settings. Reconnect to share it."
+	undurableRefusal = "Couldn't save this machine's settings. Try sharing again in a moment."
+)
+
+// #594 rounds 7 to 9: the older queue goes only once its fold is durable.
+// A fold written but its folder's sync failing, the queue stays, the next
+// load (nothing to change) retrying the sync alone, no rewrite; once a
+// sync succeeds, the queue goes and the fold stands.
+func TestTheOlderQueueOutlivesAFoldNotDurable(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
-	h.rename(t, "Renamed")
+	h.store(t, func(st *machineStore) { st.Machines[0].Nickname, st.Machines[0].LabelRev = "Renamed", 0 })
 	saved, err := h.d.Machines()
-	if err != nil || len(saved) != 1 || saved[0].LabelRev == 0 {
+	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
 	h.writeQueue(t, saved[0].LocalID, "Renamed")
+	lift := h.failDirSync(t)
+	if _, err := h.d.Machines(); err != nil { // the fold, written, its sync failing
+		t.Fatal(err)
+	}
 	// A second name keeps the file's inode from being reused by a rewrite.
 	pinned := filepath.Join(t.TempDir(), "machines.json")
 	if err := os.Link(h.d.machinesPath(), pinned); err != nil {
@@ -1113,7 +1145,6 @@ func TestTheOlderQueueOutlivesAFailedFolderSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lift := h.failDirSync(t)
 	if _, err := h.d.Machines(); err != nil {
 		t.Fatal(err)
 	}
@@ -1124,11 +1155,11 @@ func TestTheOlderQueueOutlivesAFailedFolderSync(t *testing.T) {
 		return err
 	}
 	if err := queue(); err != nil {
-		t.Fatalf("the older queue after a failed sync: %v; want it kept", err)
+		t.Fatalf("the older queue, its fold not durable: %v; want it kept", err)
 	}
 	lift()
-	if rev := h.labelRev(t); rev != saved[0].LabelRev {
-		t.Fatalf("revision %d after the fold; want %d kept", rev, saved[0].LabelRev)
+	if rev := h.labelRev(t); rev == 0 {
+		t.Fatal("no revision once the fold is durable")
 	}
 	if err := queue(); !os.IsNotExist(err) {
 		t.Fatalf("the older queue after a sync: %v; want it deleted", err)
@@ -1138,10 +1169,10 @@ func TestTheOlderQueueOutlivesAFailedFolderSync(t *testing.T) {
 	}
 }
 
-// #594 round 8: a fold whose folder sync fails (EIO, at its store and at
-// the next load's retry) reaches nobody: the profile reads with no
-// revision and its connect sends nothing. Once a sync succeeds, the next
-// connect sends the folded revision.
+// #594 rounds 8 and 9: a fold whose folder sync fails (EIO, at its store
+// and at every retry) reaches nobody: its connect sends nothing and no
+// invite of the machine opens. Once a sync succeeds, the next connect sends
+// the folded revision.
 func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
@@ -1162,8 +1193,8 @@ func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 	if got := h.updates(); len(got) != 0 {
 		t.Fatalf("a fold not durable sent %+v", got)
 	}
-	if rev := h.labelRev(t); rev != 0 {
-		t.Fatalf("revision %d of a fold not durable; want none", rev)
+	if p, err := h.tryInvite(t); !refused(err, undurableRefusal) {
+		t.Fatalf("an invite while the fold is not durable: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
 	}
 	lift()
 	rev := h.labelRev(t)
@@ -1173,10 +1204,55 @@ func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 	}
 }
 
-// #594 round 8: a link started with a profile whose local id could not be
-// stored, writes back by its first list, stores the id there and is bound
-// to it: a rename then reaches its herdr and its next invite.
-func TestAFirstListBindsTheLocalIDItStores(t *testing.T) {
+// #594 round 9: a plain rename whose store's folder sync fails (EIO) is in
+// the file but may not survive a crash: nothing goes out (not by the save,
+// not by the next connect) and no invite of the machine opens, until a sync
+// succeeds; then the next connect sends it, and invites carry it.
+func TestARenameIsSentOnlyOnceDurable(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	lift := h.failDirSync(t)
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	m := saved[0].Machine
+	m.Nickname = "New"
+	if err := h.d.SaveMachine(m, saved[0].ID); err == nil {
+		t.Fatal("a save whose folder sync failed reported none")
+	}
+	h.drain(t)
+	h.d.Disconnect()
+	started, err := h.d.Machine() // New, as the file holds it
+	if err != nil || started == nil || started.Nickname != "New" {
+		t.Fatalf("the saved machine %+v, %v", started, err)
+	}
+	h.d.start(*started, "")
+	h.listed(t)
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a rename not durable sent %+v", got)
+	}
+	if p, err := h.tryInvite(t); !refused(err, undurableRefusal) {
+		t.Fatalf("an invite while the rename is not durable: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
+	}
+	lift()
+	rev := h.labelRev(t)
+	h.reconnect(t)
+	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "New" || *p.MachineLabelRev != rev || !h.holds(t, "New", rev) {
+		t.Fatalf("sent %+v, shares %+v; want New at %d", p, h.list(t), rev)
+	}
+	if p := h.invite(t); p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite once durable: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	}
+}
+
+// #594 round 9: a link started with a profile whose local id could not be
+// stored is not bound at its first list to the profile at its address
+// still without one: account sync may have put another there (here, once
+// writes are back). It stays unbound: nothing is sent for that profile's
+// rename, and no invite of the machine opens.
+func TestAFirstListBindsNoProfileThatTookItsAddress(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
 	h.store(t, func(st *machineStore) { st.Machines[0].LocalID = "" })
@@ -1186,21 +1262,20 @@ func TestAFirstListBindsTheLocalIDItStores(t *testing.T) {
 		t.Fatalf("the saved machine %+v, %v; want no local id", m, err)
 	}
 	lift()
+	h.writeRaw(t, func(st *machineStore) {
+		st.Machines[0].Nickname, st.Machines[0].SyncID, st.Machines[0].LocalID = "Replacement", "another", ""
+	})
 	h.d.start(*m, "")
 	h.listed(t)
-	saved, err := h.d.Machines()
-	if err != nil || len(saved) != 1 || saved[0].LocalID == "" {
-		t.Fatalf("saved %+v, %v", saved, err)
+	if p := h.liveProfile(); p != "" {
+		t.Fatalf("the link bound to %q, the profile that took its address", p)
 	}
-	if p := h.liveProfile(); p != saved[0].LocalID {
-		t.Fatalf("the link's profile %q, want the stored %s", p, saved[0].LocalID)
+	h.rename(t, "Replacement renamed")
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("the unbound link sent %+v", got)
 	}
-	h.rename(t, "New")
-	rev := h.labelRev(t)
-	if p := h.answered(t, 1)[0]; *p.MachineLabel != "New" || *p.MachineLabelRev != rev || !h.holds(t, "New", rev) {
-		t.Fatalf("sent %+v, shares %+v; want New at %d", p, h.list(t), rev)
-	}
-	if p := h.invite(t); p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
-		t.Fatalf("an invite after the rename: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	if p, err := h.tryInvite(t); !refused(err, unboundRefusal) {
+		t.Fatalf("an invite of the unbound link: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
 	}
 }
