@@ -959,8 +959,9 @@ export interface PairApproveUpdate {
  * it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
  * "needs_update" (Version is its herdr's, when it said), "needs_key" (a
  * password machine not connected now), "needs_pin" (never opened from
- * this computer, so no host key is kept for it) or "unsendable" (the list
- * the new device gets can't carry it; Reason says why).
+ * this computer, so no host key is kept for it) or "unsendable" (it can't
+ * be shared now: the list the new device gets can't carry it, or its host
+ * key can't be checked here; Reason says why).
  */
 export interface PairProbe {
   state: string;

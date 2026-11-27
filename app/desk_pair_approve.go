@@ -187,8 +187,9 @@ var pairNow = time.Now
 // it: "ready" (reachable, its herdr has pair.add_key), "unreachable",
 // "needs_update" (Version is its herdr's, when it said), "needs_key" (a
 // password machine not connected now), "needs_pin" (never opened from
-// this computer, so no host key is kept for it) or "unsendable" (the list
-// the new device gets can't carry it; Reason says why).
+// this computer, so no host key is kept for it) or "unsendable" (it can't
+// be shared now: the list the new device gets can't carry it, or its host
+// key can't be checked here; Reason says why).
 type PairProbe struct {
 	State   string `json:"state"`
 	Version string `json:"version,omitempty"`
@@ -231,6 +232,9 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 	case errors.Is(err, errNoPin):
 		return PairProbe{State: "needs_pin"}, nil
 	case err != nil:
+		if unread := (*pinsUnreadError)(nil); errors.As(err, &unread) {
+			return PairProbe{State: "unsendable", Reason: truncate(unread.Error(), pairReasonRunes)}, nil
+		}
 		return PairProbe{State: "unreachable"}, nil
 	}
 	defer done()
@@ -276,6 +280,24 @@ func (p *pairPins) SetPin(string, string) error {
 	return errNoPin
 }
 
+func (p *pairPins) Pin(addr string) (string, bool, error) {
+	pin, ok, err := p.PinStore.Pin(addr)
+	if err != nil {
+		return "", false, &pinsUnreadError{err}
+	}
+	return pin, ok, nil
+}
+
+// pinsUnreadError is a pin store this computer couldn't read: no host key
+// can be checked, so no machine is used.
+type pinsUnreadError struct{ err error }
+
+func (e *pinsUnreadError) Error() string {
+	return "couldn't read the host keys pinned here (" + e.err.Error() + ")"
+}
+
+func (e *pinsUnreadError) Unwrap() error { return e.err }
+
 // pairBridge is this computer's own SSH session to m for a pair approval.
 // The live connection is used, however it signed in (a password machine
 // is usable only then), while its host key is the one pinned here now; a
@@ -283,12 +305,13 @@ func (p *pairPins) SetPin(string, string) error {
 // negotiates as the machine was pinned, as the live one did, so the host
 // shows the key this computer trusts. The pin holds a fingerprint only:
 // when that session's key isn't the pinned one (a host pinned by its
-// ed25519 key that offers ECDSA since, which SSH's defaults prefer), one
-// session per type the new device checks, in pairHostKeyTypes' order,
-// looks for it, and the first whose key is the pinned one is used. None:
-// the host key changed. A machine without a pin is errNoPin; nothing is
-// ever pinned. The key is sent if the new device checks its type
-// (verifiedHostKey).
+// ed25519 key or certificate that offers an ECDSA one since, which SSH's
+// defaults prefer), one session per type in pairSearchTypes looks for it,
+// and the first whose key or certificate is the pinned one is used. A
+// session failing otherwise than on its host key ends the search with its
+// error; none found, the host key changed. A machine without a pin is
+// errNoPin; nothing is ever pinned. The key is sent if the new device
+// checks its type (verifiedHostKey).
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
 	if c := d.liveBridge(m); c != nil {
 		if key, addr := c.HostKey(); key != nil {
@@ -307,18 +330,21 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 	case err != nil && pins.missing.Load():
 		return nil, nil, errNoPin
 	case errors.As(err, &changed):
-		for _, algo := range pairHostKeyTypes {
+		for _, algo := range pairSearchTypes {
 			tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
 			var other *bridge.HostKeyChangedError
 			var none *ssh.AlgorithmNegotiationError
 			switch {
 			case terr == nil:
 				return tc, tdone, nil
-			case errors.As(terr, &other), errors.As(terr, &none):
+			case errors.As(terr, &other):
+				continue
+			case errors.As(terr, &none) && none.What == "host key":
 				continue
 			}
-			// The key was the pinned one; the session failed after (its
-			// sign-in, say), and says why.
+			// The key was the pinned one and the session failed after
+			// (its sign-in, say), or it failed on something else (its key
+			// exchange): it says why.
 			return nil, nil, terr
 		}
 	}
@@ -329,13 +355,13 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 var errNotPinned = errors.New("its host key doesn't match the one pinned here")
 
 // pinnedKey says whether key, from a session to addr, is the one pinned
-// here: nil when it is, errNotPinned when not (or no pin), and a pin
-// store not read as its own error.
+// here: nil when it is, errNotPinned when not (or no pin), and a
+// pinsUnreadError when the pin store can't be read.
 func (d *Desk) pinnedKey(key ssh.PublicKey, addr string) error {
 	pin, ok, err := d.pins.Pin(addr)
 	switch {
 	case err != nil:
-		return fmt.Errorf("couldn't read the host keys pinned here (%w)", err)
+		return &pinsUnreadError{err}
 	case !ok || pin != bridge.Fingerprint(key):
 		return errNotPinned
 	}
@@ -345,6 +371,17 @@ func (d *Desk) pinnedKey(key ssh.PublicKey, addr string) error {
 // pairHostKeyTypes are the host keys the new device checks (pair-v1
 // host_key).
 var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
+
+// pairSearchTypes are what pairBridge negotiates, one session each, to
+// find the pinned host key: pairHostKeyTypes, each followed by its
+// certificate, as a pin may hold a certificate's fingerprint (SSH's
+// defaults negotiate one first). The certified key is what is sent.
+var pairSearchTypes = []string{
+	ssh.KeyAlgoED25519, ssh.CertAlgoED25519v01,
+	ssh.KeyAlgoECDSA256, ssh.CertAlgoECDSA256v01,
+	ssh.KeyAlgoECDSA384, ssh.CertAlgoECDSA384v01,
+	ssh.KeyAlgoECDSA521, ssh.CertAlgoECDSA521v01,
+}
 
 // errHostKeyType is a machine whose verified host key the new device
 // can't check (an RSA key, say): it is held out of the list before any
@@ -1026,9 +1063,12 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 func pairReason(ctx context.Context, err error) (string, bool) {
 	var old *engine.ErrUnsupported
 	var api *bridge.APIError
+	var unread *pinsUnreadError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil:
 		return "timed out", true
+	case errors.As(err, &unread):
+		return unread.Error(), true
 	case errors.As(err, &old):
 		return "needs a herdr update", false
 	case errors.Is(err, engine.ErrPairKeyInvalid):

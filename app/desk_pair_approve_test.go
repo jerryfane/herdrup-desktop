@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -124,6 +125,13 @@ func certHostKey(t *testing.T, principalBytes int) ssh.Signer {
 	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	host, _ := ssh.NewSignerFromKey(hostPriv)
+	return certOf(t, host, principalBytes)
+}
+
+// certOf is host presenting an OpenSSH host certificate for its key, with
+// a principal principalBytes long, signed by a fresh CA.
+func certOf(t *testing.T, host ssh.Signer, principalBytes int) ssh.Signer {
+	t.Helper()
 	_, caPriv, _ := ed25519.GenerateKey(rand.Reader)
 	ca, _ := ssh.NewSignerFromKey(caPriv)
 	cert := &ssh.Certificate{Key: host.PublicKey(), CertType: ssh.HostCert, ValidPrincipals: []string{strings.Repeat("h", principalBytes)}, ValidBefore: ssh.CertTimeInfinity}
@@ -1120,21 +1128,30 @@ func TestPairApproveUsesALivePasswordConnection(t *testing.T) {
 }
 
 // A pin store that can't be read is said as itself: the live password
-// connection isn't passed over for a new session that needs a key file.
+// connection isn't passed over for a new session that needs a key file,
+// and Probe says why the machine can't be reached, as it does for a
+// machine reached with its key file.
 func TestPairApproveSaysAnUnreadPinStore(t *testing.T) {
 	w := newPairWorld(t)
+	ctx := context.Background()
 	w.connectByPassword(t)
 	id := w.start(t)
 	w.typeCode(t, id)
 	if err := os.WriteFile(filepath.Join(w.d.dir, "host-keys.json"), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res, err := w.d.PairApproveAdd(context.Background(), id, []string{w.ids["studio"], w.ids["pw"]})
-	pw := rowsByLabel(res)["pw"]
-	if err != nil || pw.Status != account.PairFailed || !strings.HasPrefix(pw.Reason, "couldn't read the host keys pinned here") {
+	const unread = "couldn't read the host keys pinned here ("
+	for _, name := range []string{"pw", "studio"} {
+		if p, err := w.d.PairApproveProbe(ctx, id, w.ids[name]); err != nil || p.State != "unsendable" || !strings.HasPrefix(p.Reason, unread) {
+			t.Fatalf("probe %s %+v, %v: want unsendable, the pins unread", name, p, err)
+		}
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["pw"]})
+	rows := rowsByLabel(res)
+	if err != nil || rows["pw"].Status != account.PairFailed || !strings.HasPrefix(rows["pw"].Reason, unread) || !strings.HasPrefix(rows["studio"].Reason, unread) {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
-	if n := w.machines["pw"].adds.Load(); n != 0 {
+	if n := w.machines["pw"].adds.Load() + w.machines["studio"].adds.Load(); n != 0 {
 		t.Fatalf("%d adds with the pins unread", n)
 	}
 }
@@ -1160,6 +1177,109 @@ func TestPairApproveFindsThePinnedKeyTypeOfAHostThatGrewAnother(t *testing.T) {
 	}
 	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port))); err != nil || !ok || pin != bridge.Fingerprint(ed.PublicKey()) {
 		t.Fatalf("pin %q %v %v: want the ed25519 key's, as it was", pin, ok, err)
+	}
+}
+
+// A host pinned here by its ed25519 certificate (SSH's defaults pick a
+// certificate first), which offers an ECDSA certificate too since, still
+// with the ed25519 certificate and plain key: the search negotiates
+// certificates too, finds the pinned one, and its certified key is sent.
+// The pin stays as it was.
+func TestPairApproveFindsThePinnedCertificateOfAHostThatGrewAnother(t *testing.T) {
+	w := newPairWorld(t)
+	ed := ed25519HostKey(t)
+	edCert := certOf(t, ed, 8)
+	w.keyMachineWith(t, "certs", edCert, true, true, ed, certOf(t, ecdsaHostKey(t), 8))
+	if got := w.approveAlone(t, "certs"); got != hostKeyLine(ed.PublicKey()) {
+		t.Fatalf("sent host key %q, want the pinned certificate's ed25519 key", got)
+	}
+	if n := w.machines["certs"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on the host, want 1", n)
+	}
+	m, err := w.d.savedMachine(w.ids["certs"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pin, ok, err := w.d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port))); err != nil || !ok || pin != bridge.Fingerprint(edCert.PublicKey()) {
+		t.Fatalf("pin %q %v %v: want the certificate's, as it was", pin, ok, err)
+	}
+}
+
+// A host pinned here by its ECDSA certificate that offers an RSA
+// certificate too (SSH's defaults prefer it), and no plain key: the
+// search passes over the types it doesn't offer and finds the pinned
+// certificate, whose ECDSA key is sent.
+func TestPairApproveFindsAPinnedECDSACertificate(t *testing.T) {
+	w := newPairWorld(t)
+	ec := ecdsaHostKey(t)
+	w.keyMachineWith(t, "eccert", certOf(t, ec, 8), true, true, certOf(t, rsaHostKey(t), 8))
+	if got := w.approveAlone(t, "eccert"); got != hostKeyLine(ec.PublicKey()) {
+		t.Fatalf("sent host key %q, want the pinned certificate's ECDSA key", got)
+	}
+	if n := w.machines["eccert"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on the host, want 1", n)
+	}
+}
+
+// A search session that fails other than on its host key (here its key
+// exchange) says so: it isn't taken for a missing key type, and the
+// search doesn't end on the first session's changed host key.
+func TestPairApproveSaysASearchSessionsKeyExchangeFailure(t *testing.T) {
+	w := newPairWorld(t)
+	ed := ed25519HostKey(t)
+	w.keyMachineWith(t, "kex", ed, true, true, ecdsaHostKey(t))
+	m, err := w.d.savedMachine(w.ids["kex"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := net.JoinHostPort(m.Host, strconv.Itoa(m.Port))
+	// The first session reaches the machine; every later one, an SSH
+	// server with the pinned key and only a key exchange this computer
+	// doesn't offer.
+	refusing := &ssh.ServerConfig{NoClientAuth: true, Config: ssh.Config{KeyExchanges: []string{ssh.InsecureKeyExchangeDH1SHA1}}}
+	refusing.AddHostKey(ed)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for first := true; ; first = false {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				if !first {
+					if sc, _, _, err := ssh.NewServerConn(c, refusing); err == nil {
+						sc.Close()
+					}
+					return
+				}
+				up, err := net.Dial("tcp", upstream)
+				if err != nil {
+					return
+				}
+				defer up.Close()
+				go io.Copy(up, c)
+				io.Copy(c, up)
+			}()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	m.Port, _ = strconv.Atoi(port)
+	if err := w.d.SaveMachine(m, w.ids["kex"]); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.d.pins.SetPin(ln.Addr().String(), bridge.Fingerprint(ed.PublicKey())); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = w.d.pairBridge(context.Background(), m)
+	var neg *ssh.AlgorithmNegotiationError
+	var changed *bridge.HostKeyChangedError
+	if !errors.As(err, &neg) || neg.What != "key exchange" || errors.As(err, &changed) {
+		t.Fatalf("pairBridge: %v; want the search session's key exchange failure", err)
 	}
 }
 
