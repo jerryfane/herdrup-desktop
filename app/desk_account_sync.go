@@ -1287,6 +1287,10 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			slices.ContainsFunc(state.ShareDeletes, func(op shareOp) bool { return op.Account == acct && pushed["shares/"+op.ID] })) {
 			unsent = errDeleteUndone // the round is incomplete until it goes
 		}
+		liveShares := map[string]bool{}
+		for _, s := range state.Mirror.Shares {
+			liveShares[s.ID] = true
+		}
 		// Deletes from other devices the readback passed: the local copies
 		// go next time, unless edited, instead of being uploaded again.
 		// After a restore, what the mirror held and the restored account
@@ -1304,7 +1308,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			}
 		}
 		for id := range readGone.Shares {
-			if !pushed["shares/"+id] {
+			if !pushed["shares/"+id] && !liveShares[id] {
 				goneShares = append(goneShares, id)
 			}
 		}
@@ -1363,6 +1367,15 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		case "shares":
 			state.SharesGone = append(state.SharesGone, c.ID)
 		}
+	}
+	if len(state.SharesGone) > 0 {
+		liveShares := map[string]bool{}
+		for _, s := range state.Mirror.Shares {
+			liveShares[s.ID] = true
+		}
+		state.SharesGone = slices.DeleteFunc(state.SharesGone, func(id string) bool {
+			return liveShares[id]
+		})
 	}
 	state.PushFrom = pushFrom
 	state.ShareRefusals = noteShareRefusals(state.ShareRefusals, state.ShareWrites, acked, refusedShares)

@@ -693,8 +693,8 @@ func TestAShareDeletedBeforeItsReadbackIsNotConfirmed(t *testing.T) {
 	if err != nil || !access.AccountBound {
 		t.Fatalf("bound accept: %+v, %v", access, err)
 	}
-	if access.AccountShare != "" {
-		t.Fatalf("a share deleted before its readback: the accept says %q, want nothing", access.AccountShare)
+	if access.AccountShare != "removed" {
+		t.Fatalf("a share deleted before its readback: the accept says %q, want removed", access.AccountShare)
 	}
 	if len(w.live()) != 0 || len(sharesOf(t, d)) != 0 {
 		t.Fatalf("rows %v, synced shares %+v; want none", w.live(), sharesOf(t, d))
@@ -738,8 +738,8 @@ func TestAShareDeletedAndPrunedBeforeAFullReadbackIsLetGo(t *testing.T) {
 	if err != nil || !access.AccountBound {
 		t.Fatalf("bound accept: %+v, %v", access, err)
 	}
-	if access.AccountShare != "" {
-		t.Fatalf("a share deleted before its full readback: the accept says %q, want nothing", access.AccountShare)
+	if access.AccountShare != "removed" {
+		t.Fatalf("a share deleted before its full readback: the accept says %q, want removed", access.AccountShare)
 	}
 	id := relay.HostID() + "/" + access.GuestID
 	if _, live := w.live()[id]; live || len(sharesOf(t, d)) != 0 {
@@ -1635,5 +1635,172 @@ func TestAShareWriteWhoseJournalCantBeSavedIsNotSent(t *testing.T) {
 	}
 	if _, live := w.live()[id]; !live {
 		t.Fatal("the share isn't on the account")
+	}
+}
+
+// A readback that carries an earlier tombstone for a share followed by a live
+// re-add on a later page leaves the share live in the final mirror: the local
+// grant must stay and the share must not appear in SharesGone.
+func TestReadbackKeepsLocalGrantWhenLiveAfterEarlierTombstone(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || access.AccountShare != shareConfirmed {
+		t.Fatalf("initial accept: %+v, %v", access, err)
+	}
+	id := relay.HostID() + "/" + access.GuestID
+	liveItem := w.items[id]
+	if liveItem.Body == nil {
+		t.Fatalf("expected share %s in worker", id)
+	}
+
+	// Queue a prompt push so SyncMachines performs a readback; tombstone id
+	// in onPush (so its rev precedes the pushed prompt and lands on readback
+	// page 1), then re-add id live via onNextPage so a later page carries the
+	// live share.
+	if _, err := d.SavePrompt(SavedPrompt{Text: "trigger readback"}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.onPush = func() {
+		w.tombstone(id)
+	}
+	w.afterPush = func() {
+		w.pageSize = 1
+		w.onNextPage = func() {
+			w.rev++
+			w.items[id] = account.Item{Collection: "shares", ID: id, Rev: w.rev, Body: liveItem.Body}
+		}
+	}
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if gone := savedSyncState(t, d).SharesGone; slices.Contains(gone, id) {
+		t.Fatalf("SharesGone contains live share %s: %v", id, gone)
+	}
+	grants, err := d.SharedConnections()
+	if err != nil || len(grants) != 1 || grants[0].GuestID != access.GuestID || grants[0].AccountShare != shareConfirmed {
+		t.Fatalf("grants after tombstone+readd readback: %+v, %v", grants, err)
+	}
+}
+
+// A push conflict carrying a tombstone for a share followed by a readback
+// showing the share live again keeps the local grant and excludes it from
+// SharesGone.
+func TestReadbackKeepsLocalGrantWhenLiveAfterConflictTombstone(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	relay, base := shareRelay(t, true)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+
+	// Accept while push fails so the share write is queued (base_rev 0) and
+	// the local grant is held.
+	w.mu.Lock()
+	w.failPush = true
+	w.mu.Unlock()
+	access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+	if err != nil || !access.AccountBound {
+		t.Fatalf("initial accept: %+v, %v", access, err)
+	}
+	w.mu.Lock()
+	w.failPush = false
+	w.mu.Unlock()
+	id := relay.HostID() + "/" + access.GuestID
+	bodyStruct, err := shareBodyOf(access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveBody, err := json.Marshal(bodyStruct)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Queue a prompt alongside the owed share create so the push acks the
+	// prompt while the share create conflicts with a server tombstone, then
+	// re-add the share live before the readback runs.
+	if _, err := d.SavePrompt(SavedPrompt{Text: "acked alongside conflict"}); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.onPush = func() {
+		w.rev++
+		w.items[id] = account.Item{Collection: "shares", ID: id, Rev: w.rev, Deleted: true}
+	}
+	w.afterPush = func() {
+		w.rev++
+		w.items[id] = account.Item{Collection: "shares", ID: id, Rev: w.rev, Body: liveBody}
+	}
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if gone := savedSyncState(t, d).SharesGone; slices.Contains(gone, id) {
+		t.Fatalf("SharesGone contains live share %s: %v", id, gone)
+	}
+	grants, err := d.SharedConnections()
+	if err != nil || len(grants) != 1 || grants[0].GuestID != access.GuestID || grants[0].AccountShare != shareConfirmed {
+		t.Fatalf("grants after conflict tombstone + live readback: %+v, %v", grants, err)
+	}
+}
+
+// When AcceptGuestInvitation's own sync removes the grant (e.g. deleted from
+// the account meanwhile), Accept returns AccountShare == shareRemoved — never
+// confirmed or empty — even if saving sync state afterward fails.
+func TestBoundAcceptReportsRemovedWhenSyncDropsGrant(t *testing.T) {
+	for _, failStateSave := range []bool{false, true} {
+		name := "save_ok"
+		if failStateSave {
+			name = "save_fails"
+		}
+		t.Run(name, func(t *testing.T) {
+			quietSync(t)
+			quietShares(t)
+			w, srv := newWorker(t, "")
+			relay, base := shareRelay(t, true)
+			d := shareDevice(t, srv)
+			ctx := context.Background()
+
+			// Delete the newly pushed share immediately on the server so the
+			// accept's own readback sees its tombstone and drops the local grant.
+			var seenID string
+			w.mu.Lock()
+			w.afterPush = func() {
+				for id, it := range w.items {
+					if it.Collection == "shares" && !it.Deleted {
+						seenID = id
+						w.tombstone(id)
+					}
+				}
+			}
+			w.mu.Unlock()
+			if failStateSave {
+				d.accountSync.writeState = func(path string, raw []byte) error {
+					var state syncState
+					if err := json.Unmarshal(raw, &state); err == nil && seenID != "" && slices.Contains(state.SharesGone, seenID) {
+						return errors.New("disk full after dropGoneShares")
+					}
+					return writeFileAtomic(path, raw)
+				}
+			}
+			access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+			if err != nil {
+				t.Fatalf("accept err: %v", err)
+			}
+			if access.AccountShare != "removed" {
+				t.Fatalf("accept AccountShare=%q, want %q", access.AccountShare, "removed")
+			}
+			grants, err := d.SharedConnections()
+			if err != nil || len(grants) != 0 {
+				t.Fatalf("grants after removed accept: %+v, %v; want none", grants, err)
+			}
+		})
 	}
 }

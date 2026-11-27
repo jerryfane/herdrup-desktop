@@ -163,6 +163,13 @@ export function showGuestAccept(saved: () => Promise<void>, opened: () => void, 
      const access = await Desk.acceptGuestInvitation(reviewed, keep);
      input.value = ""; await saved();
      if (disposed) return;
+     if (access.accountShare === "removed") {
+      content.replaceChildren(
+       node("h3", "guest-hero", "Share no longer available"),
+       node("p", "", `${access.agentName} was removed before it could be kept on this device.`),
+      );
+      return;
+     }
      // How the account took it (accountShare): accountBound says only that herdr bound it.
      const account = accountShareWords(access);
      content.replaceChildren(node("h3", "guest-hero", "Access accepted"), node("p", "", `${access.agentName} is saved on this device.`),

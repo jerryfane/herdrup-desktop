@@ -339,6 +339,23 @@ test("the accept sheet says how the account took the share: Added, and the g3 no
  }
 });
 
+test("the accept sheet omits saved, added and Open when the accept's sync removed the grant", async () => {
+ const access = standing("H1", "enyo", "hetzner", "removed");
+ const { doc } = bridge({ "Desk.InspectGuestInvitation": { ...INVITE, account: true }, "Desk.AccountState": { signedIn: true, persistent: true }, "Desk.AcceptGuestInvitation": access });
+ showGuestAccept(async () => {}, () => {}, "herdrup://guest-invite#X");
+ await settle();
+ const sheet = doc.body.all().find(n => n.tagName === "dialog")!;
+ named(sheet, "Add to my account").click();
+ await settle();
+ const words = shown(sheet);
+ expect(words).toContain("Share no longer available");
+ expect(words.some(t => t.includes("is saved on this device"))).toBe(false);
+ expect(words.some(t => t.includes("Added to your HerdrUp account"))).toBe(false);
+ expect(buttons(sheet).some(b => b.text() === "Open shared agent")).toBe(false);
+ expect((doc.getElementById("notices")?.children ?? []).length).toBe(0);
+ sheet.close();
+});
+
 test("SHARED WITH YOU: a queued or refused account write shows muted on its grant's row, in the desk's words; confirmed or none known claims nothing", async () => {
  bridge({});
  const symbol = async () => (G.document as FakeDocument).createElement("span") as unknown as HTMLElement;

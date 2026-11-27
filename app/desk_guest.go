@@ -209,10 +209,21 @@ func (d *Desk) AcceptGuestInvitation(ctx context.Context, text, keep string) (gu
 			return guest.Access{}, fmt.Errorf("Access was accepted and saved on this device, but could not be added to your HerdrUp account: %w", err)
 		}
 		d.confirmShare()
+		// If the accept's own sync removed the grant (the share was deleted
+		// from the account meanwhile), report that distinctly even if saving
+		// sync state afterward failed; never claim confirmed or saved.
+		list, listErr := d.guestStore.List()
+		if listErr == nil && !slices.ContainsFunc(list, func(g guest.Access) bool { return g.ID() == access.ID() }) {
+			access.AccountShare = shareRemoved
+			access.AccountShareProblem = ""
+			return access, nil
+		}
 		// Unread, the access says nothing of the account (no AccountShare),
 		// never that it holds the share.
-		if told, err := d.withAccountShares([]guest.Access{access}); err == nil {
-			access = told[0]
+		if listErr == nil {
+			if told, err := d.withAccountShares([]guest.Access{access}); err == nil {
+				access = told[0]
+			}
 		}
 	}
 	return access, nil

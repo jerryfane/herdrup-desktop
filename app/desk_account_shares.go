@@ -266,6 +266,7 @@ const (
 	shareConfirmed = "confirmed"
 	shareQueued    = "queued"
 	shareRefused   = "refused"
+	shareRemoved   = "removed"
 )
 
 // acceptShareWait bounds the sync an accept runs to confirm its share's
