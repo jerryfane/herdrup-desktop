@@ -1171,8 +1171,8 @@ func TestTheOlderQueueOutlivesAFoldNotDurable(t *testing.T) {
 
 // #594 rounds 8 and 9: a fold whose folder sync fails (EIO, at its store
 // and at every retry) reaches nobody: its connect sends nothing and no
-// invite of the machine opens. Once a sync succeeds, the next connect sends
-// the folded revision.
+// invite of the machine opens. Once a sync succeeds, the link still
+// connected sends the folded revision (round 11: it was owed).
 func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
@@ -1198,7 +1198,6 @@ func TestAFoldIsSentOnlyOnceDurable(t *testing.T) {
 	}
 	lift()
 	rev := h.labelRev(t)
-	h.reconnect(t)
 	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "Renamed" || *p.MachineLabelRev != rev {
 		t.Fatalf("sent %+v, saved revision %d; want Renamed at it", p, rev)
 	}
