@@ -141,6 +141,10 @@ test("an outcome no answer told is unknown, never added, the write kept for the 
   w.failPush = false;
   const kept = where.account === undefined ? owed(b.storage) : JSON.parse(b.storage.getItem(SHARES_KEY_PREFIX + where.account) ?? "{}").pending?.length === 1;
   expect([what, added.outcome, w.pushed.length, kept]).toEqual([what, "unknown", sent, true]);
+  if (what === "silent") {
+   const rec = JSON.parse(b.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { sent?: unknown[] };
+   expect(rec.sent?.length).toBe(1);
+  }
   expect(boundNotice("docs", added)).toBe(ADD_UNKNOWN);
  }
  expect(ADD_UNKNOWN).toBe("Added on this device; we'll finish adding it to your account.");

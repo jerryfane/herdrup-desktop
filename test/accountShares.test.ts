@@ -627,6 +627,20 @@ test("leaving a share in the account says it leaves every device; a plain one, t
  expect(bound).toEqual({ title: "Leave hetzner on all your devices?", message: "enyo disappears from every device signed in to your HerdrUp account.", note: "You stop seeing enyo on all your devices. To come back, jerry has to send a new invite." });
 });
 
+test("a failed account bind with a saved grant surfaces the refusal instead of opening the previous share", async () => {
+ const saved = grant("H0", "g0", "existing", "jerry", "old-mac", true);
+ const connects: string[] = [];
+ const desk = {
+  sharedConnections: async () => [saved],
+  acceptGuestInvitation: async () => { throw new Error("too_many_devices"); },
+  connectGuest: async (id: string) => { connects.push(id); },
+ };
+ const out = await start(desk, "PAYLOAD&bind=1&provider=apple", "https://guest.herdrup.app", () => "jerry",
+  { signedIn: async () => true, pending: null, signIn: null });
+ expect(out).toEqual({ kind: "bind", payload: "PAYLOAD", problem: "too_many_devices" });
+ expect(connects).toEqual([]);
+});
+
 test("the browser guest's Settings, where Leave deletes a bound share's item from the account, says it leaves every device", async () => {
  const { doc } = bridge({});
  const sidebar = doc.createElement("div"), detail = doc.createElement("div");

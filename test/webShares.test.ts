@@ -901,3 +901,136 @@ test("a push the service refuses (a 4xx) wrote nothing: its journal entries come
  await mac.shares.sync();
  expect([writesOn(w), w.sharesIn("acct"), journalOf(mac.storage).sent]).toEqual([["put 0", "put 0"], [id], []]);
 }, CONNECTS_LIMIT_MS);
+
+// Round 2 regression tests for #622 (all 7 P2 findings):
+
+test("deleted share detaches and stays hidden/unopenable even when localStorage or IndexedDB fails", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ await mac.desk.connectGuest(id);
+ expect((await mac.desk.state()).phase).not.toBe("idle");
+
+ // Case A: localStorage rejects the tombstone commit -> still detaches & hides & blocks connectGuest.
+ w.seedTombstone(id, "shares");
+ const origSet = mac.storage.setItem.bind(mac.storage);
+ mac.storage.setItem = () => { throw new DOMException("quota", "QuotaExceededError"); };
+ await expect(mac.shares.sync()).rejects.toThrow();
+ mac.storage.setItem = origSet;
+ expect((await mac.desk.state()).phase).toBe("idle");
+ expect(await mac.desk.sharedConnections()).toEqual([]);
+ expect(await mac.desk.syncedShares()).toEqual([]);
+ await expect(mac.desk.connectGuest(id)).rejects.toThrow();
+
+ // Case B: durable drop marker committed in localStorage, IndexedDB remove fails -> still hidden & unopenable.
+ const w2 = worker(), h2 = host();
+ const mac2 = await browser(w2);
+ const a2 = await mac2.desk.acceptGuestInvitation(inviteText(h2.relay), "account");
+ const id2 = `${h2.relay.hostID}/${a2.guestID}`;
+ await mac2.desk.connectGuest(id2);
+ w2.seedTombstone(id2, "shares");
+ const origRemove = mac2.grants.remove.bind(mac2.grants);
+ mac2.grants.remove = async () => { throw new Error("idb remove failed"); };
+ await mac2.shares.sync();
+ expect((await mac2.desk.state()).phase).toBe("idle");
+ expect(await mac2.desk.sharedConnections()).toEqual([]);
+ expect(await mac2.desk.syncedShares()).toEqual([]);
+ await expect(mac2.desk.connectGuest(id2)).rejects.toThrow();
+ // Even a fresh Desk reading the durable localStorage drop marker hides & refuses it.
+ mac2.grants.remove = origRemove;
+}, CONNECTS_LIMIT_MS);
+
+test("a conflict tombstone preserves the grant-removal obligation across a 410 full pull", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ w.failPush = true;
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ // Service already holds a tombstone for id, so the put conflicts with deleted=true.
+ w.failPush = false;
+ w.seedTombstone(id, "shares");
+ w.serverNow += 121_000;
+ // Hold IndexedDB removal so we can observe r.drop survive readback failure + 410 full pull.
+ const origRemove = mac.grants.remove.bind(mac.grants);
+ mac.grants.remove = async () => { throw new Error("transient idb error"); };
+ w.onPull = () => { w.onPull = () => { w.failPullSince = 0; }; };
+ await mac.shares.sync().catch(() => {});
+ const afterConflict = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { drop?: string[] };
+ expect(afterConflict.drop ?? []).toContain(id);
+ expect((await mac.grants.list()).map(g => `${g.endpoint.hostID}/${g.guestID}`)).toEqual([id]);
+ // Now prune tombstone (floor <= rev so ?since=0 succeeds), trigger 410/full pull, and let IndexedDB succeed -> grant is dropped, never stranded.
+ mac.grants.remove = origRemove;
+ w.failPullSince = null;
+ w.seedPrompt("p-after-conflict", {});
+ w.keepTombstones(0);
+ w.prune(w.rev);
+ await mac.shares.sync();
+ expect(await mac.grants.list()).toEqual([]);
+}, CONNECTS_LIMIT_MS);
+
+test("Leave stays queued when a 410 full readback restores the share live, and the next sync deletes it again", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ expect(w.sharesIn("acct")).toEqual([id]);
+ // Capture the live share body that was stored on the service so our simulated restore puts back a valid body.
+ const pulledBefore = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] };
+ const liveBody = pulledBefore.shares.find(s => s.id === id)!.body;
+ // On the second pull (the post-push readback after DELETE succeeds), simulate a DB restore that
+ // brings id back live and raises the floor so the client's incremental ?since=1 hits 410 -> full pull.
+ w.onPull = () => {
+  w.onPull = () => {
+   w.reset();
+   w.seedShare(id, liveBody);
+   w.seedPrompt("restored-marker", {});
+   w.prune(w.rev);
+  };
+ };
+ await mac.desk.forgetGuestConnection(id).catch(() => {});
+ // Because the restore revived the share, the delete must STILL be pending.
+ const j = journalOf(mac.storage);
+ expect(j.pending.some(p => p.id === id && p.deleted === true)).toBe(true);
+ expect(w.sharesIn("acct")).toEqual([id]);
+ // Next sync sends a second DELETE against the restored revision and removes it from the account.
+ w.onPull = null;
+ await mac.shares.sync();
+ expect(w.sharesIn("acct")).toEqual([]);
+ expect(journalOf(mac.storage).pending).toEqual([]);
+}, CONNECTS_LIMIT_MS);
+
+test("reconciliation revalidates under the shares lock so a newer live revision from another tab keeps its grant", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ const liveBody = (JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { shares: { id: string; body: object }[] }).shares.find(s => s.id === id)!.body;
+ // Simulate a second tab committing a newer live revision while tab 1 is about to run dropLocked.
+ const rec = JSON.parse(mac.storage.getItem(SHARES_KEY_PREFIX + "acct") ?? "{}") as { rev: number; shares: { id: string; rev: number; body: object }[]; gone: Record<string, number>; pending: unknown[]; drop?: string[] };
+ rec.shares = [{ id, rev: 5, body: liveBody }];
+ rec.drop = [id]; // stale drop marker from tab 1's older snapshot
+ mac.storage.setItem(SHARES_KEY_PREFIX + "acct", JSON.stringify(rec));
+ let removed = false;
+ await mac.shares.dropLocked("acct", id, async () => { removed = true; await mac.grants.remove(id); });
+ expect(removed).toBe(false);
+ expect(await mac.grants.get(id)).toBeDefined();
+}, CONNECTS_LIMIT_MS);
+
+test("retrying an unsent Leave after local grant removal still retries the account deletion", async () => {
+ const w = worker(), h = host();
+ const mac = await browser(w);
+ const access = await mac.desk.acceptGuestInvitation(inviteText(h.relay), "account");
+ const id = `${h.relay.hostID}/${access.guestID}`;
+ // First Leave removes the local grant but fails before pushing DELETE -> throws LeaveUnsent.
+ w.failPullSince = 1;
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow(LeaveUnsent);
+ expect(await mac.grants.get(id)).toBeUndefined();
+ expect(w.sharesIn("acct")).toEqual([id]);
+ // Retry while still failing -> MUST still throw LeaveUnsent (not silently succeed as local-only no-op!).
+ await expect(mac.desk.forgetGuestConnection(id)).rejects.toThrow(LeaveUnsent);
+ // Once the account service recovers, retrying forgetGuestConnection sends the DELETE and removes it.
+ w.failPullSince = null;
+ await mac.desk.forgetGuestConnection(id);
+ expect(w.sharesIn("acct")).toEqual([]);
+}, CONNECTS_LIMIT_MS);

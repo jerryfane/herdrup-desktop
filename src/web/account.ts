@@ -637,21 +637,31 @@ const MAX_PUSH_CHANGES = 100, MAX_PUSH_BYTES = 256 * 1024;
  *  not_after a push can carry, prompts.ts PromptAttempt Expiry) and `}`. */
 const PUSH_OVERHEAD = `{"changes":[],"not_after":${Number.MAX_SAFE_INTEGER}}`.length;
 
+/** How many leading changes fit into one push the service takes (at most 100 changes, and at most
+ *  256 KiB serialized). Stops serializing as soon as the first batch hits either limit. */
+export function firstBatch<T>(items: readonly T[], encode: (item: T) => SyncChange): T[] {
+ let count = 0, size = PUSH_OVERHEAD;
+ const enc = new TextEncoder();
+ for (let i = 0; i < items.length; i++) {
+  const raw = enc.encode(JSON.stringify(encode(items[i]!))).byteLength;
+  const n = raw + (i > 0 ? 1 : 0); // the comma
+  if (i > 0 && (i === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) break;
+  size += n;
+  count = i + 1;
+ }
+ return items.slice(0, count);
+}
+
 /** changes split into pushes the service takes (account.Batches): at most 100 each, and each
  *  request body at most 256 KiB. Order is kept. */
 export function batches(changes: SyncChange[]): SyncChange[][] {
  const out: SyncChange[][] = [];
- let start = 0, size = PUSH_OVERHEAD;
- changes.forEach((c, i) => {
-  const raw = new TextEncoder().encode(JSON.stringify(c)).byteLength;
-  let n = raw + (i > start ? 1 : 0); // the comma
-  if (i > start && (i - start === MAX_PUSH_CHANGES || size + n > MAX_PUSH_BYTES)) {
-   out.push(changes.slice(start, i));
-   start = i; size = PUSH_OVERHEAD; n = raw;
-  }
-  size += n;
- });
- if (start < changes.length) out.push(changes.slice(start));
+ let rest = changes;
+ while (rest.length > 0) {
+  const one = firstBatch(rest, c => c);
+  out.push(one);
+  rest = rest.slice(one.length);
+ }
  return out;
 }
 

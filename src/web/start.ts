@@ -165,6 +165,7 @@ export async function start(desk: StartDesk, fragment: string, origin: string, o
   try {
    return await acceptInvite(desk, payload, origin, bind ? "account" : "device");
   } catch (error) {
+   if (bind) return { kind: "bind", payload, problem: error instanceof Error ? error.message : String(error) };
    const refused = failed(error);
    if (refused) return refused;
   }

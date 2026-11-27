@@ -394,39 +394,60 @@ export function createGuestDesk(env: DeskEnv) {
   if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
   return { shares: env.shares, statements: boundShareStatements(env.statements) };
  }
+ /** Whether a bound grant is masked as deleted by the shares sync (in memory or durably in r.drop). */
+ function isGrantMasked(grant: Access): boolean {
+  return shares !== undefined && grant.accountBound === true && grant.account !== undefined
+   && shares.isMasked(grant.account, grantKey(grant));
+ }
+ /** Unmasked grants currently held by this browser. */
+ async function unmaskedGrants(): Promise<Access[]> {
+  return (await env.grants.list()).filter(g => !isGrantMasked(g));
+ }
  /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
  async function publishShares(shares: RemoteShare[]) {
-  emit("syncedSharesChanged", syncedSharesOf(shares, await env.grants.list()));
+  emit("syncedSharesChanged", syncedSharesOf(shares, await unmaskedGrants()));
  }
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
  // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
  // what lasts, the grants as stored and the shares record (both shared by this browser's tabs),
- // not with what its own pull saw: the record keeps each share left here, or a pull (in any tab)
- // saw leave the account (dropping), until its grant is gone here, and a removal that fails
- // leaves it there for the next pass. A link open on such a share, or on a grant no longer held,
- // closes.
+ // under the shares record lock so a second tab committing a newer live revision cannot race ahead
+ // of a stale removal. A link open on a deleted share detaches immediately even before IndexedDB
+ // removal or if storage refuses writes.
  const shares = env.shares;
+ shares?.onMasked((acct, ids) => {
+  if (active?.id.startsWith("guest:") && active.access.accountBound === true && active.access.account === acct && ids.includes(active.id.slice("guest:".length))) {
+   disconnect();
+   publishIdle();
+  }
+ });
  shares?.onChange(change => reconcile(shares, change).catch(error => console.error(error)));
  async function reconcile(shares: ShareSync, change: SharesChange) {
   const acct = change.account;
   let failed: { error: unknown } | null = null;
   if (acct !== null) {
-   const cleared: string[] = [];
    for (const id of shares.dropping(acct)) {
     const grant = await env.grants.get(id);
     const bound = grant?.accountBound === true && grant.account === acct;
     if (bound && active?.id === "guest:" + id) { disconnect(); publishIdle(); }
     try {
-     if (bound) await env.grants.remove(id);
-     cleared.push(id);
+     await shares.dropLocked(acct, id, async () => {
+      const latest = await env.grants.get(id);
+      if (latest?.accountBound === true && latest.account === acct) {
+       if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+       await env.grants.remove(id);
+      }
+     });
     } catch (error) { failed ??= { error }; }
    }
-   if (cleared.length > 0) await shares.cleared(acct, cleared);
   }
   const open = active;
-  if (open?.id.startsWith("guest:") && await env.grants.get(open.id.slice("guest:".length)) === undefined && active === open) {
-   disconnect();
-   publishIdle();
+  if (open?.id.startsWith("guest:")) {
+   const openID = open.id.slice("guest:".length);
+   const held = await env.grants.get(openID);
+   if ((held === undefined || isGrantMasked(held)) && active === open) {
+    disconnect();
+    publishIdle();
+   }
   }
   await publishShares(change.shares);
   if (failed !== null) throw (failed as { error: unknown }).error;
@@ -718,9 +739,10 @@ export function createGuestDesk(env: DeskEnv) {
   },
 
   /** Every grant this browser holds, the one opened last first (the page resumes it), each naming
-   *  its machine as its host's latest hello did (sharedConnectionsOf). */
+   *  its machine as its host's latest hello did (sharedConnectionsOf), excluding any bound grant
+   *  masked as deleted by the account sync. */
   async sharedConnections(): Promise<PageAccess[]> {
-   return sharedConnectionsOf(await env.grants.list());
+   return sharedConnectionsOf(await unmaskedGrants());
   },
 
   /** keep: "account" binds the share to the signed-in HerdrUp account when the invite offers it
@@ -757,7 +779,7 @@ export function createGuestDesk(env: DeskEnv) {
 
   /** The account's shares (every live item, held here or not); none signed out. */
   async syncedShares(): Promise<SyncedShare[]> {
-   return syncedSharesOf(env.shares?.list() ?? [], await env.grants.list());
+   return syncedSharesOf(env.shares?.list() ?? [], await unmaskedGrants());
   },
 
   /** The first connect on this browser of a share another device of the account accepted: a
@@ -799,11 +821,12 @@ export function createGuestDesk(env: DeskEnv) {
    *  another) connects nothing, and one forgotten after closes the link open (reconcile). */
   async connectGuest(id: string): Promise<void> {
    const missing = () => new Error("This shared connection is no longer saved");
-   if (await env.grants.get(id) === undefined) throw missing();
+   const existing = await env.grants.get(id);
+   if (existing === undefined || isGrantMasked(existing)) throw missing();
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    const grant = await env.grants.activate(id);
-   if (grant === undefined) throw missing();
+   if (grant === undefined || isGrantMasked(grant)) throw missing();
    disconnect();
    // The machine as each hello names it (its owner may have renamed it, herdr #519): on the grant
    // still saved, numbered as the latest observation (SHARED WITH YOU; one forgotten or replaced
@@ -839,7 +862,10 @@ export function createGuestDesk(env: DeskEnv) {
     env.owner.set(grant.ownerName);
     await env.grants.remove(id);
    };
-   if (env.shares && grant?.accountBound && grant.account !== undefined) await env.shares.leave(id, grant.account, forget);
+   const leaveAcct = grant?.accountBound && grant.account !== undefined
+    ? grant.account
+    : env.shares?.pendingLeaveAccount(id);
+   if (env.shares && leaveAcct !== undefined) await env.shares.leave(id, leaveAcct, forget);
    else await forget();
   },
 
