@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -115,44 +116,61 @@ func (s *FilePinStore) SetPin(hostPort, fingerprint string) error {
 	return s.write(pins)
 }
 
-// ErrPinTaken: AddPin found another host key pinned at that address.
-var ErrPinTaken = errors.New("bridge: another host key is pinned there")
+// PinOutcome is what AddPins found at one address.
+type PinOutcome int
 
-// AddPin pins fingerprint at hostPort unless a pin is there: the same one
-// is no change (added false), another is ErrPinTaken. The check and the
-// write are one step, so it never replaces a pin another writer set.
-func (s *FilePinStore) AddPin(hostPort, fingerprint string) (added bool, err error) {
+const (
+	// PinAdded: nothing was pinned there; the new pin is written with the rest.
+	PinAdded PinOutcome = iota
+	// PinExisting: the same key is pinned there already.
+	PinExisting
+	// PinConflicting: another key is pinned there; it stays.
+	PinConflicting
+)
+
+// AddPins pins each of want's addresses (host:port to fingerprint) that has
+// no pin yet, as one step with the caller's own writes: commit gets each
+// address's outcome and a write that adds the PinAdded ones, and runs with
+// the store held, so no other writer sets or reads a pin until it returns.
+// When commit fails after write, the pins go back to what they were before
+// it, still held: a pin no other writer could have touched in between.
+func (s *FilePinStore) AddPins(want map[string]string, commit func(outcome map[string]PinOutcome, write func() error) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pins, err := s.load()
-	if err != nil {
-		return false, err
-	}
-	switch fp, ok := pins[hostPort]; {
-	case ok && fp == fingerprint:
-		return false, nil
-	case ok:
-		return false, ErrPinTaken
-	}
-	pins[hostPort] = fingerprint
-	return true, s.write(pins)
-}
-
-// RemovePinIf forgets hostPort's pin only while it is still fingerprint,
-// as a save that added it and then failed takes it back: a pin set there
-// since stays.
-func (s *FilePinStore) RemovePinIf(hostPort, fingerprint string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	pins, err := s.load()
+	before, err := s.load()
 	if err != nil {
 		return err
 	}
-	if fp, ok := pins[hostPort]; !ok || fp != fingerprint {
-		return nil
+	outcome := make(map[string]PinOutcome, len(want))
+	after := maps.Clone(before)
+	for hostPort, fingerprint := range want {
+		switch fp, ok := before[hostPort]; {
+		case ok && fp == fingerprint:
+			outcome[hostPort] = PinExisting
+		case ok:
+			outcome[hostPort] = PinConflicting
+		default:
+			outcome[hostPort] = PinAdded
+			after[hostPort] = fingerprint
+		}
 	}
-	delete(pins, hostPort)
-	return s.write(pins)
+	wrote := false
+	write := func() error {
+		if len(after) == len(before) {
+			return nil
+		}
+		wrote = true
+		return s.write(after)
+	}
+	if err := commit(outcome, write); err != nil {
+		if wrote {
+			if restore := s.write(before); restore != nil {
+				return errors.Join(err, restore)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // write replaces the pins file with pins. s.mu is held.

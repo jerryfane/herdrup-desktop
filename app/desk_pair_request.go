@@ -22,18 +22,19 @@ package main
 //   - A machine already saved here at the same host and port (any user) is
 //     kept as it is: its key, password and pin stay, and the result says so
 //     (it only gets a profile id, Machine.LocalID, if it had none).
-//   - A host and port this computer pinned to another host key is not
+//   - A host and port this computer pins to another host key is not
 //     saved: its pin stays, and the result says so.
 //   - S is written to identities/ only when a machine uses it, once per
-//     request. S, the new pins and the machines are one save: when the
-//     machines aren't written, S and the pins this save added (while
-//     still its own) are removed again; once they are (even if the
-//     folder's sync then fails), all stay.
+//     request. S, the new pins and the machines are one save, staged first
+//     and committed by renaming machines.json into place: until then a
+//     failure removes what was staged, and the pins go back to what they
+//     were; once it is renamed (even if the folder's sync then fails), all
+//     stay.
 //   - Nothing is saved once the request was cancelled or replaced here, or
-//     the account session that asked signed out: Cancel fences the request
-//     before it waits for a read in flight, and the save checks both before
-//     it writes machines.json and again after, taking back what it wrote
-//     when one came meanwhile. A sign-out waits for a save in progress.
+//     the account session that asked signed out: the commit runs only
+//     while neither happened, and holds both off until it is done
+//     (commitPairDelivery), so a Cancel or sign-out after it keeps what
+//     it saved.
 
 import (
 	"context"
@@ -96,9 +97,11 @@ const (
 	PairUnreachable = "unreachable"
 	// PairRefused: reached, but it refused this connection (Problem).
 	PairRefused = "refused"
-	// PairRemoved: no longer saved here (removed or edited since), so not
-	// tried.
+	// PairRemoved: no longer saved here, so not tried.
 	PairRemoved = "removed"
+	// PairChanged: saved, but edited since to another address, so not
+	// tried.
+	PairChanged = "changed"
 )
 
 // PairRequestView is a pair request as the page draws it.
@@ -133,9 +136,11 @@ type PairRequestMachine struct {
 	// reused): a profile saved later at the same address is another one.
 	ProfileID string `json:"profileId,omitempty"`
 	Label     string `json:"label"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	User      string `json:"user"`
+	// Host, Port and User: the profile's address as saved (or kept) here,
+	// else the list's.
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	User string `json:"user"`
 	// SyncedID is the account's record of the machine (SyncedMachine.ID)
 	// when the account lists it.
 	SyncedID string `json:"syncedId,omitempty"`
@@ -144,9 +149,12 @@ type PairRequestMachine struct {
 	// Reason is the approver's, for PairNotAdded.
 	Reason string `json:"reason,omitempty"`
 	// Reach is a saved machine's connection try: "" until tried, then
-	// PairOnline, PairUnreachable, PairRefused (Problem) or PairRemoved.
+	// PairOnline, PairUnreachable, PairRefused (Problem), PairRemoved or
+	// PairChanged.
 	Reach   string `json:"reach,omitempty"`
 	Problem string `json:"problem,omitempty"`
+	// entry is the list's entry it is the result of.
+	entry account.HostIdentity
 }
 
 // pairRequest is the one pair request this computer runs.
@@ -156,8 +164,10 @@ type pairRequest struct {
 	round account.Round
 	ask   *account.PairAsk
 	// fenced: cancelled or replaced here. Set before waiting for op, so a
-	// read in flight saves nothing.
-	fenced atomic.Bool
+	// read in flight saves nothing, and under commitMu, so it waits for a
+	// save at its commit point.
+	fenced   atomic.Bool
+	commitMu sync.Mutex
 	// key is S. Its private half is cleared once nothing more can use it.
 	key pairing.PairKey
 	// op makes reads, connection tries and the cancel one at a time.
@@ -427,6 +437,12 @@ func (d *Desk) PairRequestConnect(ctx context.Context, id string) (PairRequestVi
 			continue
 		}
 		m := st.Machines[at]
+		if m.User != pm.User || m.Host != pm.Host || m.Port != pm.Port {
+			// Edited since to another address: not the machine the
+			// approver added the key to, so not tried.
+			pm.Reach = PairChanged
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -478,10 +494,15 @@ func (d *Desk) pairCommitHolds(p *pairRequest) bool {
 
 // savePairDelivery saves the machines of got, a list above any applied:
 // each added or already machine not decided by an earlier list, by the
-// rules at the top of this file. p.op is held, and d.storeMu all through
-// the save: a Cancel waits for p.op and a sign-out for d.storeMu, and the
-// save asks pairCommitHolds again once machines.json is written, so one
-// that came meanwhile has what it wrote taken back before either returns.
+// rules at the top of this file. p.op is held, and d.storeMu all through.
+//
+// Everything is staged first: S's file, the pins (AddPins, which holds
+// the pin store) and machines.json's next content beside it. The commit
+// point, writing the pins and renaming machines.json into place, runs only
+// while p isn't fenced (p.commitMu) and its session is the current one
+// (WhileHolds), and holds a Cancel and a sign-out off until it is done: one
+// that came first leaves nothing written but the staged files, removed
+// again; one that comes after finds the machines saved, and they stay.
 func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error {
 	d.storeMu.Lock()
 	defer d.storeMu.Unlock()
@@ -492,7 +513,6 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	if err != nil {
 		return err
 	}
-	before := slices.Clone(st.Machines)
 	// The account's record of a machine, to save it as that record (its
 	// fields and sync id), so it isn't listed to pair any more and doesn't
 	// sync as a second one.
@@ -504,30 +524,26 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 	results := append([]PairRequestMachine{}, p.view.Machines...)
 	decided := map[account.HostIdentity]int{}
 	for i, r := range results {
-		decided[account.IdentityOf(account.HostBody{Host: r.Host, Port: r.Port, Username: r.User})] = i
+		decided[r.entry] = i
 	}
-	type planned struct {
-		m   Machine
-		pin string
-	}
-	var adds []planned
+	var adds []pairAdd
 	// profiled: a kept machine got its profile id (Machine.LocalID).
 	profiled := false
-	set := func(r PairRequestMachine) {
-		identity := account.IdentityOf(account.HostBody{Host: r.Host, Port: r.Port, Username: r.User})
-		if i, ok := decided[identity]; ok {
+	set := func(r PairRequestMachine) int {
+		if i, ok := decided[r.entry]; ok {
 			results[i] = r
-			return
+			return i
 		}
 		results = append(results, r)
-		decided[identity] = len(results) - 1
+		decided[r.entry] = len(results) - 1
+		return len(results) - 1
 	}
 	for _, em := range got.Envelope.Machines {
 		identity := account.IdentityOf(em.HostBody())
 		if i, ok := decided[identity]; ok && results[i].Result != PairNotAdded {
 			continue // saved, kept or refused by an earlier list
 		}
-		r := PairRequestMachine{Label: pairLabel(em.Nickname, em.Host), Host: em.Host, Port: em.Port, User: em.User}
+		r := PairRequestMachine{entry: identity, Label: pairLabel(em.Nickname, em.Host), Host: em.Host, Port: em.Port, User: em.User}
 		// The record SyncedMachines lists for it (the first, as there).
 		for _, h := range mirror {
 			if account.IdentityOf(h.Body) == identity {
@@ -553,8 +569,10 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		if cert, ok := hostKey.(*ssh.Certificate); ok {
 			hostKey = cert.Key
 		}
+		// pair-v1 pins ed25519 and ECDSA host keys only (pairHostKeyTypes),
+		// whatever an approver, an older one too, sent.
 		if !slices.Contains(pairHostKeyTypes, hostKey.Type()) {
-			r.Result, r.Reason = PairNotAdded, "its host key is a "+hostKey.Type()+" key, which this device doesn't pin"
+			r.Result, r.Reason = PairNotAdded, "its host key is a "+hostKey.Type()+" key, and this device takes only ed25519 or ECDSA host keys from another device"
 			set(r)
 			continue
 		}
@@ -573,110 +591,141 @@ func (d *Desk) savePairDelivery(p *pairRequest, got account.PairDelivery) error 
 		}
 		r.Label = machineLabel(m)
 		if i := savedAtHostPort(st.Machines, m.Host, m.Port); i >= 0 {
-			if st.Machines[i].LocalID == "" {
-				st.Machines[i].LocalID, profiled = newLocalID(), true
+			kept := &st.Machines[i]
+			if kept.LocalID == "" {
+				kept.LocalID, profiled = newLocalID(), true
 			}
-			r.Result, r.ID, r.ProfileID = PairKept, machineID(st.Machines[i]), st.Machines[i].LocalID
+			// The address as saved here: the profile is that one only
+			// while it still has it.
+			r.Result, r.ID, r.ProfileID = PairKept, machineID(*kept), kept.LocalID
+			r.Host, r.Port, r.User = kept.Host, kept.Port, kept.User
 			set(r)
 			continue
 		}
-		if slices.ContainsFunc(adds, func(a planned) bool { return sameHostPort(a.m, m.Host, m.Port) }) {
+		if slices.ContainsFunc(adds, func(a pairAdd) bool { return sameHostPort(a.m, m.Host, m.Port) }) {
 			continue // the list names it twice: the first stands
-		}
-		pin := bridge.Fingerprint(hostKey)
-		pinned, ok, err := d.pins.Pin(net.JoinHostPort(m.Host, strconv.Itoa(m.Port)))
-		if err != nil {
-			return fmt.Errorf("This device couldn't read its host keys (%w).", err)
-		} else if ok && pinned != pin {
-			r.Result = PairPinDiffers
-			set(r)
-			continue
 		}
 		m.LocalID = newLocalID()
 		r.Result, r.ID, r.ProfileID = PairSaved, machineID(m), m.LocalID
-		set(r)
-		adds = append(adds, planned{m: m, pin: pin})
+		r.Host, r.Port, r.User = m.Host, m.Port, m.User
+		adds = append(adds, pairAdd{m: m, hostPort: net.JoinHostPort(m.Host, strconv.Itoa(m.Port)), pin: bridge.Fingerprint(hostKey), result: set(r)})
 	}
+	var saved []Machine
 	if len(adds) > 0 || profiled {
-		// S, the pins and the machines are one save. Until the machines are
-		// written, a failure takes back S (when written for them) and the
-		// pins this save added that are still its own; once they are, all
-		// of it is theirs.
-		wrote := false
-		type pinAt struct{ hostPort, pin string }
-		var added []pinAt
-		undo := func() {
-			for _, a := range added {
-				if err := d.pins.RemovePinIf(a.hostPort, a.pin); err != nil {
-					log.Printf("pair request: host key of %s: %v", a.hostPort, err)
-				}
-			}
-			if wrote {
-				_ = os.Remove(p.keyPath)
-				p.keyPath = ""
-			}
-		}
-		if len(adds) > 0 && p.keyPath == "" {
-			path, err := pairing.SaveIdentity(d.dir, p.key.PrivatePEM)
-			if err != nil {
-				return errors.New("This device couldn't save its key for those machines.")
-			}
-			p.keyPath, wrote = path, true
-		}
-		for _, a := range adds {
-			hostPort := net.JoinHostPort(a.m.Host, strconv.Itoa(a.m.Port))
-			// Only where no other key is pinned, as checked above: one
-			// pinned since fails the save, and the next read says so.
-			fresh, err := d.pins.AddPin(hostPort, a.pin)
-			if err != nil {
-				undo()
-				return errors.New("This device couldn't save those machines' host keys.")
-			}
-			if fresh {
-				added = append(added, pinAt{hostPort, a.pin})
-			}
-			a.m.KeyPath = p.keyPath
-			st.Machines = append(st.Machines, a.m)
-		}
-		// A request stopped meanwhile publishes nothing.
-		if !d.pairCommitHolds(p) {
-			undo()
-			return errPairStopped
-		}
-		published, err := d.publishMachines(st)
-		if !published {
-			undo()
-			return fmt.Errorf("This device couldn't save those machines (%w).", err)
-		}
-		if err != nil {
-			// Written, but the folder's sync failed: S and the pins stay
-			// with them.
-			log.Printf("pair request: the machines are saved, but: %v", err)
-		}
-		// A Cancel or sign-out that came while it was written: what this
-		// save wrote is taken back, as if it came first.
-		if !d.pairCommitHolds(p) {
-			st.Machines = before
-			if published, err := d.publishMachines(st); !published {
-				// Still written: S and the pins stay with them.
-				log.Printf("pair request: stopped, but the machines it saved couldn't be removed: %v", err)
-				return errPairStopped
-			}
-			undo()
-			return errPairStopped
+		if saved, err = d.commitPairDelivery(p, st, adds, profiled, results); err != nil {
+			return err
 		}
 	}
 	p.view.Machines = results
 	p.view.SaveFailed, p.view.Problem, p.saveProblem = false, "", ""
 	p.applied = got.Seq
 	p.view.RetryOpen = true
-	for _, a := range adds {
-		d.boards.allow(machineID(a.m))
+	for _, m := range saved {
+		d.boards.allow(machineID(m))
 	}
-	if len(adds) > 0 {
+	if len(saved) > 0 {
 		d.syncMachinesSoon()
 	}
 	return nil
+}
+
+// pairAdd is a machine of the list to save, with its pin.
+type pairAdd struct {
+	m             Machine
+	hostPort, pin string
+	result        int // its index in the results
+}
+
+// commitPairDelivery saves adds (each but those whose address is pinned to
+// another key, set to PairPinDiffers in results) and st's machines, a kept
+// one of which got its profile id when profiled, as savePairDelivery says,
+// and returns the machines it added.
+func (d *Desk) commitPairDelivery(p *pairRequest, st machineStore, adds []pairAdd, profiled bool, results []PairRequestMachine) (added []Machine, err error) {
+	if err := d.replayCommit(); err != nil {
+		return nil, err
+	}
+	keyWritten := false
+	if len(adds) > 0 && p.keyPath == "" {
+		path, err := pairing.SaveIdentity(d.dir, p.key.PrivatePEM)
+		if err != nil {
+			return nil, errors.New("This device couldn't save its key for those machines.")
+		}
+		p.keyPath, keyWritten = path, true
+	}
+	want := make(map[string]string, len(adds))
+	for _, a := range adds {
+		want[a.hostPort] = a.pin
+	}
+	staged := false
+	err = d.pins.AddPins(want, func(outcome map[string]bridge.PinOutcome, writePins func() error) error {
+		staged = true
+		for _, a := range adds {
+			if outcome[a.hostPort] == bridge.PinConflicting {
+				// Pinned to another key here: that pin stays.
+				r := &results[a.result]
+				r.Result, r.ID, r.ProfileID = PairPinDiffers, "", ""
+				continue
+			}
+			a.m.KeyPath = p.keyPath
+			added = append(added, a.m)
+		}
+		if len(added) == 0 && !profiled {
+			return nil
+		}
+		st.Machines = append(st.Machines, added...)
+		data, err := encodeMachines(st)
+		if err != nil {
+			return err
+		}
+		tmp, err := d.stageMachinesFile(data)
+		if err != nil {
+			return fmt.Errorf("This device couldn't save those machines (%w).", err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = os.Remove(tmp)
+			}
+		}()
+		// The commit point.
+		p.commitMu.Lock()
+		defer p.commitMu.Unlock()
+		if p.fenced.Load() {
+			return errPairStopped
+		}
+		held, err := d.account.WhileHolds(p.round, func() error {
+			if err := writePins(); err != nil {
+				return fmt.Errorf("This device couldn't save those machines' host keys (%w).", err)
+			}
+			published, err := d.commitMachinesFile(tmp)
+			if !published {
+				return fmt.Errorf("This device couldn't save those machines (%w).", err)
+			}
+			committed = true
+			if err != nil {
+				// In place, but the folder's sync failed: S and the pins
+				// stay with them.
+				log.Printf("pair request: the machines are saved, but: %v", err)
+			}
+			return nil
+		})
+		if !held {
+			return errPairStopped
+		}
+		return err
+	})
+	if !staged && err != nil {
+		err = fmt.Errorf("This device couldn't read its host keys (%w).", err)
+	}
+	if keyWritten && (err != nil || len(added) == 0) {
+		// Staged for machines that weren't saved: no machine uses it.
+		_ = os.Remove(p.keyPath)
+		p.keyPath = ""
+	}
+	if err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 // savedAtHostPort is the index of a machine saved at host and port, by any
@@ -712,9 +761,12 @@ func (p *pairRequest) fail(problem string) {
 }
 
 // fence stops p here before its op is waited for: a read in flight opens
-// no list and saves nothing (pairCommitHolds), and no reveal is sent.
+// no list and saves nothing, and no reveal is sent. A save at its commit
+// point (commitPairDelivery) finishes first, and stays.
 func (p *pairRequest) fence() {
+	p.commitMu.Lock()
 	p.fenced.Store(true)
+	p.commitMu.Unlock()
 	p.ask.Abandon()
 }
 

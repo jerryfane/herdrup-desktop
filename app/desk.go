@@ -202,11 +202,13 @@ type Desk struct {
 	dir string // per-user data directory
 
 	storeMu storeLock // serialises reads and writes of the desk's files
-	// writeMachines writes machines.json (publishMachines); nil is
-	// publishFile. Replaced in tests.
-	writeMachines func(path string, data []byte) (published bool, err error)
-	notifications notificationSettings
-	pairingMu     sync.Mutex
+	// stageMachines writes machines.json's next content beside it
+	// (stageFile), and commitMachines puts that in place (commitFile); nil
+	// is the default. Replaced in tests.
+	stageMachines  func(path string, data []byte) (tmp string, err error)
+	commitMachines func(tmp, path string) (published bool, err error)
+	notifications  notificationSettings
+	pairingMu      sync.Mutex
 
 	// relabeling is the guest relabels being sent, by profile (LocalID): at
 	// most one at a time each; true asks the one sending to send again once
@@ -542,26 +544,37 @@ func (d *Desk) load() (machineStore, error) {
 // left). d.storeMu must be held. machine.json is left as it was, so an
 // older build still finds its machine.
 func (d *Desk) store(st machineStore) error {
-	_, err := d.publishMachines(st)
-	return err
-}
-
-// publishMachines is store, and whether machines.json is st now: an error
-// with published true came after the rename (the folder's sync), so st is
-// what readers find.
-func (d *Desk) publishMachines(st machineStore) (published bool, err error) {
 	if err := d.replayCommit(); err != nil {
-		return false, err
+		return err
 	}
 	data, err := encodeMachines(st)
 	if err != nil {
-		return false, err
+		return err
 	}
-	write := d.writeMachines
-	if write == nil {
-		write = publishFile
+	tmp, err := d.stageMachinesFile(data)
+	if err != nil {
+		return err
 	}
-	return write(d.machinesPath(), data)
+	_, err = d.commitMachinesFile(tmp)
+	return err
+}
+
+// stageMachinesFile is stageFile for machines.json (stageMachines).
+func (d *Desk) stageMachinesFile(data []byte) (tmp string, err error) {
+	stage := d.stageMachines
+	if stage == nil {
+		stage = stageFile
+	}
+	return stage(d.machinesPath(), data)
+}
+
+// commitMachinesFile is commitFile for machines.json (commitMachines).
+func (d *Desk) commitMachinesFile(tmp string) (published bool, err error) {
+	commit := d.commitMachines
+	if commit == nil {
+		commit = commitFile
+	}
+	return commit(tmp, d.machinesPath())
 }
 
 // encodeMachines is machines.json's content for st.
@@ -572,27 +585,29 @@ func encodeMachines(st machineStore) ([]byte, error) {
 	return json.MarshalIndent(st, "", "  ")
 }
 
-// writeFileAtomic replaces path with data (publishFile).
+// writeFileAtomic replaces path with data: stageFile, then commitFile. A
+// reader finds the old file or the new one, never a torn one; a failure
+// before the rename leaves the old one. An error after it (the folder's
+// sync) means the new file is in place but may not outlive a crash.
 func writeFileAtomic(path string, data []byte) error {
-	_, err := publishFile(path, data)
+	tmp, err := stageFile(path, data)
+	if err != nil {
+		return err
+	}
+	_, err = commitFile(tmp, path)
 	return err
 }
 
-// publishFile replaces path with data: a temp file beside it, synced,
-// renamed over it, and the folder synced (syncDir). A reader finds the old
-// file or the new one, never a torn one. published is whether the rename
-// was done: a failure before it leaves the old file, and an error after it
-// (the folder's sync) means the new file is in place but may not outlive a
-// crash.
-func publishFile(path string, data []byte) (published bool, err error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return false, err
+// stageFile writes data to a temp file beside path, synced, for
+// commitFile: path is untouched. On an error nothing is left behind.
+func stageFile(path string, data []byte) (tmp string, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
 	}
-	tmp := path + ".tmp"
+	tmp = path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	_, err = f.Write(data)
 	if err == nil {
@@ -601,14 +616,24 @@ func publishFile(path string, data []byte) (published bool, err error) {
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
 	if err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
+}
+
+// commitFile renames tmp (stageFile's) over path and syncs the folder
+// (syncDir). published is whether the rename was done: a failure before it
+// leaves the old file (and removes tmp), and an error after it (the
+// folder's sync) means the new file is in place but may not outlive a
+// crash.
+func commitFile(tmp, path string) (published bool, err error) {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return false, err
 	}
-	return true, syncDir(dir)
+	return true, syncDir(filepath.Dir(path))
 }
 
 // syncDir makes the names written in dir durable (an fsync of the folder).

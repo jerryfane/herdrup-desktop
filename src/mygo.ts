@@ -988,6 +988,10 @@ export interface PairRequestMachine {
    */
   profileId?: string;
   label: string;
+  /**
+   * Host, Port and User: the profile's address as saved (or kept) here,
+   * else the list's.
+   */
   host: string;
   port: number;
   user: string;
@@ -1002,7 +1006,8 @@ export interface PairRequestMachine {
   reason?: string;
   /**
    * Reach is a saved machine's connection try: "" until tried, then
-   * PairOnline, PairUnreachable, PairRefused (Problem) or PairRemoved.
+   * PairOnline, PairUnreachable, PairRefused (Problem), PairRemoved or
+   * PairChanged.
    */
   reach?: string;
   problem?: string;
@@ -1704,11 +1709,7 @@ export const Desk = {
   accountSignIn(provider: string): Promise<void> {
     return call("Desk.AccountSignIn", provider);
   },
-  /**
-   * AccountSignOut ends the session. It returns once a pair request's save
-   * that was writing meanwhile has taken back what it wrote
-   * (savePairDelivery), so nothing the session asked for is saved after.
-   */
+  /** AccountSignOut ends the session. */
   accountSignOut(): Promise<AccountState> {
     return call("Desk.AccountSignOut");
   },

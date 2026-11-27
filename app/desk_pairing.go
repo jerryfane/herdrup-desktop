@@ -114,19 +114,17 @@ func (d *Desk) DiscardPairingLink(id string) {
 var pairingHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
 
 // pairHostKeyTypes are the host key types another device's approval may pin
-// (desk_pair_request.go): plain keys, never certificates.
-var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoRSA, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
+// (desk_pair_request.go), as pair-v1 allows: plain ed25519 and ECDSA keys,
+// never RSA, DSA or a certificate.
+var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
 
 // hostKeyAlgorithms is what a connection to m offers for the host key: SSH's
 // defaults (nil) for a machine not paired; for one another device approved,
-// the algorithms of the key type it pinned (an RSA key signs with SHA-2);
-// else herdr pair's.
+// only the key type it pinned (one of pairHostKeyTypes); else herdr pair's.
 func hostKeyAlgorithms(m Machine) []string {
 	switch {
 	case !m.Paired:
 		return nil
-	case m.HostKeyType == ssh.KeyAlgoRSA:
-		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
 	case m.HostKeyType != "":
 		return []string{m.HostKeyType}
 	}
