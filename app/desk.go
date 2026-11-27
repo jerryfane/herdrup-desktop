@@ -1266,7 +1266,7 @@ func (d *Desk) session(ctx context.Context, l *link, m Machine, password, label 
 	} else {
 		cfg.Password = password
 	}
-	c, err := bridge.Dial(ctx, cfg)
+	c, err := dialWithPinFallback(ctx, cfg)
 	if err != nil {
 		return false, err
 	}

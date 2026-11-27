@@ -143,6 +143,61 @@ func hostKeyAlgorithms(m Machine) []string {
 	return pairingHostKeyAlgorithms
 }
 
+// sessionHostKeyFallback are the per-type algorithms tried one by one when a
+// non-Paired machine with a stored pin hits HostKeyChangedError under Go's
+// default preference order (which prefers ECDSA over ed25519). If the host
+// added another host key while keeping its pinned one, one of these finds it
+// without ever repinning.
+var sessionHostKeyFallback = []string{
+	ssh.KeyAlgoED25519,
+	ssh.CertAlgoED25519v01,
+	ssh.KeyAlgoECDSA256,
+	ssh.CertAlgoECDSA256v01,
+	ssh.KeyAlgoECDSA384,
+	ssh.CertAlgoECDSA384v01,
+	ssh.KeyAlgoECDSA521,
+	ssh.CertAlgoECDSA521v01,
+	ssh.KeyAlgoRSASHA512,
+	ssh.CertAlgoRSASHA512v01,
+	ssh.KeyAlgoRSASHA256,
+	ssh.CertAlgoRSASHA256v01,
+	ssh.KeyAlgoRSA,
+	ssh.CertAlgoRSAv01,
+}
+
+// dialWithPinFallback dials cfg; when no explicit HostKeyAlgorithms were set
+// (a non-Paired machine using SSH defaults) and the server's preferred key
+// misses the stored pin (HostKeyChangedError), it tries each algorithm in
+// sessionHostKeyFallback using a read-only pin checker (pairPins, never
+// repinning). Any error other than HostKeyChangedError or a host-key
+// AlgorithmNegotiationError stops the search immediately, preserving auth or
+// network failures; if none matches, the initial HostKeyChangedError returns.
+func dialWithPinFallback(ctx context.Context, cfg bridge.Config) (*bridge.Client, error) {
+	c, err := bridge.Dial(ctx, cfg)
+	var changed *bridge.HostKeyChangedError
+	if len(cfg.HostKeyAlgorithms) > 0 || !errors.As(err, &changed) {
+		return c, err
+	}
+	if cfg.Pins != nil {
+		cfg.Pins = &pairPins{PinStore: cfg.Pins}
+	}
+	for _, algo := range sessionHostKeyFallback {
+		tryCfg := cfg
+		tryCfg.HostKeyAlgorithms = []string{algo}
+		tc, terr := bridge.Dial(ctx, tryCfg)
+		if terr == nil {
+			return tc, nil
+		}
+		var other *bridge.HostKeyChangedError
+		var none *ssh.AlgorithmNegotiationError
+		if errors.As(terr, &other) || (errors.As(terr, &none) && none.What == "host key") {
+			continue
+		}
+		return nil, terr
+	}
+	return nil, err
+}
+
 // profilePin is the pin a machine another device's approval paired keeps
 // in its profile (Machine.HostKeyPin): its connections check that key, and
 // never pin another on first use.
