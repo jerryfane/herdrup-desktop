@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -143,35 +144,42 @@ func hostKeyAlgorithms(m Machine) []string {
 	return pairingHostKeyAlgorithms
 }
 
-// sessionHostKeyFallback are the per-type algorithms tried one by one when a
-// non-Paired machine with a stored pin hits HostKeyChangedError under Go's
-// default preference order (which prefers ECDSA over ed25519). If the host
-// added another host key while keeping its pinned one, one of these finds it
-// without ever repinning.
-var sessionHostKeyFallback = []string{
-	ssh.KeyAlgoED25519,
-	ssh.CertAlgoED25519v01,
-	ssh.KeyAlgoECDSA256,
-	ssh.CertAlgoECDSA256v01,
-	ssh.KeyAlgoECDSA384,
-	ssh.CertAlgoECDSA384v01,
-	ssh.KeyAlgoECDSA521,
-	ssh.CertAlgoECDSA521v01,
-	ssh.KeyAlgoRSASHA512,
-	ssh.CertAlgoRSASHA512v01,
-	ssh.KeyAlgoRSASHA256,
-	ssh.CertAlgoRSASHA256v01,
-	ssh.KeyAlgoRSA,
-	ssh.CertAlgoRSAv01,
+// sessionHostKeyFallback returns the bounded per-type algorithms tried one by
+// one when a non-Paired machine with a stored pin hits HostKeyChangedError
+// under Go's default preference order (which prefers ECDSA over ed25519 and
+// ML-DSA). Derived from ssh.SupportedAlgorithms().HostKeys so every key and
+// certificate type the SSH library can negotiate by default (including ML-DSA)
+// is covered, plus legacy ssh-rsa plain/cert for older hosts.
+func sessionHostKeyFallback() []string {
+	algos := ssh.SupportedAlgorithms().HostKeys
+	for _, legacy := range []string{ssh.KeyAlgoRSA, ssh.CertAlgoRSAv01} {
+		if !slices.Contains(algos, legacy) {
+			algos = append(algos, legacy)
+		}
+	}
+	return algos
+}
+
+// hostKeyRetryable reports whether a dial failure means this host-key type did
+// not match the stored pin or was not offered by the server, so trying the next
+// candidate host-key algorithm is warranted. Any other error (such as auth or
+// key-exchange failure after matching the pin) ends the search immediately.
+func hostKeyRetryable(err error) bool {
+	var changed *bridge.HostKeyChangedError
+	if errors.As(err, &changed) {
+		return true
+	}
+	var none *ssh.AlgorithmNegotiationError
+	return errors.As(err, &none) && none.What == "host key"
 }
 
 // dialWithPinFallback dials cfg; when no explicit HostKeyAlgorithms were set
 // (a non-Paired machine using SSH defaults) and the server's preferred key
 // misses the stored pin (HostKeyChangedError), it tries each algorithm in
 // sessionHostKeyFallback using a read-only pin checker (pairPins, never
-// repinning). Any error other than HostKeyChangedError or a host-key
-// AlgorithmNegotiationError stops the search immediately, preserving auth or
-// network failures; if none matches, the initial HostKeyChangedError returns.
+// repinning). Any error other than hostKeyRetryable stops the search
+// immediately, preserving auth or network failures; if none matches, the
+// initial HostKeyChangedError returns.
 func dialWithPinFallback(ctx context.Context, cfg bridge.Config) (*bridge.Client, error) {
 	c, err := bridge.Dial(ctx, cfg)
 	var changed *bridge.HostKeyChangedError
@@ -181,16 +189,14 @@ func dialWithPinFallback(ctx context.Context, cfg bridge.Config) (*bridge.Client
 	if cfg.Pins != nil {
 		cfg.Pins = &pairPins{PinStore: cfg.Pins}
 	}
-	for _, algo := range sessionHostKeyFallback {
+	for _, algo := range sessionHostKeyFallback() {
 		tryCfg := cfg
 		tryCfg.HostKeyAlgorithms = []string{algo}
 		tc, terr := bridge.Dial(ctx, tryCfg)
 		if terr == nil {
 			return tc, nil
 		}
-		var other *bridge.HostKeyChangedError
-		var none *ssh.AlgorithmNegotiationError
-		if errors.As(terr, &other) || (errors.As(terr, &none) && none.What == "host key") {
+		if hostKeyRetryable(terr) {
 			continue
 		}
 		return nil, terr

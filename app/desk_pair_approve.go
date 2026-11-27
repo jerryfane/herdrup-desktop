@@ -330,7 +330,7 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 		}
 	}
 	pins := &pairPins{PinStore: d.pinsFor(m)}
-	c, done, err := d.dialMachine(ctx, m, pins, nil)
+	c, done, err := d.dialMachine(ctx, m, pins, nil, false)
 	var changed *bridge.HostKeyChangedError
 	switch {
 	case err != nil && pins.missing.Load():
@@ -338,15 +338,11 @@ func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(
 	case errors.As(err, &changed):
 		for _, plain := range pairHostKeyOrder {
 			for _, algo := range [...]string{plain, pairHostKeyTypes[plain]} {
-				tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo})
-				var other *bridge.HostKeyChangedError
-				var none *ssh.AlgorithmNegotiationError
+				tc, tdone, terr := d.dialMachine(ctx, m, pins, []string{algo}, false)
 				switch {
 				case terr == nil:
 					return tc, tdone, nil
-				case errors.As(terr, &other):
-					continue
-				case errors.As(terr, &none) && none.What == "host key":
+				case hostKeyRetryable(terr):
 					continue
 				}
 				// The key was the pinned one and the session failed after

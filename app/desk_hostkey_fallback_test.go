@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
@@ -200,5 +201,62 @@ func TestSessionSurfacesAuthFailureAfterPinFallback(t *testing.T) {
 	var changed *bridge.HostKeyChangedError
 	if errors.As(err, &changed) {
 		t.Fatalf("auth failure masked as HostKeyChangedError: %v", err)
+	}
+	if !isAuthError(err) {
+		t.Fatalf("err = %v, want isAuthError == true", err)
+	}
+}
+
+// A non-Paired host pinned on ML-DSA-44 that later adds ECDSA (which Go
+// negotiates ahead of ML-DSA by default) still connects through both
+// Desk.session and ownerClient without changing the pin.
+func TestSessionConnectsToMLDSAPinnedHostThatAddedECDSA(t *testing.T) {
+	dir := t.TempDir()
+	d := newDesk(dir)
+	keyPath, clientPub := writeTestClientKey(t, dir)
+
+	priv, err := mldsa.GenerateKey(mldsa.MLDSA44())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ml, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ec := ecdsaHostKey(t)
+	host, port, _ := startFakeHost(t, ml, []ssh.Signer{ec}, clientPub, "")
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	wantPin := bridge.Fingerprint(ml.PublicKey())
+	if err := d.pins.SetPin(addr, wantPin); err != nil {
+		t.Fatal(err)
+	}
+
+	m := Machine{Nickname: "pq-box", Host: host, Port: port, User: "dev", KeyPath: keyPath}
+	if err := d.Connect(m, ""); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { d.Disconnect() })
+	waitFor(t, "mldsa-pinned host connected after adding ECDSA", func() bool {
+		return d.liveBridge(m) != nil
+	})
+	gotKey, _ := d.liveBridge(m).HostKey()
+	if got := bridge.Fingerprint(gotKey); got != wantPin {
+		t.Fatalf("session connected with key %s, want pinned %s", got, wantPin)
+	}
+
+	d.Disconnect()
+	ecClient, done, err := d.ownerClient(context.Background(), m)
+	if err != nil {
+		t.Fatalf("ownerClient: %v", err)
+	}
+	defer done()
+	if ecClient == nil {
+		t.Fatal("ownerClient returned nil client")
+	}
+
+	gotPin, ok, err := d.pins.Pin(addr)
+	if err != nil || !ok || gotPin != wantPin {
+		t.Fatalf("pin changed: %q ok=%v err=%v, want %q", gotPin, ok, err, wantPin)
 	}
 }
