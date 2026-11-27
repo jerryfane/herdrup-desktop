@@ -38,7 +38,7 @@ export interface TranscriptPage {
   *  it on a later page of the same session (#555): sameHandovers. */
  relay_entries?: boolean;
 }
-export interface TranscriptModel { id: string; provider: string; thinking_level?: string | null; thinking_auto?: boolean | null }
+export interface TranscriptModel { id: string; provider: string; harness?: string | null; thinking_level?: string | null; thinking_auto?: boolean | null }
 export interface TranscriptRecap { turn_id: string; text: string }
 /** omp's `task` subagent, as herdr reports it (TranscriptSubagent); a guest gets no `task`. */
 export interface TranscriptSubagent {
@@ -82,15 +82,28 @@ export function subagentsSummary(agents: TranscriptSubagent[]): string {
  const running = agents.filter(agent => agent.status === "running").length;
  return running ? `${running} running` : `${agents.length - running} finished`;
 }
-/** The chat's model line, as AgentTranscript.swift TranscriptModel words it: "claude-opus-5-5 · high",
- *  "high (auto)" once omp's auto picked a level, "auto" before it has, the id alone without a level. */
-export function modelLine(model: TranscriptModel): { label: string; accessibilityLabel: string } {
+/** The chat's model line, as AgentTranscript.swift TranscriptModel words it:
+ *  "omp · claude-opus-5-5 · high", "agy · Gemini 4 Neon · high", "high (auto)" once omp's auto
+ *  picked a level, "auto" before it has, or without harness/effort when absent. */
+export function modelLine(model: TranscriptModel, fallbackHarness?: string | null): { label: string; accessibilityLabel: string } {
+ const rawHarness = (model.harness ?? fallbackHarness ?? "").trim().toLowerCase();
+ const harness = rawHarness || null;
  const level = model.thinking_level || null, auto = !!model.thinking_auto;
  const effort = level ? (auto ? `${level} (auto)` : level) : auto ? "auto" : null;
+ const parts = [harness, model.id, effort].filter(Boolean);
  return {
-  label: effort ? `${model.id} · ${effort}` : model.id,
-  accessibilityLabel: `Model: ${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
+  label: parts.join(" · "),
+  accessibilityLabel: `Model: ${harness ? `${harness}, ` : ""}${model.provider}, ${model.id}` + (effort ? `, effort ${effort}` : ""),
  };
+}
+/** First non-empty line of a running step's detail (e.g. a shell command), for the collapsed preview. */
+export function runningCommandPreview(detail?: string | null): string | null {
+ if (!detail) return null;
+ for (const line of detail.split(/\r?\n/)) {
+  const trimmed = line.trim();
+  if (trimmed) return trimmed;
+ }
+ return null;
 }
 /** A live (`after`) page's entries the chat takes (TranscriptStore.mergeAfter, herdrup #684, #710,
  *  #736). When the pane's remembered non-owner prompts change, herdr re-sends earlier entries

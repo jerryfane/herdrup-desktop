@@ -45,11 +45,11 @@ export class ChatTail {
   return row;
  }
 
- /** ChatView.sessionFooter's model line: the model omp runs and its effort (ChatView.swift
+ /** ChatView.sessionFooter's model line: the harness, model and effort (ChatView.swift
   *  chat-model), null when the page names none. */
- model(model: TranscriptModel | null | undefined): HTMLElement | null {
+ model(model: TranscriptModel | null | undefined, fallbackHarness?: string | null): HTMLElement | null {
   if (!model?.id) return null;
-  const { label, accessibilityLabel } = modelLine(model);
+  const { label, accessibilityLabel } = modelLine(model, fallbackHarness);
   const line = this.modelRow ??= el("div", "chat-model");
   if (line.textContent !== label) line.textContent = label;
   line.setAttribute("aria-label", accessibilityLabel);

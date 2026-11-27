@@ -482,6 +482,18 @@ button.ask-form-other-caption { cursor:pointer; }
    motion. */
 .chat-working { box-sizing: border-box; display: flex; align-items: center; gap: 9px; width: min(100%, calc(var(--gram-column, 720px) - 32px)); margin: 0 auto 10px; padding: 6px 0 6px 4px; color: var(--color-text-dim); font: 400 calc(13px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
 .chat-working-dots { display: flex; flex: none; gap: 4px; }
+.chat-running-steps { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 0 6px; padding-left: 14px; }
+.chat-work-steps[open] + .chat-running-steps { display: none; }
+.chat-running-step { display: flex; flex-direction: column; gap: 3px; }
+.chat-running-step > summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--color-text-dim); font: 400 calc(13.5px * var(--chat-text-scale, 1))/var(--leading-app) var(--font-app); }
+.chat-running-step > summary::-webkit-details-marker { display: none; }
+.chat-running-step > summary > code { flex: none; font: 600 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); color: var(--chat-tool-title, var(--status-working)); }
+.chat-running-step-intent { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-running-cmd { margin-left: 26px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--color-text-faint); font: 400 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); }
+.chat-running-step[open] > .chat-running-cmd { display: none; }
+.chat-running-step > pre { margin: 2px 0 0 26px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-faint); font: 400 calc(11.5px * var(--chat-text-scale, 1))/var(--leading-machine) var(--font-machine); }
+.chat-working-dots.compact { gap: 3px; }
+.chat-working-dots.compact .chat-working-dot { width: 4px; height: 4px; }
 .chat-working-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--status-working); opacity: 0.3; animation: chat-working-dot 1.396s linear infinite both; }
 .chat-working-dot:nth-child(2) { animation-delay: 0.2s; }
 .chat-working-dot:nth-child(3) { animation-delay: 0.4s; }
