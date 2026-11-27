@@ -8,7 +8,7 @@ import { GuestError } from "../src/webguest/errors";
 import { generateIdentity, MemoryIdentityStore, staticKey } from "../src/webguest/identity";
 import { decodeInviteJSON, Invite } from "../src/webguest/invite";
 import { REFRESH_AHEAD_MS, type StatementSource } from "../src/webguest/accountStatement";
-import { acceptInvite, closeError, guestLink, GuestTransport, type Access } from "../src/webguest/transport";
+import { acceptInvite, closeError, guestLink, GuestTransport, openShare, type Access } from "../src/webguest/transport";
 import { AccountServiceError, SignedOutError } from "../src/web/account";
 import { createGuestDesk } from "../src/web/desk";
 import { events } from "../src/web/events";
@@ -159,6 +159,7 @@ test("every statement a host refuses as stale is dropped, a retry's too: the nex
  const key = await identity();
  const opens: ((s: StatementSource) => Promise<unknown>)[] = [
   s => acceptInvite(inviteFor(relay, true), key, "Browser", { account: s }),
+  s => openShare(accessOn(relay), key, s),
   s => { const t = new GuestTransport(guestLink(accessOn(relay, true), s), key); return t.call("ping").finally(() => t.close()); },
  ];
  for (const open of opens) {

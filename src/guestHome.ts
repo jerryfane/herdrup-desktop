@@ -13,13 +13,12 @@ import "./settings.css";
 type GuestState = NonNullable<ConnState["guest"]>;
 
 /** Leave share's words. A share herdr bound to the HerdrUp account (Access.accountBound, #700)
- *  leaves every device signed in to it where leaving lets the account's share go too (everywhere:
- *  the desktop's forgetGuestConnection, which goes by accountBound, not by Access.accountShare); a
- *  plain one, or where Leave forgets only this device's grant (the browser's, until it syncs the
- *  account's shares), this device. */
-export function leaveWords(access: Pick<GuestState["access"], "machineLabel" | "agentName" | "ownerName" | "accountBound">, everywhere = true): { title: string; message: string; note: string } {
+ *  leaves every device signed in to it: leaving deletes the account's item (forgetGuestConnection,
+ *  the desktop's and the browser's, which go by accountBound, not by Access.accountShare); a plain
+ *  one, this device. */
+export function leaveWords(access: Pick<GuestState["access"], "machineLabel" | "agentName" | "ownerName" | "accountBound">): { title: string; message: string; note: string } {
  const back = `To come back, ${access.ownerName} has to send a new invite.`;
- return access.accountBound && everywhere
+ return access.accountBound
   ? { title: `Leave ${access.machineLabel} on all your devices?`, message: `${access.agentName} disappears from every device signed in to your HerdrUp account.`, note: `You stop seeing ${access.agentName} on all your devices. ${back}` }
   : { title: `Leave ${access.machineLabel}?`, message: `${access.agentName} disappears from this device.`, note: `You stop seeing ${access.agentName}. ${back}` };
 }
@@ -38,7 +37,7 @@ export interface GuestHomeDeps {
  * list under the bar, and Settings (App/GuestSettingsView.swift) in the detail column. */
 export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: GuestHomeDeps, callbacks: {
  hosts(): void; open(target: AgentTarget): void;
-}, options: { settings: boolean; account?: () => HTMLElement | null; leavesAccount?: boolean } = { settings: true }) {
+}, options: { settings: boolean; account?: () => HTMLElement | null; shared?: () => HTMLElement | null } = { settings: true }) {
  const navigation = node("section", "guest-navigation"); navigation.hidden = true;
  const settings = node("section", "guest-settings settings-detail"); settings.hidden = true;
  // Where the owner's roster sits: between the top bar and the sidebar's foot (the tab bar).
@@ -188,7 +187,10 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
    const accountCard = node("div", "guest-card guest-settings-card guest-account"); accountCard.append(account);
    accountPart.push(node("h3", "guest-settings-section", ACCOUNT_TITLE), accountCard);
   }
-  body.append(card, ...accountPart, ...shareDetails(guest));
+  // The account's shares (sharedWithYou.ts sharedSection, the browser guest's: web/main.ts): every
+  // share in reach from here, each opening in place of this one. It shows and hides itself.
+  const shared = options.shared?.() ?? null;
+  body.append(card, ...accountPart, ...(shared ? [shared] : []), ...shareDetails(guest));
   settings.replaceChildren(node("h1", "settings-page-title", "Settings"), body);
  }
 
@@ -205,7 +207,7 @@ export function initGuestHome(sidebar: HTMLElement, detail: HTMLElement, deps: G
   const fingerprint = node("span", "", guest.fingerprint || "Unavailable"); fingerprint.dataset.testid = "guest-settings-fingerprint";
   device.append(node("span", "", "Device key"), fingerprint);
   const leave = node("button", "guest-leave button-destructive button-large", "Leave share"); leave.type = "button"; leave.dataset.testid = "guest-leave";
-  const words = leaveWords(access, options.leavesAccount ?? true);
+  const words = leaveWords(access);
   leave.onclick = () => confirmLeave(words.title, words.message, "Leave share", id);
   return [node("h3", "guest-settings-section", "Shared with you"), shared, node("h3", "guest-settings-section", "This device"), device,
    node("p", "guest-settings-note", `${access.ownerName} sees the same key next to your name, so you can compare them.`), leave,

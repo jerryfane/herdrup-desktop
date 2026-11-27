@@ -1,13 +1,14 @@
 // SHARED WITH YOU (account-linked shares, #700; owner pick A, frames com-g4/com-g5): the host
-// home's section of the agents others share with you (the desktop's hosts.ts). One row per
-// machine: the grants this device holds and the account's synced shares it doesn't, "<machine>"
-// over "<agents> · shared by <owner>". A machine this device holds a grant for opens as today
-// (connectGuest); one known only from the account opens with openSyncedShare, with nothing to
-// accept.
+// home's section of the agents others share with you, the same on the desktop (hosts.ts) and in the
+// browser (web/hosts.ts). One row per machine: the grants this device holds and the account's
+// synced shares it doesn't, "<machine>" over "<agents> · shared by <owner>". A machine this device
+// holds a grant for opens as today (connectGuest); one known only from the account opens with
+// openSyncedShare, with nothing to accept.
 import { grantKey } from "./grantKey";
 import { Desk } from "./mygo";
-import type { Access, SyncedShare } from "./mygo";
+import type { Access, ConnState, SyncedShare } from "./mygo";
 import { accountShareWords } from "./notices";
+import { connectionChanged } from "./shellModel";
 import { element, hostGlyph, hostRowChevron, hostRowIcon, hostRowLines, hostSection, type SymbolRenderer } from "./hostHome";
 import usersIcon from "../third_party/phosphor/web/users.svg?url";
 
@@ -79,13 +80,21 @@ export function syncedSharesNow(signedIn: boolean): Promise<SyncedShare[]> {
  return signedIn ? Desk.syncedShares().catch(() => []) : Promise.resolve([]);
 }
 
+/** Whether the list drawn while previous was the connection names something next changed: another
+ *  share opened (connectionChanged), or the open share's machine named anew by its owner (its
+ *  saved grant relabeled from the hello, herdr #519: desk_guest.go guestRelabeled, web/desk.ts
+ *  connectGuest). */
+export function sharedListStale(previous: Pick<ConnState, "guest">, next: Pick<ConnState, "guest">): boolean {
+ return connectionChanged(previous, next) || (next.guest !== undefined && next.guest.access.machineLabel !== previous.guest?.access.machineLabel);
+}
+
 /** The section, drawn again with draw(): the native sharedSection rows (person.2, the machine over
  *  sharedLine, the chevron) and the account's note. A machine with one share is one row that opens
  *  it; one with more is its row (the machine over who shared it), then a row per share, the agent's
  *  name, each opening its own. Picking a row opens it (openShared), then opened(); a failure goes
- *  to report. busy keeps the rows disabled while another connect runs. */
-export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false) {
- const { root, rows } = hostSection("SHARED WITH YOU"); root.hidden = true;
+ *  to report. busy keeps the rows disabled while another connect runs. label: the heading. */
+export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false, label = "SHARED WITH YOU") {
+ const { root, rows } = hostSection(label); root.hidden = true;
  const note = element("p", "host-home-note host-shared-note"); note.hidden = true;
  root.append(note);
  let version = 0;

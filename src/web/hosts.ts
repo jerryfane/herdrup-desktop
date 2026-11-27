@@ -23,6 +23,7 @@ import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
 import { approvalParts, approvedMachines, machineAccess, machineSection, noticeCard, ownerLayout, thisBrowser, type MachineSection, type RowGlyphs } from "./ownerScreen";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
+import { sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
 /** The page starts over for whoever is signed in now (boot.ts chooses again): a sign-out, another
  *  account, or the person asking for the guest page (a choice, which takes the place of the page
@@ -74,7 +75,22 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   if (at !== accountVersion) return;
   header.showAccount(state, providers === null || providers.length > 0);
   header.title("Welcome back", state?.signedIn && state.displayHint ? `Signed in · ${state.displayHint}` : "Signed in");
+  signedIn = state?.signedIn === true;
+  void refreshShared();
  };
+ // SHARED WITH YOU (sharedWithYou.ts), as on the desktop's host home: the grant this browser
+ // holds and the account's synced shares (#700).
+ let signedIn = false;
+ const sharedProblem = el("p", "host-home-message"); sharedProblem.setAttribute("role", "alert"); sharedProblem.hidden = true;
+ const shared = sharedSection(symbol, showAgents, error => { sharedProblem.textContent = errorText(error); sharedProblem.hidden = false; }, () => opening !== null);
+ shared.root.append(sharedProblem);
+ let sharedVersion = 0;
+ async function refreshShared() {
+  const at = ++sharedVersion;
+  const [grants, synced] = await Promise.all([Desk.sharedConnections().catch(() => []), syncedSharesNow(signedIn)]);
+  if (at === sharedVersion) await shared.draw(sharedMachines(grants, synced));
+ }
+ events.syncedSharesChanged.on(() => { void refreshShared(); });
  events.accountChanged.on(() => { void refreshAccount(); });
  void refreshAccount();
 
@@ -141,9 +157,9 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
    home.replaceChildren(header.root);
   } else if (layout.view === "list") {
    shown = machineSection(layout.record, statuses, glyphs, opening?.hostID ?? null, spinner, m => open(m));
-   home.replaceChildren(header.root, shown.root);
+   home.replaceChildren(header.root, shared.root, shown.root);
   } else {
-   home.replaceChildren(header.root, ...approvalParts(layout, browser, { again: begin, guestInstead: () => startOver(true) }, spinner));
+   home.replaceChildren(header.root, shared.root, ...approvalParts(layout, browser, { again: begin, guestInstead: () => startOver(true) }, spinner));
   }
   probe();
  }

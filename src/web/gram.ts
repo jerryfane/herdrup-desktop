@@ -5,6 +5,7 @@
 // request is its own relay connect, so the poll keeps Go's cadence (desk_guest.go guestStatusPoll:
 // the list, the chat and Gram share the relay's 30 connects a minute).
 
+import { grantKey } from "../grantKey";
 import type { Desk as GoDesk, GramAgent, GramFile, GramMessage, GramSnapshot, GuestGramSnapshot, SavedGram } from "../mygo";
 import { emit } from "./events";
 import { fileForPath, forgetFile, pickFiles, registerFiles } from "./files";
@@ -208,12 +209,10 @@ function publish() {
 // ---- The guest's one Gram (#697, desk_guest_gram_hub.go) over this browser's one grant ----
 
 const SEP = "\u001f";
-/** This browser's grant id, as Go's Access.ID(): "<host id>/<guest id>". */
-function grantID(link: WebLink): string { return `${link.access.endpoint.hostID}/${link.access.guestID}`; }
 /** A message id the page knows ("<grant>\x1f<id>") as this grant's own. */
 function own(id: string): string { return id.includes(SEP) ? id.slice(id.indexOf(SEP) + 1) : id; }
 /** A message's id as the page knows it in the guest's Gram ("<grant>\x1f<id>"); the owner's as it is. */
-function shownID(id: string): string { return g.link && !g.owner ? grantID(g.link) + SEP + id : id; }
+function shownID(id: string): string { return g.link && !g.owner ? grantKey(g.link.access) + SEP + id : id; }
 /** A key the page passed, as download events name it: a prefixed key as it is, a bare id shownID. */
 function shownKey(key: string): string { return key.includes(SEP) ? key : shownID(key); }
 /** The machine an owner's key names (a Saved row's "<hostID>\x1f<id>"); null for a feed row's. */
@@ -224,7 +223,7 @@ function savedRowKey(s: OwnerSavedGram): string { return s.hostID + SEP + s.id; 
 function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
  const link = g.owner ? null : g.link;
  if (!link) return { active: false, grants: [], recipient: "", saved: s.saved };
- const id = grantID(link), prefix = id + SEP;
+ const id = grantKey(link.access), prefix = id + SEP;
  const gram = link.features().gram;
  const access = link.access;
  return {
@@ -241,10 +240,10 @@ export const guestGramDesk: Partial<DeskFns> = {
  guestGramState: async () => guestSnapshot(),
  async guestGramSetVisible(shown: boolean) { await gramDesk.gramSetVisible!(shown); },
  async guestGramSetRecipient(grant: string) {
-  if (!g.link || grant !== grantID(g.link)) throw new Error("This shared agent doesn't share Gram");
+  if (!g.link || grant !== grantKey(g.link.access)) throw new Error("This shared agent doesn't share Gram");
  },
  async guestGramLoadOlder(grants: string[]) {
-  if (!g.link || !grants.includes(grantID(g.link))) return false;
+  if (!g.link || !grants.includes(grantKey(g.link.access))) return false;
   return gramDesk.gramLoadOlder!();
  },
  async guestGramRefresh() { await gramDesk.gramRefresh!(); },

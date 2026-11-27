@@ -1,19 +1,20 @@
 // The browser's guest Desk: the guest paths of the Go Desk the guest screens call (desk_guest.go,
 // desk_guest_invite.go, desk_guest_answers.go, desk_interaction.go, desk_interaction_compose.go),
-// on webguest's GuestTransport. One browser holds one grant (storage.ts). Method names, arguments,
-// results and error texts are Go's; events go out through events.ts as Go broadcasts them.
+// on webguest's GuestTransport. A browser holds a grant per share (storage.ts) and connects one
+// at a time: opening another never leaves the one it held. Method names, arguments, results and
+// error texts are Go's; events go out through events.ts as Go broadcasts them.
 
 import topicsRetrySeconds from "../../app/topics_retry.json";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type {
  Access as PageAccess, AgentTarget, AgentView, AskFormValue, AvatarPhoto, BoardUpdate, ChatAnswerFormReply, ChatAnswerReply, ChatDismissReply, ConnState, Desk as GoDesk, Features, GuestChat, GuestConnection, GuestInvitation, GuestMenuKeyReply,
- GuestShareDetails, PaneMenuOptions, PaneStreamFrame, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
+ GuestShareDetails, PaneMenuOptions, PaneStreamFrame, SyncedShare, TerminalHistoryPage, TopicSendReply, TopicsUpdate,
 } from "../mygo";
 import { GuestError, HerdrAPIError, NotSentError, notSent, timedOut } from "../webguest/errors";
 import { existingIdentity, IndexedDBIdentityStore, loadIdentity, type IdentityStore } from "../webguest/identity";
 import { resolveInvite, shareLabel, type SealedInviteFetch } from "../webguest/invite";
 import type { StaticKey } from "../webguest/noise";
-import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, type WebSocketFactory } from "../webguest/transport";
+import { acceptInvite, type Access, type Features as TransportFeatures, guestLink, GuestTransport, openShare, type WebSocketFactory } from "../webguest/transport";
 import { fromB64url } from "../webguest/b64url";
 import { ownerLink } from "../webguest/owner";
 import type { StatementSource } from "../webguest/accountStatement";
@@ -30,7 +31,8 @@ import { closeAgent, selectSheet } from "./agentActionsDesk";
 import { findTerminal } from "./terminalsDesk";
 import { StartedAgents } from "./startedAgents";
 import { boundShareStatements } from "./statements";
-import type { AcceptedAccess, ShareAdder } from "./shares";
+import type { AcceptedAccess, RemoteShare, SharesChange, ShareSync } from "./shares";
+import { grantKey } from "../grantKey";
 import { panePromptAttachments } from "./gram";
 import { messageTooLong, ompHarness, orderedTopics, topicSendDelivery, topicsNotOffered, topicsProblem } from "../topicsModel";
 import { agentView, PEER_NOT_SHARED, setSharedAgents, setView, type GuestView } from "./view";
@@ -237,6 +239,34 @@ export function pageAccess(a: Access): PageAccess {
  };
 }
 
+/** The account's shares as the Desk gives them (SyncedShare): the item's fields, "" or false for
+ *  one it hasn't, and local when this browser holds a grant for that share (held). */
+export function syncedSharesOf(shares: RemoteShare[], held: Access[]): SyncedShare[] {
+ const ids = new Set(held.map(grantKey));
+ return shares.map(s => ({
+  id: s.id, relay: s.body.relay, hostID: s.body.host_id, nodePub: s.body.node_pub, guestID: s.body.guest_id,
+  agentName: s.body.agent_name ?? "", ownerName: s.body.owner_name ?? "", machineLabel: s.body.machine_label ?? "", shareGram: s.body.share_gram ?? false,
+  local: ids.has(s.id),
+ }));
+}
+
+/** held as the page lists them (Desk.sharedConnections), in their order, each naming its machine
+ *  as its host's latest hello did: the label on the host's grant a hello named last (the highest
+ *  labelSeq), whichever of them comes first (the one opened last), as a sibling opened since may
+ *  hold an older name until its own hello. Grants saved before labels were numbered come after
+ *  any numbered one, then by acceptedAt, then by grant key: never by the order they are listed
+ *  in. Each grant keeps its own label saved. */
+export function sharedConnectionsOf(held: Access[]): PageAccess[] {
+ const later = (a: Access, b: Access) => (a.labelSeq ?? 0) - (b.labelSeq ?? 0)
+  || a.acceptedAt.getTime() - b.acceptedAt.getTime() || grantKey(a).localeCompare(grantKey(b));
+ const latest = new Map<string, Access>();
+ for (const g of held) {
+  const had = latest.get(g.endpoint.hostID);
+  if (had === undefined || later(g, had) > 0) latest.set(g.endpoint.hostID, g);
+ }
+ return held.map(g => pageAccess({ ...g, machineLabel: latest.get(g.endpoint.hostID)?.machineLabel ?? g.machineLabel }));
+}
+
 /** paneMenu (desk_agent_actions.go:267-303) in the browser: a guest's has no share, avatar, mute or
  *  close; an owner's agent (muted not null) has Share with someone when the page offers it, then
  *  Avatar… and Close agent when the link may write them (owner.avatar, owner.close), with Mute or
@@ -282,9 +312,9 @@ export interface DeskEnv {
  /** This page's account statements (statements.ts statementCache, the owner links' cache): a
   *  share bound to the account connects with them. None: a bound share is account_required. */
  statements?: StatementSource;
- /** "Add to my account" (shares.ts): binds this browser to the account as a device, and writes a
-  *  share herdr bound to it into the account's shares in one request. None: no share is bound. */
- shares?: ShareAdder;
+ /** The account's shares collection (shares.ts): a share bound to the account is written there,
+  *  opened from there on another device, and deleted there when left. */
+ shares?: ShareSync;
 }
 
 interface Active {
@@ -358,11 +388,68 @@ export function createGuestDesk(env: DeskEnv) {
  let ownerPending: AbortController | null = null;
  const mutedPanes = env.mutedPanes ?? machineLists(MUTED_PANES_KEY);
 
- /** What binding a share to the account needs: the account's shares and its statements, as a
+ /** What a share bound to the account needs: the account's shares and its statements, as a
   *  bound share asks them (signed out is account_required; boundShareStatements). */
- function accountShares(): { shares: ShareAdder; statements: StatementSource } {
+ function accountShares(): { shares: ShareSync; statements: StatementSource } {
   if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
   return { shares: env.shares, statements: boundShareStatements(env.statements) };
+ }
+ /** Classifies a bound grant against the shares sync in a single record read ("masked" for
+  *  confirmed deletion, "unverified" for mirror-backed rows awaiting a 410 full pull, else
+  *  "available"). Plain grants are always "available". */
+ function grantStateOf(grant: Access): "available" | "unverified" | "masked" {
+  if (shares === undefined || grant.accountBound !== true || grant.account === undefined) return "available";
+  return shares.grantState(grant.account, grantKey(grant));
+ }
+ /** Available grants currently held by this browser. */
+ async function unmaskedGrants(): Promise<Access[]> {
+  return (await env.grants.list()).filter(g => grantStateOf(g) === "available");
+ }
+ /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
+ async function publishShares(shares: RemoteShare[]) {
+  emit("syncedSharesChanged", syncedSharesOf(shares, await unmaskedGrants()));
+ }
+ // A share deleted on the account it is bound to (left on any device) leaves this browser too,
+ // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
+ // what lasts, the grants as stored and the shares record (both shared by this browser's tabs),
+ // under the shares record lock so a second tab committing a newer live revision cannot race ahead
+ // of a stale removal. A link open on a deleted share detaches immediately even before IndexedDB
+ // removal or if storage refuses writes.
+ const shares = env.shares;
+ shares?.onMasked((acct, ids) => {
+  if (active?.id.startsWith("guest:") && active.access.accountBound === true && active.access.account === acct && ids.includes(active.id.slice("guest:".length))) {
+   disconnect();
+   publishIdle();
+  }
+ });
+ shares?.onChange(change => reconcile(shares, change).catch(error => console.error(error)));
+ async function reconcile(shares: ShareSync, change: SharesChange) {
+  const acct = change.account;
+  let failed: { error: unknown } | null = null;
+  if (acct !== null) {
+   for (const id of shares.dropping(acct)) {
+    try {
+     await shares.dropLocked(acct, id, async () => {
+      const latest = await env.grants.get(id);
+      if (latest?.accountBound === true && latest.account === acct) {
+       if (active?.id === "guest:" + id) { disconnect(); publishIdle(); }
+       await env.grants.remove(id);
+      }
+     });
+    } catch (error) { failed ??= { error }; }
+   }
+  }
+  const open = active;
+  if (open?.id.startsWith("guest:")) {
+   const openID = open.id.slice("guest:".length);
+   const held = await env.grants.get(openID);
+   if ((held === undefined || grantStateOf(held) === "masked") && active === open) {
+    disconnect();
+    publishIdle();
+   }
+  }
+  await publishShares(acct !== null ? shares.list() : change.shares);
+  if (failed !== null) throw (failed as { error: unknown }).error;
  }
 
  /** The board of l's last list, laid out with an owner link's folders (BuildBoard's view). */
@@ -392,7 +479,7 @@ export function createGuestDesk(env: DeskEnv) {
 
  /** desk_guest.go guestIdentity: the saved key once a grant exists, else one made now. */
  async function guestIdentity(): Promise<StaticKey> {
-  if (await env.grants.get() !== undefined) return requireIdentity();
+  if ((await env.grants.list()).length > 0) return requireIdentity();
   return loadIdentity(env.identities);
  }
  async function requireIdentity(): Promise<StaticKey> {
@@ -582,7 +669,7 @@ export function createGuestDesk(env: DeskEnv) {
   // An owner link also says the scope its grant was admitted under (ownerScope). A snapshot is
   // made, and told, only when the connection changed: its phase, message, availability, admitted
   // scope, features, the shared agent's name (a guest's access, renamed on the host), or the
-  // machine's (renamed by its owner, connectGuest's relabeled).
+  // machine's (renamed by its owner, connectGuest's labeled).
   const publish = (phase: string, msg: string, availability: string) => {
    const now = l.conn, guest = now.guest, features = l.transport.features;
    const same = now.phase === phase && now.message === msg && (guest?.availability ?? "") === availability
@@ -650,16 +737,18 @@ export function createGuestDesk(env: DeskEnv) {
    return { machineLabel: invite.machineLabel, ownerName: invite.ownerName, agentName: invite.agentName, guestName: invite.guestName, expires: goTime(invite.expires), fingerprint: await identityFingerprint(), account: invite.accounts };
   },
 
+  /** Every grant this browser holds, the one opened last first (the page resumes it), each naming
+   *  its machine as its host's latest hello did (sharedConnectionsOf), excluding any bound grant
+   *  masked as deleted by the account sync. */
   async sharedConnections(): Promise<PageAccess[]> {
-   const grant = await env.grants.get();
-   return grant === undefined ? [] : [pageAccess(grant)];
+   return sharedConnectionsOf(await unmaskedGrants());
   },
 
   /** keep: "account" binds the share to the signed-in HerdrUp account when the invite offers it
-   *  (its statement in the hello) and, once herdr bound it, writes its item to that account in
-   *  one request (ShareAdder.add), whose outcome the result carries (added). "device" (or an
-   *  invite without acct) is this browser's alone, as before. The grant is saved here either way,
-   *  before the write. */
+   *  (its statement in the hello) and, once herdr bound it, writes its item to that account
+   *  (ShareSync.add), whose outcome the result carries (added); "device" (or an invite without
+   *  acct) is this browser's alone, as before, and syncs nothing. The grant is saved beside those
+   *  held (one of the same share is updated), before the write, either way. */
   acceptGuestInvitation(text: string, keep: string): Promise<AcceptedAccess> {
    // guestAcceptMu: one redemption at a time.
    const run = accepting.then(async () => {
@@ -677,7 +766,9 @@ export function createGuestDesk(env: DeskEnv) {
      throw new Error(`Access was accepted but could not be saved: ${message(error)}. Keep this device's guest identity and ask the owner for a new invitation`);
     }
     env.owner.set(access.ownerName);
-    // Written to the account herdr bound it to (the admitted statement's), never to another.
+    // Written to the account herdr bound it to (the admitted statement's), once it did: it then
+    // shows on the account's other devices. Never to another: with a sign-in changed meanwhile it
+    // is refused, and stays on this browser only.
     const added = bound && access.accountBound ? await bound.shares.add(access) : undefined;
     return added === undefined ? pageAccess(access) : { ...pageAccess(access), added };
    });
@@ -685,22 +776,72 @@ export function createGuestDesk(env: DeskEnv) {
    return run;
   },
 
+  /** The account's shares (every live item, held here or not); none signed out. */
+  async syncedShares(): Promise<SyncedShare[]> {
+   return syncedSharesOf(env.shares?.list() ?? [], await unmaskedGrants());
+  },
+
+  /** The first connect on this browser of a share another device of the account accepted: a
+   *  returning hello with its grant id and the account's statement (herdr adds this browser to
+   *  the share), its grant saved as bound beside those held, then connected. A share deleted
+   *  from its account while it opened (a sync here pulled that) is not kept: "This share was
+   *  removed." */
+  async openSyncedShare(id: string): Promise<void> {
+   const { shares, statements } = accountShares();
+   const share = shares.list().find(s => s.id === id);
+   const hostPublicKey = share === undefined ? null : fromB64url(share.body.node_pub, 32);
+   if (share === undefined || hostPublicKey === null) throw new Error("This shared access is no longer on your account");
+   const identity = await guestIdentity();
+   await shares.bindDevice(identity);
+   const access = await openShare({
+    endpoint: { relay: share.body.relay, hostID: share.body.host_id, hostPublicKey }, guestID: share.body.guest_id,
+    machineLabel: share.body.machine_label ?? "", ownerName: share.body.owner_name ?? "", agentName: share.body.agent_name ?? "",
+   }, identity, statements, { now: now(), webSocket: env.webSocket });
+   // Its session is closed already. Saved only while the share is still on the account it is
+   // bound to, and checked again once saved: a round that pulls its deletion comes wholly before
+   // a check (which then refuses and removes it) or after it (and its listener finds the grant and
+   // drops it). A pending 410 reset (unverified) refuses the open without deleting a saved grant.
+   const acct = access.account;
+   const checkState = async () => acct === undefined ? "absent" as const : await shares.listedState(acct, id);
+   const beforeSave = await checkState();
+   if (beforeSave !== "listed") {
+    throw new Error(beforeSave === "unverified" ? "Your account shares are refreshing. Try again." : "This share was removed.");
+   }
+   await env.grants.put(access);
+   const afterSave = await checkState();
+   if (afterSave !== "listed") {
+    if (afterSave === "absent") await env.grants.remove(id);
+    throw new Error(afterSave === "unverified" ? "Your account shares are refreshing. Try again." : "This share was removed.");
+   }
+   env.owner.set(access.ownerName);
+   await publishShares(shares.list());
+   await desk.connectGuest(id);
+  },
+
+  /** Connects share id's grant, in place of the share connected now (which stays saved), and
+   *  makes it the one the page resumes. The grant connected is the one held as it is made the
+   *  one opened last (GrantStore.activate), and from there to the link being open nothing waits:
+   *  a grant forgotten before (left, or its share deleted from the account, in this tab or
+   *  another) connects nothing, and one forgotten after closes the link open (reconcile). */
   async connectGuest(id: string): Promise<void> {
-   const grant = await env.grants.get();
-   if (grant === undefined || `${grant.endpoint.hostID}/${grant.guestID}` !== id) throw new Error("This shared connection is no longer saved");
+   const missing = () => new Error("This shared connection is no longer saved");
+   const existing = await env.grants.get(id);
+   if (existing === undefined || grantStateOf(existing) !== "available") throw missing();
    const identity = await requireIdentity();
    const print = await identityFingerprint();
+   const grant = await env.grants.activate(id);
+   if (grant === undefined || grantStateOf(grant) !== "available") throw missing();
    disconnect();
-   // The machine as a hello names it now (its owner renamed it, herdr #519): on the grant still
-   // saved (SHARED WITH YOU; one forgotten or replaced meanwhile, in this tab or another, stays
-   // so) and in the access, so the next publication names it (the header). Unsaved, the next
-   // connect hears it again.
-   const relabeled = (machineLabel: string) => {
+   // The machine as each hello names it (its owner may have renamed it, herdr #519): on the grant
+   // still saved, numbered as the latest observation (SHARED WITH YOU; one forgotten or replaced
+   // meanwhile, in this tab or another, stays so), and in the access, so the next publication
+   // names it (the header). Unsaved, the next connect hears it again.
+   const labeled = (machineLabel: string) => {
     if (l.life.signal.aborted) return;
-    l.access = { ...l.access, machineLabel };
+    if (machineLabel !== l.access.machineLabel) l.access = { ...l.access, machineLabel };
     void env.grants.relabel(grant.endpoint.hostID, grant.guestID, machineLabel).catch(() => undefined);
    };
-   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), relabeled), identity, { now, webSocket: env.webSocket });
+   const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), labeled), identity, { now, webSocket: env.webSocket });
    const link = transportLink(pageAccess(grant), transport);
    const l: Active = { id: "guest:" + id, access: grant, transport, link, client: new GuestClient(link), life: new AbortController(), kick: () => {}, agents: [], conn: connection({ access: grant, transport }, print, "connecting", "", ""), listedAt: "" };
    active = l;
@@ -708,16 +849,28 @@ export function createGuestDesk(env: DeskEnv) {
    void runGuest(l, print).finally(() => shutdown(l));
   },
 
+  /** Leaves share id: its link closes and its grant goes (the others held stay). One bound to the
+   *  account is also deleted from the account it is bound to, so it leaves every device (with
+   *  another sign-in now, at that account's next sync here): the shares sync owns that Leave
+   *  (ShareSync.leave), keeping the delete and the grant's removal owed here before this browser's
+   *  own part and sending the delete after, whether that part failed or not (a removal that failed
+   *  is done by the reconcile that follows, or a later one). A plain one is this browser's alone. */
   async forgetGuestConnection(id: string): Promise<void> {
-   const grant = await env.grants.get();
-   if (grant !== undefined && `${grant.endpoint.hostID}/${grant.guestID}` === id) {
+   const grant = await env.grants.get(id);
+   const forget = async () => {
+    if (active?.id === "guest:" + id) {
+     disconnect();
+     publishIdle();
+    }
+    if (grant === undefined) return;
     env.owner.set(grant.ownerName);
-    await env.grants.remove();
-   }
-   if (active?.id === "guest:" + id) {
-    disconnect();
-    publishIdle();
-   }
+    await env.grants.remove(id);
+   };
+   const leaveAcct = grant?.accountBound && grant.account !== undefined
+    ? grant.account
+    : env.shares?.pendingLeaveAccount(id);
+   if (env.shares && leaveAcct !== undefined) await env.shares.leave(id, leaveAcct, forget);
+   else await forget();
   },
 
   async takeGuestInvitation(): Promise<string> { return ""; },
