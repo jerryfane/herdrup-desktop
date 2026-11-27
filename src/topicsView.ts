@@ -46,6 +46,8 @@ export interface TopicsHost {
  agentName: string;
  /** The pane's agent harness ("omp", "agy", etc.), used as fallback prefix on the model footer. */
  harness?: string;
+ /** Whether the shared pane is currently paused (unavailable to the guest). */
+ paused?: () => boolean;
  guest: boolean;
  /** The topics the agent's session file holds: the list until the agent answers. */
  topicSessions: readonly TopicSession[];
@@ -208,6 +210,11 @@ export class TopicsPane {
   this.disposed = true; this.resize.disconnect(); clearTimeout(this.organiseTimer);
   this.sheet?.close(); this.chat?.dispose(); this.chat = null;
   if (this.shown) void Desk.topicsFollow(this.host.token, false).catch(() => undefined);
+ }
+
+ /** Redraws the open topic in place when host availability (e.g. guest pause/resume) changes. */
+ refreshLiveness() {
+  if (!this.disposed) this.chat?.refreshLiveness();
  }
 
  /** The Inbox row's second line: what the agent does in its own conversation. */
@@ -795,6 +802,11 @@ class TopicChat {
    if (state) void this.load(false);
   };
  }
+ /** Redraws retained rows and footer after a host liveness change (e.g. guest pause/resume). */
+ refreshLiveness() {
+  if (!this.disposed && this.page) this.draw(false);
+ }
+
  private async load(older: boolean) {
   if (this.disposed || !this.active || (older && !this.paging)) return;
   if (this.busy) { if (!older) this.again = true; return; }
@@ -833,7 +845,7 @@ class TopicChat {
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
    this.notice.textContent = "";
-   this.readFailed = false;
+   if (!older) this.readFailed = false;
    this.draw(follow);
    if (older) this.messages.scrollTop += this.messages.scrollHeight - height;
   } catch (error) {
@@ -866,9 +878,9 @@ class TopicChat {
   const kept = new Map<string, HTMLElement>();
   for (const node of this.messages.children) if (node instanceof HTMLElement && node.dataset.id) kept.set(node.dataset.id, node);
   const now = new Date();
-  const working = !this.readFailed && topicWorking(this.topic, page);
+  const working = !this.readFailed && !this.host.paused?.() && topicWorking(this.topic, page);
   const nodes = groupTranscript(this.entries, !!page?.working).map(row => {
-   const rowLive = row.kind === "work" && row.live && working;
+   const rowLive = row.kind === "work" && row.steps.length > 0 && row.live && working;
    const signature = JSON.stringify(row.kind === "work" ? [rowShown(row, now), rowLive] : rowShown(row, now));
    const old = kept.get(row.id);
    if (old?.dataset.signature === signature) return old;
