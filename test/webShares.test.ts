@@ -1161,6 +1161,14 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   w.prune(w.rev);
   w.failPullSince = 0;
   await expect(mac.shares.sync()).rejects.toThrow();
+  // While the required full pull is still failing (503), pre-reset rows are unverified: both lists
+  // omit them and both open methods refuse them, yet the local grant is NOT deleted yet.
+  expect(mac.shares.list()).toEqual([]);
+  expect(await mac.desk.syncedShares()).toEqual([]);
+  expect(await mac.desk.sharedConnections()).toEqual([]);
+  await expect(mac.desk.openSyncedShare(id)).rejects.toThrow();
+  await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+  expect(await mac.grants.get(id)).toBeDefined();
   w.failPullSince = null;
   w.seedPrompt("unrelated-2", {});
   w.seedPrompt("unrelated-3", {});
@@ -1174,8 +1182,8 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   await expect(mac.desk.connectGuest(id)).rejects.toThrow("no longer saved");
  }
  // Variant 2: Tab A gets 410 + full response whose setItem commit throws QuotaExceededError;
- // unrelated writes advance reset history to rev 4 -> Tab B sharing storage still pulls since=0
- // and keeps the deleted share hidden/unopenable in both lists and both open methods.
+ // Tab B sharing storage sees the pending reset even while its own since=0 pull returns 503
+ // (hides/refuses without removing the grant), and once 503 clears pulls since=0 and drops it.
  {
   const w = worker(), h = host();
   const storage = memory(), grants = new MemoryGrantStore(), identities = new MemoryIdentityStore(), locks = tabLocks();
@@ -1191,15 +1199,28 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   w.seedPrompt("reset-only", {});
   w.prune(w.rev);
   const origSet = storage.setItem.bind(storage);
+  const origRemove = grants.remove.bind(grants);
   storage.setItem = (k, v) => {
    if (k === SHARES_KEY_PREFIX + "acct") throw new DOMException("quota", "QuotaExceededError");
    origSet(k, v);
   };
+  grants.remove = async () => { throw new Error("transient idb error"); };
   await tabA.shares.sync().catch(() => {});
   storage.setItem = origSet;
+  grants.remove = origRemove;
   w.seedPrompt("unrelated-2", {});
   w.seedPrompt("unrelated-3", {});
   w.seedPrompt("unrelated-4", {});
+  // Tab B gets 503 on its full retry: must still hide/refuse the pre-reset share and keep the grant.
+  w.failPullSince = 0;
+  await expect(tabB.shares.sync()).rejects.toThrow();
+  expect(tabB.shares.list()).toEqual([]);
+  expect(await tabB.desk.syncedShares()).toEqual([]);
+  expect(await tabB.desk.sharedConnections()).toEqual([]);
+  await expect(tabB.desk.openSyncedShare(id)).rejects.toThrow();
+  await expect(tabB.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+  expect(await grants.get(id)).toBeDefined();
+  w.failPullSince = null;
   w.pulls.length = 0;
   await tabB.shares.sync();
   expect(w.pulls[0]).toBe("?since=0");
@@ -1207,6 +1228,7 @@ test("a 410 reset survives a 503 on full retry, a cross-tab failed commit, and a
   expect(await tabB.desk.sharedConnections()).toEqual([]);
   await expect(tabB.desk.openSyncedShare(id)).rejects.toThrow();
   await expect(tabB.desk.connectGuest(id)).rejects.toThrow("no longer saved");
+  expect(await grants.get(id)).toBeUndefined();
  }
  // Variant 3: Share masked after failed 410 commit; a subsequent full response returns the share
  // live, but its setItem commit ALSO fails -> mask must NOT be cleared before commit, so deleting

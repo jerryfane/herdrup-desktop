@@ -358,12 +358,17 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
   if (!ran || out === null) throw new Error("This browser's storage is locked by another tab. Try again.");
   return (out as { value: T }).value;
  };
- /** The shares as last pulled, with this browser's own unsent puts and without its unsent deletes
-  *  or active in-memory deletion masks. */
+ /** Whether a 410 history reset was observed for acct that has not yet been folded by a committed
+  *  full pull, making cached pre-reset mirror rows unverified. */
+ const hasPendingReset = (record: SharesRecord, acct?: string): boolean =>
+  acct !== undefined && readReset(acct) > (record.resetsFolded ?? 0);
+ /** The shares as last pulled, with this browser's own unsent puts and without its unsent deletes,
+  *  active in-memory deletion masks, or pre-reset mirror rows still awaiting a committed full pull. */
  const visible = (record: SharesRecord, acct?: string): RemoteShare[] => {
   const pending = new Set(record.pending.map(p => p.id));
   const isHidden = (id: string) => acct !== undefined && maskActiveIn(record, acct, id);
-  const shown = record.shares.filter(s => !pending.has(s.id) && !isHidden(s.id))
+  const liveRows = hasPendingReset(record, acct) ? [] : record.shares;
+  const shown = liveRows.filter(s => !pending.has(s.id) && !isHidden(s.id))
    .concat(record.pending.flatMap(p => p.body && !isHidden(p.id) ? [{ id: p.id, rev: 0, body: p.body }] : []));
   return shown.sort((a, b) => a.id.localeCompare(b.id));
  };
@@ -745,6 +750,17 @@ export function createShareSync(account: WebAccount, place: SharesPlace) {
     return isDroppedIn(read(acct), acct, id);
    } catch {
     return masked.get(acct)?.has(id) ?? false;
+   }
+  },
+  /** Whether share id of acct is currently unverified because a 410 history reset has not yet
+   *  committed a full pull (distinct from a confirmed deletion: hides/refuses opens without
+   *  removing local grants). */
+  isUnverified(acct: string, id: string): boolean {
+   try {
+    const r = read(acct);
+    return hasPendingReset(r, acct) && !r.pending.some(p => p.body && p.id === id);
+   } catch {
+    return false;
    }
   },
   /** Account id holding a pending Leave delete for share id (survives grant removal on retry). */

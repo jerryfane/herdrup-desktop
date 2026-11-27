@@ -394,14 +394,20 @@ export function createGuestDesk(env: DeskEnv) {
   if (env.shares === undefined || env.statements === undefined) throw new Error("This browser can't add shared access to an account.");
   return { shares: env.shares, statements: boundShareStatements(env.statements) };
  }
- /** Whether a bound grant is masked as deleted by the shares sync (in memory or durably in r.drop). */
+ /** Whether a bound grant is masked as deleted by the shares sync (confirmed deletion only). */
  function isGrantMasked(grant: Access): boolean {
   return shares !== undefined && grant.accountBound === true && grant.account !== undefined
    && shares.isMasked(grant.account, grantKey(grant));
  }
- /** Unmasked grants currently held by this browser. */
+ /** Whether a bound grant is currently unavailable to list or open: masked as deleted or
+  *  unverified behind a pending 410 history reset awaiting a committed full pull. */
+ function isGrantUnavailable(grant: Access): boolean {
+  return isGrantMasked(grant) || (shares !== undefined && grant.accountBound === true
+   && grant.account !== undefined && shares.isUnverified(grant.account, grantKey(grant)));
+ }
+ /** Available grants currently held by this browser. */
  async function unmaskedGrants(): Promise<Access[]> {
-  return (await env.grants.list()).filter(g => !isGrantMasked(g));
+  return (await env.grants.list()).filter(g => !isGrantUnavailable(g));
  }
  /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
  async function publishShares(shares: RemoteShare[]) {
@@ -819,11 +825,11 @@ export function createGuestDesk(env: DeskEnv) {
   async connectGuest(id: string): Promise<void> {
    const missing = () => new Error("This shared connection is no longer saved");
    const existing = await env.grants.get(id);
-   if (existing === undefined || isGrantMasked(existing)) throw missing();
+   if (existing === undefined || isGrantUnavailable(existing)) throw missing();
    const identity = await requireIdentity();
    const print = await identityFingerprint();
    const grant = await env.grants.activate(id);
-   if (grant === undefined || isGrantMasked(grant)) throw missing();
+   if (grant === undefined || isGrantUnavailable(grant)) throw missing();
    disconnect();
    // The machine as each hello names it (its owner may have renamed it, herdr #519): on the grant
    // still saved, numbered as the latest observation (SHARED WITH YOU; one forgotten or replaced
