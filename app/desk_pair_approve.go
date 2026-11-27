@@ -225,14 +225,11 @@ func (d *Desk) PairApproveProbe(ctx context.Context, id, machineID string) (Pair
 	ctx, cancel := context.WithTimeout(ctx, pairProbeTime)
 	defer cancel()
 	c, done, err := d.pairBridge(ctx, m)
-	var held pairKeyHeld
 	switch {
 	case errors.Is(err, errNeedsKey):
 		return PairProbe{State: "needs_key"}, nil
 	case errors.Is(err, errNoPin):
 		return PairProbe{State: "needs_pin"}, nil
-	case errors.As(err, &held):
-		return PairProbe{State: "unsendable", Reason: truncate(held.Error(), pairReasonRunes)}, nil
 	case err != nil:
 		return PairProbe{State: "unreachable"}, nil
 	}
@@ -279,117 +276,39 @@ func (p *pairPins) SetPin(string, string) error {
 	return errNoPin
 }
 
-// pairHostKeyAlgorithms are the host keys a pair approval's connection
-// takes: those the new device checks (pair-v1 host_key), ed25519 first as
-// it negotiates them, so a host with several shows this computer the key
-// it shows the new device. Each follows its certificate, whose plain key
-// the list carries (verifiedHostKey): a host pinned here by its
-// certificate still matches its pin.
-var pairHostKeyAlgorithms = []string{
-	ssh.CertAlgoED25519v01, ssh.KeyAlgoED25519,
-	ssh.CertAlgoECDSA256v01, ssh.KeyAlgoECDSA256,
-	ssh.CertAlgoECDSA384v01, ssh.KeyAlgoECDSA384,
-	ssh.CertAlgoECDSA521v01, ssh.KeyAlgoECDSA521,
-}
-
-// pairPlainHostKeyAlgorithms is pairHostKeyAlgorithms for a Paired
-// machine, pinned with no certificates (pairingHostKeyAlgorithms).
-var pairPlainHostKeyAlgorithms = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
-
-// pairBridge is ownerBridge for a pair approval: it takes only a host key
-// the new device checks (pairHostKeyAlgorithms), and a machine without a
-// pin kept here is errNoPin, never pinned. The session connected now is
-// used only when it has the host's ed25519 key, the one a new session
-// would get. A host with none of those keys is errHostKeyType. One whose
-// key pinned here is another of its keys (an RSA key, a key the
-// negotiation passes over) is errPinnedOther: a type, not a key changed.
+// pairBridge is this computer's own SSH session to m for a pair approval.
+// The live connection is used, however it signed in (a password machine
+// is usable only then), while its host key is the one pinned here now.
+// Otherwise a new session (dialMachine) negotiates as the machine was
+// pinned, as the live one did, so the host shows the key this computer
+// trusts, much as OpenSSH offers a host's known_hosts type first: the pin
+// holds a fingerprint only, and any other key fails it. A machine without
+// a pin is errNoPin, never pinned. That key is sent if the new device
+// checks its type (verifiedHostKey); no other type is tried.
 func (d *Desk) pairBridge(ctx context.Context, m Machine) (*bridge.Client, func(), error) {
-	if c := d.linkClient(m); c != nil {
-		if key, _ := c.HostKey(); key != nil {
-			if plain := plainHostKey(key); plain != nil && plain.Type() == ssh.KeyAlgoED25519 {
+	if c := d.liveBridge(m); c != nil {
+		if key, addr := c.HostKey(); key != nil {
+			if pin, ok, err := d.pins.Pin(addr); err == nil && ok && pin == bridge.Fingerprint(key) {
 				return c, func() {}, nil
 			}
 		}
 	}
 	pins := &pairPins{PinStore: d.pins}
-	cfg, err := ownerConfig(m, pins)
-	if err != nil {
-		return nil, nil, err
-	}
-	owner := cfg.HostKeyAlgorithms
-	cfg.HostKeyAlgorithms = pairHostKeyAlgorithms
-	if m.Paired {
-		cfg.HostKeyAlgorithms = pairPlainHostKeyAlgorithms
-	}
-	c, done, err := dialOwner(ctx, cfg)
-	var noAlgo *ssh.AlgorithmNegotiationError
-	var changed *bridge.HostKeyChangedError
-	switch {
-	case err == nil:
-		return c, done, nil
-	case pins.missing.Load():
+	c, done, err := d.dialMachine(ctx, m, pins)
+	if err != nil && pins.missing.Load() {
 		return nil, nil, errNoPin
-	case errors.As(err, &noAlgo) && noAlgo.What == "host key":
-		return nil, nil, errHostKeyType
-	case errors.As(err, &changed):
-		// Is the key pinned here still the host's, by the algorithms it
-		// was pinned with?
-		cfg.HostKeyAlgorithms, cfg.Pins = owner, &pairPins{PinStore: d.pins}
-		if pc, pdone, perr := dialOwner(ctx, cfg); perr == nil {
-			key, _ := pc.HostKey()
-			pdone()
-			return nil, nil, errPinnedOther(key)
-		}
 	}
-	return nil, nil, err
+	return c, done, err
 }
 
-// pairKeyHeld is a machine whose host key the new device couldn't check
-// against what this computer vouches for: it is held out of the list
-// before any key is added there.
-type pairKeyHeld string
+// pairHostKeyTypes are the host keys the new device checks (pair-v1
+// host_key).
+var pairHostKeyTypes = []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521}
 
-func (e pairKeyHeld) Error() string { return string(e) }
-
-const errHostKeyType = pairKeyHeld("can't share this machine: its host key type isn't supported")
-
-// errPinnedOther is a machine whose host key pinned here, pinned, is not
-// the one the new device checks, though the host still has it.
-func errPinnedOther(pinned ssh.PublicKey) error {
-	return pairKeyHeld(fmt.Sprintf("can't share this machine: this computer pinned its %s, not the one the new device checks", hostKeyKind(pinned)))
-}
-
-// plainHostKey is key, or the key it certifies (nil for a certificate
-// with none).
-func plainHostKey(key ssh.PublicKey) ssh.PublicKey {
-	if cert, ok := key.(*ssh.Certificate); ok {
-		return cert.Key
-	}
-	return key
-}
-
-// hostKeyKind names key's kind for a reason: "RSA host key", "ECDSA host
-// certificate".
-func hostKeyKind(key ssh.PublicKey) string {
-	kind := "host key"
-	if _, ok := key.(*ssh.Certificate); ok {
-		kind = "host certificate"
-	}
-	plain := plainHostKey(key)
-	if plain == nil {
-		return kind
-	}
-	switch t := plain.Type(); {
-	case t == ssh.KeyAlgoRSA:
-		return "RSA " + kind
-	case strings.HasPrefix(t, "ecdsa-"):
-		return "ECDSA " + kind
-	case t == ssh.KeyAlgoED25519:
-		return "ed25519 " + kind
-	default:
-		return t + " " + kind
-	}
-}
+// errHostKeyType is a machine whose verified host key the new device
+// can't check (an RSA key, say): it is held out of the list before any
+// key is added there.
+var errHostKeyType = errors.New("can't share this machine: its host key type isn't supported")
 
 // pairTrialHostKey stands for a machine's host key when its entry is
 // checked before the machine is reached.
@@ -1001,23 +920,20 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 	}
 	ctx, cancel := context.WithTimeout(ctx, pairAddTime)
 	defer cancel()
-	var held pairKeyHeld
 	c, done, err := d.pairBridge(ctx, row.m)
 	switch {
 	case errors.Is(err, errNeedsKey):
 		return fail("needs a key file", false)
 	case errors.Is(err, errNoPin):
 		return fail(errNoPin.Error(), false)
-	case errors.As(err, &held):
-		return hold(held.Error())
 	case err != nil:
 		return fail(pairReason(ctx, err))
 	}
 	defer done()
 	hostKey, err := d.verifiedHostKey(c)
 	switch {
-	case errors.As(err, &held):
-		return hold(held.Error())
+	case errors.Is(err, errHostKeyType):
+		return hold(err.Error())
 	case err != nil:
 		return fail(err.Error(), false)
 	}
@@ -1043,10 +959,9 @@ func (d *Desk) addPairKey(ctx context.Context, id string, rows []pairRow, i int,
 // verifiedHostKey is the host key c's first handshake verified, as an
 // OpenSSH line with no comment, once it matches the pin kept here under
 // the address it dialled. The list carries plain keys the new device
-// checks only (pair-v1 host_key: ed25519 or ECDSA): for a host
-// certificate it is the key the certificate certifies, which is what the
-// new device pins (it never negotiates certificates); errHostKeyType for
-// any other key.
+// checks only (pairHostKeyTypes): for a host certificate it is the key
+// the certificate certifies, which is what the new device pins (it never
+// negotiates certificates); errHostKeyType for any other key.
 func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	key, addr := c.HostKey()
 	if key == nil {
@@ -1059,11 +974,13 @@ func (d *Desk) verifiedHostKey(c *bridge.Client) (string, error) {
 	case !ok || pin != bridge.Fingerprint(key):
 		return "", errors.New("its host key doesn't match the one pinned here")
 	}
-	plain := plainHostKey(key)
-	if plain == nil || !slices.Contains(pairPlainHostKeyAlgorithms, plain.Type()) {
+	if cert, isCert := key.(*ssh.Certificate); isCert {
+		key = cert.Key
+	}
+	if key == nil || !slices.Contains(pairHostKeyTypes, key.Type()) {
 		return "", errHostKeyType
 	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(plain))), nil
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))), nil
 }
 
 // pairReason says why adding the key failed, and whether Try again may

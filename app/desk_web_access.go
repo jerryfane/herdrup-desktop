@@ -655,7 +655,10 @@ func (d *Desk) grantOn(ctx context.Context, acct string, c webMachine, p herdrap
 // the machine this computer is connected to, otherwise a short SSH session
 // with its key file. done closes what was opened.
 func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func(), error) {
-	c, done, err := d.ownerBridge(ctx, m, d.pins)
+	if c := d.liveBridge(m); c != nil {
+		return engine.New(engine.Bridge(c)), func() {}, nil
+	}
+	c, done, err := d.dialMachine(ctx, m, d.pins)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -666,21 +669,8 @@ func (d *Desk) ownerClient(ctx context.Context, m Machine) (*engine.Client, func
 // which it never keeps: it isn't the one connected now and has no key file.
 var errNeedsKey = errors.New("needs a key file")
 
-// ownerBridge is ownerClient's SSH connection: this computer's own, never a
-// guest's. A new session checks the host key with pins.
-func (d *Desk) ownerBridge(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
-	if c := d.linkClient(m); c != nil {
-		return c, func() {}, nil
-	}
-	cfg, err := ownerConfig(m, pins)
-	if err != nil {
-		return nil, nil, err
-	}
-	return dialOwner(ctx, cfg)
-}
-
-// linkClient is the session connected now when it is m's, else nil.
-func (d *Desk) linkClient(m Machine) *bridge.Client {
+// liveBridge is the live connection when it is m's, else nil.
+func (d *Desk) liveBridge(m Machine) *bridge.Client {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.link != nil && d.link.id == machineID(m) {
@@ -689,12 +679,13 @@ func (d *Desk) linkClient(m Machine) *bridge.Client {
 	return nil
 }
 
-// ownerConfig is a new session to m with its key file, checking the host
-// key with pins as m was pinned (pairingHostKeyAlgorithms for a Paired
-// machine, SSH's defaults otherwise).
-func ownerConfig(m Machine, pins bridge.PinStore) (bridge.Config, error) {
+// dialMachine is a short SSH session to m with its key file: this
+// computer's own, never a guest's. It negotiates the host key as m was
+// pinned (pairingHostKeyAlgorithms for a Paired machine, SSH's defaults
+// otherwise) and checks it with pins.
+func (d *Desk) dialMachine(ctx context.Context, m Machine, pins bridge.PinStore) (*bridge.Client, func(), error) {
 	if m.KeyPath == "" {
-		return bridge.Config{}, errNeedsKey
+		return nil, nil, errNeedsKey
 	}
 	cfg := bridge.Config{Host: m.Host, Port: m.Port, User: m.User, Session: m.Session, Pins: pins}
 	if m.Paired {
@@ -702,12 +693,8 @@ func ownerConfig(m Machine, pins bridge.PinStore) (bridge.Config, error) {
 	}
 	var err error
 	if cfg.KeyPEM, err = os.ReadFile(m.KeyPath); err != nil {
-		return bridge.Config{}, err
+		return nil, nil, err
 	}
-	return cfg, nil
-}
-
-func dialOwner(ctx context.Context, cfg bridge.Config) (*bridge.Client, func(), error) {
 	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c, err := bridge.Dial(dctx, cfg)

@@ -239,7 +239,9 @@ func freePort(t *testing.T) int {
 	return port
 }
 
-func newPairWorld(t *testing.T) *pairWorld {
+// newPairWorld builds the world; studioHostKey, when given, is studio's
+// host key (an ed25519 key otherwise).
+func newPairWorld(t *testing.T, studioHostKey ...ssh.Signer) *pairWorld {
 	t.Helper()
 	quietSync(t)
 	w := &pairWorld{svc: fakeaccount.New(), machines: map[string]*pairHerdr{}, ids: map[string]string{}}
@@ -271,6 +273,9 @@ func newPairWorld(t *testing.T) *pairWorld {
 	studio := &pairHerdr{}
 	d, s := federatedDeskAs(t, "studio", func(s *fakeherdr.Server) {
 		s.Handle = studio.handle(true, s.Handle)
+		if len(studioHostKey) > 0 {
+			s.HostKey = studioHostKey[0]
+		}
 	})
 	studio.srv, studio.hostKey = s, s.HostKey.PublicKey()
 	w.d = d
@@ -1031,6 +1036,119 @@ func ed25519HostKey(t *testing.T) ssh.Signer {
 	return s
 }
 
+func ecdsaHostKey(t *testing.T) ssh.Signer {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// approveAlone probes and approves the machine name alone and returns
+// the host key the list carried for it.
+func (w *pairWorld) approveAlone(t *testing.T, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := w.start(t)
+	w.typeCode(t, id)
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids[name]); err != nil || p.State != "ready" {
+		t.Fatalf("probe %+v, %v", p, err)
+	}
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids[name]})
+	if err != nil || !res.Sent || res.Machines[0].Status != account.PairAdded {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	return w.delivered(t).Envelope.Machines[0].HostKey
+}
+
+// A stock host (ECDSA P-256, ed25519 and RSA keys) pinned here by its
+// ECDSA key, as SSH's defaults pick it, shows a pair approval that key: it
+// gets the new device's key, and its ECDSA key is verified against the
+// pin and sent.
+func TestPairApproveSendsTheECDSAKeyAStockHostIsPinnedBy(t *testing.T) {
+	w := newPairWorld(t)
+	ec := ecdsaHostKey(t)
+	w.keyMachineWith(t, "stock", ec, true, true, ed25519HostKey(t), rsaHostKey(t))
+	if got := w.approveAlone(t, "stock"); got != hostKeyLine(ec.PublicKey()) {
+		t.Fatalf("sent host key %q, want the pinned ECDSA key", got)
+	}
+	if n := w.machines["stock"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on the stock host, want 1", n)
+	}
+}
+
+// The live connection, signed in with a password (no key file saved) to
+// a host pinned by its ECDSA key, is the session the key is added over,
+// and its ECDSA key is sent.
+func TestPairApproveUsesALivePasswordConnection(t *testing.T) {
+	ec := ecdsaHostKey(t)
+	w := newPairWorld(t, ec)
+	m, err := w.d.savedMachine(w.ids["studio"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.KeyPath = ""
+	if err := w.d.SaveMachine(m, w.ids["studio"]); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.approveAlone(t, "studio"); got != hostKeyLine(ec.PublicKey()) {
+		t.Fatalf("sent host key %q, want the live connection's ECDSA key", got)
+	}
+	if n := w.machines["studio"].adds.Load(); n != 1 {
+		t.Fatalf("%d adds on studio, want 1", n)
+	}
+}
+
+// A host whose key matched its pin but refused this computer's key file
+// says so: an authentication failure, not a changed host key.
+func TestPairApproveSaysASignInFailureAsItself(t *testing.T) {
+	w := newPairWorld(t)
+	ctx := context.Background()
+	w.keyMachineWith(t, "locked", ed25519HostKey(t), true, true)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	block, err := ssh.MarshalPrivateKey(other, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(w.machines["locked"].keyPath, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := w.start(t)
+	w.typeCode(t, id)
+	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["locked"]})
+	locked := rowsByLabel(res)["locked"]
+	if err != nil || locked.Status != account.PairFailed || !strings.Contains(locked.Reason, "unable to authenticate") || strings.Contains(locked.Reason, "host key") {
+		t.Fatalf("approve %+v, %v", res, err)
+	}
+	if n := w.machines["locked"].adds.Load(); n != 0 {
+		t.Fatalf("%d adds on a machine that refused this computer", n)
+	}
+}
+
+// A Paired machine on a stock host, pinned by its ed25519 key (as
+// pairing negotiates), sends that key.
+func TestPairApproveSendsTheEd25519KeyAHostIsPinnedBy(t *testing.T) {
+	w := newPairWorld(t)
+	ed := ed25519HostKey(t)
+	w.keyMachineWith(t, "paired", ed, true, true, ecdsaHostKey(t), rsaHostKey(t))
+	m, err := w.d.savedMachine(w.ids["paired"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Paired = true
+	if err := w.d.SaveMachine(m, w.ids["paired"]); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.approveAlone(t, "paired"); got != hostKeyLine(ed.PublicKey()) {
+		t.Fatalf("sent host key %q, want the pinned ed25519 key", got)
+	}
+}
+
 // A host with only an RSA host key is held out before any key is added
 // there: the new device checks ed25519 and ECDSA keys only.
 func TestPairApproveHoldsOutAnRSAOnlyHost(t *testing.T) {
@@ -1039,13 +1157,13 @@ func TestPairApproveHoldsOutAnRSAOnlyHost(t *testing.T) {
 	w.keyMachineWith(t, "rsa", rsaHostKey(t), true, true)
 	id := w.start(t)
 	w.typeCode(t, id)
-	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsa"]); err != nil || p.State != "unsendable" || p.Reason != string(errHostKeyType) {
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsa"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
 		t.Fatalf("probe %+v, %v", p, err)
 	}
 	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["rsa"]})
 	rows := rowsByLabel(res)
 	if err != nil || !res.Sent || rows["studio"].Status != account.PairAdded ||
-		rows["rsa"].Status != account.PairFailed || rows["rsa"].Reason != string(errHostKeyType) || rows["rsa"].Retryable {
+		rows["rsa"].Status != account.PairFailed || rows["rsa"].Reason != errHostKeyType.Error() || rows["rsa"].Retryable {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
 	if n := w.machines["rsa"].adds.Load(); n != 0 {
@@ -1056,46 +1174,23 @@ func TestPairApproveHoldsOutAnRSAOnlyHost(t *testing.T) {
 	}
 }
 
-// A host with RSA and ed25519 keys shows a pair approval its ed25519 key
-// (SSH's defaults would get its RSA one), the key the new device
-// negotiates; that is the key added over and sent.
-func TestPairApproveSendsTheEd25519KeyOfAHostWithRSAToo(t *testing.T) {
-	w := newPairWorld(t)
-	ctx := context.Background()
-	ed := ed25519HostKey(t)
-	w.keyMachineWith(t, "both", ed, true, true, rsaHostKey(t))
-	id := w.start(t)
-	w.typeCode(t, id)
-	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["both"]); err != nil || p.State != "ready" {
-		t.Fatalf("probe %+v, %v", p, err)
-	}
-	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["both"]})
-	if err != nil || !res.Sent || res.Machines[0].Status != account.PairAdded {
-		t.Fatalf("approve %+v, %v", res, err)
-	}
-	if m := w.delivered(t).Envelope.Machines[0]; m.HostKey != hostKeyLine(ed.PublicKey()) {
-		t.Fatalf("sent host key %q, want the ed25519 key", m.HostKey)
-	}
-}
-
-// A host this computer pinned by its RSA key (as SSH's defaults pick it)
-// still has that key: the ed25519 key a pair approval gets isn't the one
-// pinned, and nothing here vouches for it. The host is held out with why,
-// not shown as a changed host key, and its pin stays as it was.
-func TestPairApproveHoldsOutAHostPinnedByAnotherKeyType(t *testing.T) {
+// A host pinned here by its RSA key (SSH's defaults pick it over ed25519)
+// is held out before any key is added there, though it has an ed25519
+// key too: nothing here vouches for that one, so no other type is tried,
+// and the pin stays as it was.
+func TestPairApproveHoldsOutAHostPinnedByItsRSAKey(t *testing.T) {
 	w := newPairWorld(t)
 	ctx := context.Background()
 	rsaKey := rsaHostKey(t)
 	w.keyMachineWith(t, "rsapin", rsaKey, true, true, ed25519HostKey(t))
 	id := w.start(t)
 	w.typeCode(t, id)
-	why := "can't share this machine: this computer pinned its RSA host key, not the one the new device checks"
-	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsapin"]); err != nil || p.State != "unsendable" || p.Reason != why {
+	if p, err := w.d.PairApproveProbe(ctx, id, w.ids["rsapin"]); err != nil || p.State != "unsendable" || p.Reason != errHostKeyType.Error() {
 		t.Fatalf("probe %+v, %v", p, err)
 	}
 	res, err := w.d.PairApproveAdd(ctx, id, []string{w.ids["studio"], w.ids["rsapin"]})
 	rows := rowsByLabel(res)
-	if err != nil || !res.Sent || rows["rsapin"].Status != account.PairFailed || rows["rsapin"].Reason != why || rows["rsapin"].Retryable {
+	if err != nil || !res.Sent || rows["rsapin"].Status != account.PairFailed || rows["rsapin"].Reason != errHostKeyType.Error() || rows["rsapin"].Retryable {
 		t.Fatalf("approve %+v, %v", res, err)
 	}
 	if n := w.machines["rsapin"].adds.Load(); n != 0 {
