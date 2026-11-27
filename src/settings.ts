@@ -102,7 +102,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /** `opened` runs when a page is chosen: the phone layout shows it in place of the index
  *  (main.ts, compact). `access` is the browser's access to the machine it opened (hosts.ts), the
  *  Machines page's ACCESS group; null on the desktop. */
-export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, access: () => BrowserAccess | null, opened: () => void) {
+export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: SymbolRenderer, reconnect: () => Promise<void>, access: () => BrowserAccess | null, opened: () => void, onAccountSignedIn?: (signedIn: boolean) => void) {
   const index = el("nav", "settings-index"); index.setAttribute("aria-label", "Settings"); index.hidden = true;
   sidebar.insertBefore(index, document.getElementById("sidebar-foot"));
   const page = el("section", "settings-detail"); page.hidden = true; detail.append(page);
@@ -141,7 +141,11 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   });
   // The HerdrUp account (herdrupAccount.ts), not the agents' accounts above: its row shows once
   // the account service offers sign-in.
-  const herdrupAccount = new HerdrUpAccountPanel(() => { herdrupAccountSummary.textContent = herdrupAccount.summary(); if (herdrupAccountShown !== herdrupAccount.available) { herdrupAccountShown = herdrupAccount.available; renderIndex(); } }, glyph);
+  const herdrupAccount = new HerdrUpAccountPanel(() => {
+    herdrupAccountSummary.textContent = herdrupAccount.summary();
+    onAccountSignedIn?.(herdrupAccount.signedIn);
+    if (herdrupAccountShown !== herdrupAccount.available) { herdrupAccountShown = herdrupAccount.available; renderIndex(); }
+  }, glyph);
   const herdrupAccountSummary = el("span", "settings-row-value");
   let herdrupAccountShown = false;
   void herdrupAccount.refresh();

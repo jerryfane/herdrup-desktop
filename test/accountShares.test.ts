@@ -655,17 +655,21 @@ test("the browser guest's Settings, where Leave deletes a bound share's item fro
  expect(detail.all().find(n => n.className === "guest-settings-note guest-leave-note")?.textContent).toBe("You stop seeing enyo on all your devices. To come back, jerry has to send a new invite.");
 });
 
-test("combinedGuestMachines merges all shares on the active machine and keeps other machines below", () => {
- const active = grant("H1", "g2", "fleetup", "jerry", "dev2306", true);
+test("combinedGuestMachines merges all shares on the active machine with deterministic sibling order and keeps other machines below", () => {
+ const jarvis = grant("H1", "g1", "jarvis", "jerry", "dev2306", true);
+ const fleetup = grant("H1", "g2", "fleetup", "jerry", "dev2306", true);
  const shares = sharedMachines(
-  [grant("H1", "g1", "jarvis", "jerry", "dev2306", true), active],
+  [jarvis, fleetup],
   [share("H2", "g3", "landing", "maya", "mac-mini", false)],
  );
- const combined = combinedGuestMachines(active, shares);
- expect(combined.map(m => [m.hostID, m.machine, m.owner, m.grants.map(g => [g.agent, g.open.id])])).toEqual([
-  ["H1", "dev2306", "jerry", [["jarvis", "H1/g1"], ["fleetup", "H1/g2"]]],
+ const combinedA = combinedGuestMachines(fleetup, shares);
+ const combinedB = combinedGuestMachines(jarvis, sharedMachines([fleetup, jarvis], [share("H2", "g3", "landing", "maya", "mac-mini", false)]));
+ expect(combinedA.map(m => [m.hostID, m.machine, m.owner, m.grants.map(g => [g.agent, g.open.id])])).toEqual([
+  ["H1", "dev2306", "jerry", [["fleetup", "H1/g2"], ["jarvis", "H1/g1"]]],
   ["H2", "mac-mini", "maya", [["landing", "H2/g3"]]],
  ]);
+ // Switching active sibling on the same machine keeps exact row order regardless of grant store order.
+ expect(combinedB.map(m => m.grants.map(g => g.agent))).toEqual(combinedA.map(m => m.grants.map(g => g.agent)));
  // Active share not yet in shares is still included, and its machine stays first.
  const otherActive = grant("H2", "g3", "landing", "maya", "Studio Mac", true);
  const reordered = combinedGuestMachines(otherActive, shares);

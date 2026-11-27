@@ -311,7 +311,7 @@ const trailingSpace = new RegExp(`[${space}]+$`);
 export const trimSpace = (s: string) => s.replace(leadingSpace, "").replace(trailingSpace, "");
 
 // board.go:304-312
-function initial(name: string): string {
+export function initial(name: string): string {
  name = name.replace(leadingSpace, "").replace(trailingSpace, "");
  if (name === "") return "?";
  return upperRune(String.fromCodePoint(name.codePointAt(0)!));
@@ -330,7 +330,7 @@ function upperRune(r: string): string {
 
 // board.go:316-322: FNV-1a 64 over the UTF-8 bytes, high bits folded down.
 const utf8 = new TextEncoder();
-function tintIndex(name: string): number {
+export function tintIndex(name: string): number {
  let h = 0xcbf29ce484222325n;
  for (const b of utf8.encode(name)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
  return Number((h ^ (h >> 32n)) % 4n);

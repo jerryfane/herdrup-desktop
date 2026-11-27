@@ -15,7 +15,7 @@ import { showBindChoice, signInToBind, type BindPage } from "./bindChoice";
 import { showAccountNotice } from "../notices";
 import { boundNotice } from "./shares";
 import { ACCOUNT_TITLE, AccountWelcome, HerdrUpAccountPanel } from "../herdrupAccount";
-import { ownerAccess, pageExit, signInEnded } from "./mygo";
+import { ownerAccess, pageExit, signInEnded, signInReturned } from "./mygo";
 import { ACCOUNT_LOOKUP_MS, boot, bootMarks, signInFirst } from "./bootChoice";
 import { sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
@@ -36,17 +36,38 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
  return e;
 }
 
-/** Hands the document off to the unified desktop shell (src/main.ts, html.desk). */
-async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }) {
+/** Hands the document off to the unified desktop shell (src/main.ts, html.desk). Keeps the
+ *  loading card visible until the shell module and its CSS finish downloading; on failure routes
+ *  through bootMarks' bounded one-retry recovery instead of leaving an empty page. */
+async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount = false) {
  if (shellLoading) return shellLoading;
  launched = true;
  shownWelcome = null;
- welcomeView.hidden = true;
- welcomeView.replaceChildren();
- document.body.classList.remove("web-welcome-visible");
+ showOpeningCard("Opening HerdrUp…");
  document.documentElement.classList.add("desk");
  shellLoading = import("../main").then(() => {
+  bootMarks().loaded("owner");
+  welcomeView.hidden = true;
+  welcomeView.replaceChildren();
+  document.body.classList.remove("web-welcome-visible");
   if (bound !== undefined) showAccountNotice(boundNotice(bound.agentName, bound.added));
+  if (openAccount) window.dispatchEvent(new CustomEvent("open-account-settings"));
+ }, error => {
+  console.error("herdrup: the shell didn't load", error);
+  launched = false;
+  shellLoading = null;
+  document.documentElement.classList.remove("desk");
+  const marks = bootMarks();
+  if (marks.afterLoadFailure() === "reload") { location.reload(); return; }
+  const card = el("div", "web-welcome-card");
+  card.setAttribute("role", "alert");
+  const reload = el("button", "web-owner-action web-owner-primary", "Reload");
+  reload.type = "button";
+  reload.onclick = () => { marks.newAttempt(); location.reload(); };
+  card.append(el("h1", "", "HerdrUp didn't load"), el("p", "", "Part of this page couldn't be downloaded. Check the connection, then reload."), reload);
+  welcomeView.replaceChildren(card);
+  welcomeView.hidden = false;
+  document.body.classList.add("web-welcome-visible");
  });
  return shellLoading;
 }
@@ -135,15 +156,19 @@ function showWelcome(shown: WelcomeState | null) {
  welcomeView.replaceChildren(card);
 }
 
-function showOpening() {
- if (launched) return;
+function showOpeningCard(label: string) {
  const card = el("div", "web-welcome-card");
  const spin = el("div", "guest-home-loading"); spin.innerHTML = spinnerSVG;
- spin.setAttribute("role", "status"); spin.setAttribute("aria-label", "Opening the invitation");
- card.append(spin, el("p", "", "Opening the invitation…"));
+ spin.setAttribute("role", "status"); spin.setAttribute("aria-label", label);
+ card.append(spin, el("p", "", label));
  welcomeView.replaceChildren(card);
  welcomeView.hidden = false;
  document.body.classList.add("web-welcome-visible");
+}
+
+function showOpening() {
+ if (launched) return;
+ showOpeningCard("Opening the invitation…");
 }
 
 function showStarted(started: Started) {
@@ -184,7 +209,7 @@ async function init() {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
  if (started.kind === "connected") {
-  await launchShell(started.bound);
+  await launchShell(started.bound, signInReturned && pending === null);
   return;
  }
  await document.fonts.ready;

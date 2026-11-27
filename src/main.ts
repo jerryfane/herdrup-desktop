@@ -145,9 +145,7 @@ async function refreshShared() {
   ]);
   if (at === sharedVersion) guestHome?.setShares(sharedMachines(grants, synced));
 }
-async function refreshAccountSignedIn() {
-  const s = await Desk.accountState().catch(() => null);
-  const next = s?.signedIn === true;
+function setAccountSignedIn(next: boolean) {
   const changed = next !== accountSignedIn;
   accountSignedIn = next;
   if (changed && guestBar) void buildTopBar();
@@ -216,19 +214,7 @@ async function buildTopBar() {
   const chooseHost = guestView ? guestActions.hosts : () => { closeWriter(); choosingHost = true; settingsAsked = false; render(); };
   back.onclick = chooseHost;
   back.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseHost(); } };
-  if (guestView && selectedTab === "gram") {
-    // The guest's Gram: as the owner's, its count, Read all and Refresh (3B).
-    const count = barCount();
-    titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
-    actionNodes = await barActions(() => rail?.minimize());
-  } else if (guestView) {
-    titleNodes = [document.createTextNode(selectedTab === "settings" ? "Settings" : "Agents")];
-    const minimize = await slot("sidebar.leading", "Minimise sidebar");
-    minimize.tabIndex = 0; minimize.setAttribute("role", "button"); minimize.setAttribute("aria-label", "Minimise sidebar");
-    minimize.onclick = () => rail?.minimize();
-    minimize.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); rail?.minimize(); } };
-    actionNodes = [minimize];
-  } else if (selectedTab === "gram") {
+  if (selectedTab === "gram") {
     // gramSidebar: "Gram" with the amber unread count, then Read all and Refresh.
     const count = barCount();
     titleNodes = [document.createTextNode("Gram"), ...(count ? [count] : [])];
@@ -242,7 +228,7 @@ async function buildTopBar() {
     actionNodes = [minimize];
     // New agent and New terminal create on the machine: a web owner's need the creation methods
     // (a later slice) and a terminal-scope link (shellModel.ts deskOffers, ownerWrites).
-    if (selectedTab === "agents" && deskOffers("openCreation", "createAgent", "createTerminal") && ownerWrites(state)) {
+    if (!guestView && selectedTab === "agents" && deskOffers("openCreation", "createAgent", "createTerminal") && ownerWrites(state)) {
       const add = await slot("plus", "New agent");
       const enabled = !!board && state.phase === "connected";
       add.tabIndex = enabled ? 0 : -1; add.setAttribute("role", "button"); add.setAttribute("aria-label", "New agent");
@@ -675,8 +661,9 @@ events.boardChanged.on((b) => {
   }
   render();
 });
+window.addEventListener("open-account-settings", () => { openSettingsPage("herdrupAccount"); });
 events.syncedSharesChanged.on(() => { void refreshShared(); });
-events.accountChanged.on(() => { void refreshAccountSignedIn(); });
+events.accountChanged.on((s) => { setAccountSignedIn(s.signedIn === true); });
 
 // Retain activation until the originating board has actually rendered. The
 // backend also retains it, so an event before this page exists is not lost.
@@ -853,7 +840,7 @@ async function init(rendered: () => void) {
   if (parts.appUpdates) appUpdateAsk = initAppUpdateAsk($("sidebar"), symbol, render);
   // Its Settings are the app's own (settings.ts, show's share), not a page of its own.
   guestHome = initGuestHome($("sidebar"), $("detail"), { symbol, rowAvatar, placeInitials, spinner: spinnerSVG }, guestActions, { settings: false });
-  void refreshAccountSignedIn();
+  void refreshShared();
   initInteraction($("detail"), symbol, target => {
     selectedAgent = target; refreshRowSelection();
     // The guest home's row shows the open agent selected, as the roster's does; the phone
@@ -867,7 +854,7 @@ async function init(rendered: () => void) {
   // Compact layout: a page opened pushes over the index. Which tab holds Settings follows the
   // connection, not the bar last drawn: from the host chooser over a share there is no guest bar
   // yet, and the account avatar still opens the share's Settings (#270).
-  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, hosts.access, () => { if ((shareShown(state) ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } });
+  settings = initSettings($("sidebar"), $("detail"), symbol, hosts.reconnect, hosts.access, () => { if ((shareShown(state) ? guestTab : tab) === "settings" && compactQuery.matches) { settingsPushed = true; render(); } }, setAccountSignedIn);
   startupStep("gram");
   await initGram(
     {
