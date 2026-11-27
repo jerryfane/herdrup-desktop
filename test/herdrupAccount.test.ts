@@ -179,3 +179,18 @@ test("Try again's late answer for the account before is dropped once another ses
  await settled();
  expect([root.text().includes("Browser B"), root.text().includes("Browser A")]).toEqual([true, false]);
 });
+
+test("setReturnProblem stays visible across signed-out refreshes (even transient refresh errors) and clears once signed in", async () => {
+ const { bridge, methods, emit } = browserBridge();
+ methods.accountState = async () => ({ signedIn: false, persistent: true });
+ methods.accountCheck = async () => ({ signedIn: false, persistent: true, problem: "Couldn't reach the account service." });
+ const panel = new HerdrUpAccountPanel(() => {}, () => new FakeElement("span") as unknown as HTMLElement, bridge);
+ panel.setReturnProblem("The sign-in took too long. Sign in again.");
+ await panel.refresh(true);
+ const root = panel.root as unknown as FakeElement;
+ expect(root.text()).toContain("The sign-in took too long. Sign in again.");
+ expect(panel.problem).toBe("The sign-in took too long. Sign in again.");
+ emit("accountChanged", { signedIn: true, persistent: true });
+ expect(panel.problem).toBe("");
+ expect(root.text()).not.toContain("The sign-in took too long. Sign in again.");
+});

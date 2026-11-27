@@ -96,6 +96,32 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
  events.accountChanged.on(() => { void refreshAccount(); });
  void refreshAccount();
 
+ /** Defers starting over while a modal dialog (e.g., Leave confirmation warning) is open.
+  *  A session/account change (guestInstead=false) always restarts once the dialog closes,
+  *  even if another account signed in meanwhile; a signed-out guest fallback (guestInstead=true)
+  *  restarts only if the host screen is still visible and signed out when dismissed. */
+ let deferredDialog: Element | null = null;
+ let deferredRestart: "session" | "guest" | null = null;
+ function startOverWhenIdle(guestInstead = false) {
+  const openDialog = document.querySelector("dialog[open]");
+  if (openDialog) {
+   const want: "session" | "guest" = guestInstead ? "guest" : "session";
+   if (deferredRestart !== "session") deferredRestart = want;
+   if (deferredDialog !== openDialog) {
+    deferredDialog = openDialog;
+    openDialog.addEventListener("close", () => {
+     const action = deferredRestart;
+     deferredDialog = null;
+     deferredRestart = null;
+     if (action === "session") startOver(false);
+     else if (action === "guest" && !container.hidden && !signedIn && ownerAccess.account.current === null) startOver(true);
+    }, { once: true });
+   }
+   return;
+  }
+  startOver(guestInstead);
+ }
+
  // The notice's account row (the notice as it was: signing out there, or in Settings, ends the
  // session).
  let approvalStarted = false;
@@ -113,7 +139,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
    if (probing !== null) { void probing(); probing = null; }
    if (wasOpening) draw();
   },
-  startOver: () => { if (approvalStarted || !container.hidden) startOver(); },
+  startOver: () => { if (approvalStarted || !container.hidden) startOverWhenIdle(); },
   // The same account read back after a refused sign-out: what the end stopped starts again under
   // the new session; the screen stays as it was (an approval that had ended stays as it ended).
   restored: () => {
@@ -230,18 +256,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
 
  new MutationObserver(() => {
   if (!container.hidden) {
-   if (!signedIn && ownerAccess.account.current === null) {
-    // Do not wipe an open modal (e.g., Leave confirmation showing an unsent-delete warning).
-    const openDialog = document.querySelector("dialog[open]");
-    if (openDialog) {
-     openDialog.addEventListener("close", () => {
-      if (!container.hidden && !signedIn && ownerAccess.account.current === null) startOver(true);
-     }, { once: true });
-     return;
-    }
-    startOver(true);
-    return;
-   }
+   if (!signedIn && ownerAccess.account.current === null) { startOverWhenIdle(true); return; }
    if (!approvalStarted) { approvalStarted = true; begin(); }
   }
   probe();

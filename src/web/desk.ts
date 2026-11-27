@@ -658,7 +658,6 @@ export function createGuestDesk(env: DeskEnv) {
   if (!l.owner || active !== l || l.conn.phase !== "connected" || !guest || guest.availability === "reconnecting") return;
   const next: GuestConnection = { ...guest, ...change };
   if (!next.availability) delete next.availability;
-  if (!l.owner) delete next.ownerScope;
   if (next.availability === guest.availability && next.ownerScope === guest.ownerScope) return;
   setState(l, { ...l.conn, guest: next });
  }

@@ -36,39 +36,77 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
  return e;
 }
 
+const SHELL_RELOAD_KEY = "herdrup.shellReloaded";
+const SHELL_RETURN_KEY = "herdrup.shellAccountReturn";
+function shellLoadFailedAction(): "reload" | "explain" {
+ try {
+  if (sessionStorage.getItem(SHELL_RELOAD_KEY) === "1") return "explain";
+  sessionStorage.setItem(SHELL_RELOAD_KEY, "1");
+  return "reload";
+ } catch {
+  return "explain";
+ }
+}
+function clearShellReload() {
+ try { sessionStorage.removeItem(SHELL_RELOAD_KEY); } catch { /* ignore */ }
+}
+function saveShellReturn(openAccount: { problem: string | null } | null | undefined) {
+ if (!openAccount) return;
+ try { sessionStorage.setItem(SHELL_RETURN_KEY, JSON.stringify(openAccount)); } catch { /* ignore */ }
+}
+function clearShellReturn() {
+ try { sessionStorage.removeItem(SHELL_RETURN_KEY); } catch { /* ignore */ }
+}
+function readShellReturn(): { problem: string | null } | null {
+ try {
+  const raw = sessionStorage.getItem(SHELL_RETURN_KEY);
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as { problem?: unknown };
+  return { problem: typeof parsed?.problem === "string" ? parsed.problem : null };
+ } catch {
+  return null;
+ }
+}
+
 /** Hands the document off to the unified desktop shell (src/main.ts, html.desk). Keeps the
- *  loading card visible until the shell module and its CSS finish downloading; on failure routes
- *  through bootMarks' bounded one-retry recovery instead of leaving an empty page. */
-async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount = false) {
+ *  loading card visible until the shell module and its CSS finish downloading; catches both
+ *  JS and Vite CSS preload failures and uses its own bounded one-retry key (independent of
+ *  bootMarks, which already marked the guest bootstrap loaded), preserving any OAuth return
+ *  destination and error across both automatic and interrupted reloads until the shell loads. */
+async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount?: { problem: string | null } | null) {
  if (shellLoading) return shellLoading;
  launched = true;
  shownWelcome = null;
+ saveShellReturn(openAccount);
  showOpeningCard("Opening HerdrUp…");
  document.documentElement.classList.add("desk");
- shellLoading = import("../main").then(() => {
-  bootMarks().loaded("owner");
-  welcomeView.hidden = true;
-  welcomeView.replaceChildren();
-  document.body.classList.remove("web-welcome-visible");
-  if (bound !== undefined) showAccountNotice(boundNotice(bound.agentName, bound.added));
-  if (openAccount) window.dispatchEvent(new CustomEvent("open-account-settings"));
- }, error => {
-  console.error("herdrup: the shell didn't load", error);
-  launched = false;
-  shellLoading = null;
-  document.documentElement.classList.remove("desk");
-  const marks = bootMarks();
-  if (marks.afterLoadFailure() === "reload") { location.reload(); return; }
-  const card = el("div", "web-welcome-card");
-  card.setAttribute("role", "alert");
-  const reload = el("button", "web-owner-action web-owner-primary", "Reload");
-  reload.type = "button";
-  reload.onclick = () => { marks.newAttempt(); location.reload(); };
-  card.append(el("h1", "", "HerdrUp didn't load"), el("p", "", "Part of this page couldn't be downloaded. Check the connection, then reload."), reload);
-  welcomeView.replaceChildren(card);
-  welcomeView.hidden = false;
-  document.body.classList.add("web-welcome-visible");
- });
+ shellLoading = (async () => {
+  try {
+   await import("../main");
+   clearShellReload();
+   clearShellReturn();
+   welcomeView.hidden = true;
+   welcomeView.replaceChildren();
+   document.body.classList.remove("web-welcome-visible");
+   if (bound !== undefined) showAccountNotice(boundNotice(bound.agentName, bound.added));
+   if (openAccount) window.dispatchEvent(new CustomEvent("open-account-settings", { detail: { problem: openAccount.problem ?? "" } }));
+  } catch (error) {
+   console.error("herdrup: the shell didn't load", error);
+   launched = false;
+   shellLoading = null;
+   document.documentElement.classList.remove("desk");
+   if (shellLoadFailedAction() === "reload") { location.reload(); return; }
+   const card = el("div", "web-welcome-card");
+   card.setAttribute("role", "alert");
+   const reload = el("button", "web-owner-action web-owner-primary", "Reload");
+   reload.type = "button";
+   reload.onclick = () => { clearShellReload(); location.reload(); };
+   card.append(el("h1", "", "HerdrUp didn't load"), el("p", "", "Part of this page couldn't be downloaded. Check the connection, then reload."), reload);
+   welcomeView.replaceChildren(card);
+   welcomeView.hidden = false;
+   document.body.classList.add("web-welcome-visible");
+  }
+ })();
  return shellLoading;
 }
 
@@ -209,9 +247,12 @@ async function init() {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
  if (started.kind === "connected") {
-  await launchShell(started.bound, signInReturned && pending === null);
+  const savedReturn = readShellReturn();
+  const openAccount = (signInReturned && pending === null ? signInEnded() : null) ?? savedReturn;
+  await launchShell(started.bound, openAccount);
   return;
  }
+ clearShellReturn();
  await document.fonts.ready;
  const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);

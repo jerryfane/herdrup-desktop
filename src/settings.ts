@@ -612,6 +612,8 @@ export function initSettings(sidebar: HTMLElement, detail: HTMLElement, symbol: 
   return {
     /** Shows one page of Settings (the update notification's and the tray's App updates). */
     openPage(next: Page) { choose(next); },
+    /** Preserves an OAuth return problem for HerdrUp account settings across background reads. */
+    setAccountProblem(problem: string) { herdrupAccount.setReturnProblem(problem); },
     /** `nextShare`: the Settings of a device viewing a share (main.ts, guest mode), the app's
      *  own settings with the share's card and page in place of the machine's. */
     show(show: boolean, nextState: ConnState, nextBoard: BoardUpdate | null, nextShare: ShareSettings | null = null) {

@@ -63,6 +63,8 @@ export class HerdrUpAccountPanel {
  private devicesProblem = "";
  /** A Rename or Remove the service refused: shown under DEVICES until the next device action. */
  private deviceNote = "";
+ /** A sign-in return error passed directly across shell handoff, preserved across background state reads. */
+ private returnProblem = "";
  private deleteInfo: AccountDeleteInfo | null = null;
  /** A deletion's outcome, shown on the signed-out page after it (or on this page if it failed). */
  private deleteNote = "";
@@ -120,7 +122,13 @@ export class HerdrUpAccountPanel {
  get signInProviders(): readonly string[] { return this.providers; }
  /** What went wrong last, as the panel shows it ("" for nothing): a sign-in that came back with
   *  an error, a service that couldn't be reached. */
- get problem(): string { return this.state?.problem ?? ""; }
+ get problem(): string { return this.returnProblem || this.state?.problem || ""; }
+
+ /** Preserves an OAuth return problem handed off from the bootstrap across background state reads. */
+ setReturnProblem(problem: string) {
+  this.returnProblem = problem;
+  this.draw();
+ }
 
  /** Whether the service offers sign-in, and the session as the app holds it; `check` asks the
   *  service too (a removed device shows signed out). A service that can't be reached keeps the
@@ -152,6 +160,7 @@ export class HerdrUpAccountPanel {
  private applyState(s: AccountState, load = true) {
   const was = this.state?.signedIn;
   this.state = s;
+  if (s.signedIn) this.returnProblem = "";
   if (!s.signedIn) {
    if (was !== false) this.session++;
    this.devices = null; this.sync = null; this.deleteInfo = null; this.deleting = false; this.deviceNote = "";
@@ -235,13 +244,14 @@ export class HerdrUpAccountPanel {
     : "Sign in to your HerdrUp account."));
    const buttons = el("div", "account-providers");
    buttons.append(...providerButtons(this.providers, provider => {
-    this.waiting = true; this.draw();
+    this.waiting = true; this.returnProblem = ""; this.draw();
     void this.bridge.desk.accountSignIn(provider).catch(error => { this.waiting = false; this.state = { ...(this.state ?? { signedIn: false, persistent: true }), problem: errorText(error) }; this.draw(); });
    }));
    nodes.push(buttons);
    if (this.waiting) nodes.push(el("p", "account-note", "Finish signing in in your browser."));
   }
-  if (s?.problem) { const line = el("p", "account-note account-problem", s.problem); line.setAttribute("role", "status"); nodes.push(line); }
+  const problem = this.returnProblem || s?.problem;
+  if (problem) { const line = el("p", "account-note account-problem", problem); line.setAttribute("role", "status"); nodes.push(line); }
   if (!s?.signedIn && this.deleteNote) { const line = el("p", "account-note account-problem", this.deleteNote); line.setAttribute("role", "status"); nodes.push(line); }
   if (s && !s.persistent) nodes.push(el("p", "account-note", "This computer has no credential store, so you'll sign in again each time herdrup starts."));
   if (!this.full) nodes.push(el("p", "account-note", "Keys and pairing secrets stay on this device."));
