@@ -55,28 +55,32 @@ var publishSyncedShares = func(s []SyncedShare) { SyncedSharesChanged.Broadcast(
 // settles it by what the account holds rather than writing it afresh (as
 // the web's journal of writes sent, src/web/shares.ts SharesRecord sent).
 // A dispatch that provably wrote nothing puts both back as they were
-// before it (unsendShareWrites).
+// before it (unsendShareWrites). Unproven is a sent create a full pull
+// couldn't settle, and whose proof the service didn't give (shareProofs):
+// it is neither sent again nor let go until a later ask settles it.
 type shareOp struct {
-	ID      string             `json:"id"`
-	Account string             `json:"account"`
-	Body    *account.ShareBody `json:"body,omitempty"`
-	Sent    *int64             `json:"sent,omitempty"`
-	SentAt  int64              `json:"sentAt,omitempty"`
+	ID       string             `json:"id"`
+	Account  string             `json:"account"`
+	Body     *account.ShareBody `json:"body,omitempty"`
+	Sent     *int64             `json:"sent,omitempty"`
+	SentAt   int64              `json:"sentAt,omitempty"`
+	Unproven bool               `json:"unproven,omitempty"`
 }
 
-// unprovenCreate is whether op is a create (base 0) sent whose landing a
-// full pull of its account at revision rev can't rule out. Any landing of
-// it has a revision past SentAt, and any tombstone of that landing one
-// past that. An incremental pull from at or below SentAt can't miss
-// either: it lists the row or its tombstone, or the service refuses it
-// (410) once that tombstone was pruned (sync_floor, AccountService
-// DESIGN.md §5.5). A full pull lists no pruned tombstone, so its lacking
-// the item proves nothing, unless the account has written nothing since
-// (rev at or below SentAt), or the service still holds its history from
-// where op was sent (retainedFrom at or past kept: the lowest revision a
-// pull from which the service doesn't refuse, keptSince; 0 for none).
-func unprovenCreate(op shareOp, rev, kept int64) bool {
-	return op.Sent != nil && *op.Sent == 0 && rev > op.SentAt && (kept == 0 || retainedFrom(op) < kept)
+// needsProof is whether op is a create (base 0) sent whose landing the
+// pulls since can't rule out by themselves: a full one at revision rev
+// (full) past SentAt, or an earlier one whose proof is still owed
+// (Unproven). Any landing of it has a revision past SentAt, and any
+// tombstone of that landing one past that. An incremental pull from at
+// or below SentAt can't miss either: it lists the row or its tombstone,
+// or the service refuses it (410) once that tombstone was pruned
+// (sync_floor, AccountService DESIGN.md §5.5). A full pull lists no
+// pruned tombstone, so its lacking the item proves nothing, unless the
+// account has written nothing since (rev at or below SentAt), or the
+// service still holds its history from where op was sent (retainedFrom,
+// shareProofs).
+func needsProof(op shareOp, full bool, rev int64) bool {
+	return op.Sent != nil && *op.Sent == 0 && (op.Unproven || full && rev > op.SentAt)
 }
 
 // retainedFrom is where a pull starts that, not refused, proves a full
@@ -87,41 +91,52 @@ func retainedFrom(op shareOp) int64 {
 	return max(op.SentAt, 1)
 }
 
-// keptSince asks the service whether it still holds its history from
-// where each sent create of acct that full pull p can't rule out by
-// itself was sent (unprovenCreate, retainedFrom), and returns the lowest
-// revision it does (from there on it does from every later one), 0 for
-// none or a pull that isn't full. Each ask is one page
-// (account.Retains), made only when such a create is owed, before the
-// merge or readback settles it as superseded.
-func (d *Desk) keptSince(ctx context.Context, round account.Round, acct string, p account.Pull) (int64, error) {
-	if !p.Full {
-		return 0, nil
-	}
+// shareProofs asks the service, for each sent create of acct that pull p
+// doesn't list and can't settle by itself (needsProof), whether it still
+// holds its history from where the create was sent (retainedFrom): one
+// page each (account.Retains), lowest first; once it does, it does from
+// every later one. proofs maps each revision answered to the answer. One
+// missing is unknown: the error that left it so comes back with what was
+// answered, and the merge or readback settles the rest as before, the
+// creates it leaves unknown kept as they are (Unproven).
+func (d *Desk) shareProofs(ctx context.Context, round account.Round, acct string, p account.Pull) (map[int64]bool, error) {
 	if !d.storeMu.LockCtx(ctx) {
-		return 0, ctx.Err()
+		return nil, ctx.Err()
 	}
 	state, err := d.loadSyncState()
 	d.storeMu.Unlock()
 	if err != nil {
-		return 0, err
+		return nil, err
+	}
+	listed := map[string]bool{}
+	for _, it := range p.Items {
+		if it.Collection == "shares" {
+			listed[it.ID] = true
+		}
 	}
 	var froms []int64
 	for _, op := range state.ShareWrites {
-		if op.Account == acct && unprovenCreate(op, p.Rev, 0) {
+		if op.Account == acct && !listed[op.ID] && needsProof(op, p.Full, p.Rev) {
 			froms = append(froms, retainedFrom(op))
 		}
 	}
 	slices.Sort(froms)
-	for _, from := range slices.Compact(froms) {
-		switch kept, err := d.account.Retains(ctx, round, from); {
-		case err != nil:
-			return 0, err
-		case kept:
-			return from, nil
+	froms = slices.Compact(froms)
+	proofs := map[int64]bool{}
+	for i, from := range froms {
+		kept, err := d.account.Retains(ctx, round, from)
+		if err != nil {
+			return proofs, err
 		}
+		if kept {
+			for _, f := range froms[i:] {
+				proofs[f] = true
+			}
+			break
+		}
+		proofs[from] = false
 	}
-	return 0, nil
+	return proofs, nil
 }
 
 // errShareGone is an open of a share the account no longer lists.
@@ -320,7 +335,7 @@ type shareMark struct {
 // journalShareWrites) once the dispatch provably wrote nothing (the
 // service refused it, or it never connected): each write's journal is
 // again what it was, never sent (so no later pull, a full one included,
-// makes this dispatch ambiguous, unprovenCreate), or an earlier dispatch
+// makes this dispatch ambiguous, needsProof), or an earlier dispatch
 // that may still have landed. A journal changed since is left alone.
 func (d *Desk) unsendShareWrites(ctx context.Context, acct string, marks map[string]shareMark) error {
 	if len(marks) == 0 {
@@ -486,8 +501,8 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 }
 
 // mergeShares plans account acct's shares changes from the mirror after a
-// pull (mirror; full, at revision rev: the pull that brought it, the
-// service holding its history from kept on, keptSince), the ids
+// pull (mirror; full, at revision rev: the pull that brought it, and what
+// the service answered of its history, proofs, shareProofs), the ids
 // the account is known to have held (known, as syncPass builds it for
 // hosts and prompts), the writes and deletes owed (as shareOp, other
 // accounts' kept as they are) and the base revisions (revs, as baseRevs):
@@ -499,24 +514,25 @@ func (d *Desk) noteShare(a guest.Access, leave bool) error {
 //     afresh: it goes again, on that base, only once the account's
 //     history proves it never landed: its item where it was sent (the same
 //     base revision: a tombstone not passed, or none), read by pulls that
-//     each would have shown a landing since (unprovenCreate: an absent
-//     item after a full pull proves nothing for a create, unless the
-//     account wrote nothing since, or the service still holds its history
-//     from where the create was sent). Otherwise someone else's change
+//     each would have shown a landing since (needsProof: an absent item
+//     after a full pull proves nothing for a create, unless the account
+//     wrote nothing since, or the service still holds its history from
+//     where the create was sent). Otherwise someone else's change
 //     superseded it (a tombstone or another write past that base, and not
 //     held), or may have (a create a full pull can't rule out, deleted
 //     elsewhere, its tombstone pruned): it goes, and so does the grant
 //     (gone), as a leave elsewhere would have it. A create that never
 //     landed is lost so only past a dispatch with no answer (or an answer
 //     whose settling couldn't be saved) and a full pull after a tombstone
-//     since was pruned; the invitation can be accepted again;
+//     since was pruned; the invitation can be accepted again. One whose
+//     proof the service didn't give is kept as it is, unsent (Unproven);
 //   - any other is written, on the revision last seen of its item;
 //   - an owed delete of an item the account holds is sent, on its
 //     revision; one of an item it doesn't hold is done.
 //
 // gone are the known items the account no longer holds, and the items of
 // superseded writes: this device's bound grants for them go.
-func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev, kept int64) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
+func mergeShares(acct string, mirror []account.RemoteShare, known map[string]bool, writes, deletes []shareOp, revs map[string]int64, full bool, rev int64, proofs map[int64]bool) (changes []account.Change, nextWrites, nextDeletes []shareOp, gone map[string]bool) {
 	held := map[string]int64{}
 	for _, s := range mirror {
 		held[s.ID] = s.Rev
@@ -536,9 +552,22 @@ func mergeShares(acct string, mirror []account.RemoteShare, known map[string]boo
 			continue
 		}
 		base := revs["shares/"+op.ID]
-		if op.Sent != nil && (*op.Sent != base || full && unprovenCreate(op, rev, kept)) {
+		if op.Sent != nil && *op.Sent != base {
 			gone[op.ID] = true
 			continue
+		}
+		if needsProof(op, full, rev) {
+			retained, answered := proofs[retainedFrom(op)]
+			if !answered {
+				op.Unproven = true
+				nextWrites = append(nextWrites, op)
+				continue
+			}
+			if !retained {
+				gone[op.ID] = true
+				continue
+			}
+			op.Unproven = false
 		}
 		changes = append(changes, account.Write("shares", op.ID, base, *op.Body))
 		nextWrites = append(nextWrites, op)

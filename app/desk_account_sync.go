@@ -766,14 +766,15 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	if err != nil {
 		return err
 	}
-	// Before a full pull settles a sent create it lacks as superseded, the
-	// service's retained history may prove it never landed (keptSince).
-	kept, err := d.keptSince(ctx, round, acct, pull)
-	if errors.Is(err, account.ErrAccountChanged) {
+	// Before a pull settles a sent create it can't rule out by itself as
+	// superseded, the service's retained history may prove it never
+	// landed (shareProofs). If it doesn't answer, the pull is applied all
+	// the same, those creates kept as they are, and the round fails at
+	// its end (probeErr); one of another account's session applies
+	// nothing.
+	proofs, probeErr := d.shareProofs(ctx, round, acct, pull)
+	if errors.Is(probeErr, account.ErrAccountChanged) {
 		return errSyncAbandoned
-	}
-	if err != nil {
-		return err
 	}
 	// The lock may be long in coming: the wait ends with the round, and a
 	// round past its deadline applies nothing.
@@ -920,7 +921,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	prompts, promptChanges, promptDeletes, promptBaseline, unsendable := mergePrompts(ps.Prompts, old.Prompts, mirror.Prompts, knownPrompts, pendingPrompts, promptBaseline, baselineHash, attempts, lastSent, revs)
 	promptsChanged := !slices.Equal(prompts, ps.Prompts)
 	changes = append(changes, promptChanges...)
-	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs, pull.Full, pull.Rev, kept)
+	shareChanges, shareWrites, shareDeletes, goneShares := mergeShares(acct, mirror.Shares, knownShares, latest.ShareWrites, latest.ShareDeletes, revs, pull.Full, pull.Rev, proofs)
 	changes = append(changes, shareChanges...)
 	// The writes that may still land: those the pull is past, or past
 	// their deadline (promptAttempt), are settled.
@@ -1180,7 +1181,7 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		}
 	}
 	var readBack account.Pull
-	var readKept int64
+	var readProofs map[int64]bool
 	if len(acked) > 0 {
 		// Read our own writes back, so the mirror holds what the account holds.
 		readBack, err = d.account.PullSince(ctx, round, mirror.Rev)
@@ -1193,13 +1194,15 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 		if err != nil {
 			return err
 		}
-		// As for the pull (keptSince), for a full readback.
-		readKept, err = d.keptSince(ctx, round, acct, readBack)
-		if errors.Is(err, account.ErrAccountChanged) {
-			return errSyncAbandoned
-		}
-		if err != nil {
-			return err
+		if readBack.Full {
+			// As for the pull (shareProofs): what the full readback
+			// settles is applied whether or not the service answers.
+			var readErr error
+			readProofs, readErr = d.shareProofs(ctx, round, acct, readBack)
+			if errors.Is(readErr, account.ErrAccountChanged) {
+				return errSyncAbandoned
+			}
+			probeErr = cmp.Or(probeErr, readErr)
 		}
 	}
 	// The readback, the turned-down copies and the round's result are
@@ -1324,13 +1327,14 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			// account acknowledged (SharesHeld, this round's writes it took
 			// among them) and the creates sent whose landing neither the
 			// history since nor what the service retains of it can rule
-			// out (unprovenCreate, readKept). One the full readback
+			// out (needsProof, readProofs). One the full readback
 			// lacks was deleted, its tombstone pruned (or restored away)
 			// since, unless this device deleted it this round: gone, as a
 			// tombstone would say, before the held ids are discarded below.
 			// Its owed write goes with it, never written afresh, and its
 			// grant here at the next merge (mergeShares), so no list or
-			// accept confirms it.
+			// accept confirms it. A create the service didn't answer for
+			// is kept as it is, for a later ask to settle (Unproven).
 			was := map[string]bool{}
 			for _, s := range held.Shares {
 				was[s.ID] = true
@@ -1338,8 +1342,13 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 			for _, id := range state.SharesHeld[acct] {
 				was[id] = true
 			}
-			for _, op := range state.ShareWrites {
-				if op.Account == acct && unprovenCreate(op, readBack.Rev, readKept) {
+			for i, op := range state.ShareWrites {
+				if op.Account != acct || present["shares/"+op.ID] || !needsProof(op, true, readBack.Rev) {
+					continue
+				}
+				retained, answered := readProofs[retainedFrom(op)]
+				state.ShareWrites[i].Unproven = !answered
+				if answered && !retained {
 					was[op.ID] = true
 				}
 			}
@@ -1382,8 +1391,9 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	}
 	// A round that left a change unsent did not finish well: the status
 	// keeps the last one that did, and so does a pass whose turned-down
-	// changes the next pass sends again.
-	if unsent == nil && !turnedDown && !unsendable {
+	// changes the next pass sends again, or one that kept a sent create
+	// whose proof the service didn't give (probeErr).
+	if unsent == nil && probeErr == nil && !turnedDown && !unsendable {
 		state.LastSync = &AccountSyncStatus{LastSyncedMs: time.Now().UnixMilli(), Machines: len(state.Mirror.Hosts), Prompts: len(state.Mirror.Prompts)}
 	}
 	err = d.storeSyncState(state)
@@ -1396,6 +1406,8 @@ func (d *Desk) syncPass(ctx context.Context, round account.Round, push bool) err
 	switch {
 	case unsent != nil:
 		return unsent
+	case probeErr != nil:
+		return probeErr
 	case turnedDown:
 		return errTurnedDown
 	case unsendable:

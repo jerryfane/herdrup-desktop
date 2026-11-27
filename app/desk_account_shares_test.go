@@ -1181,6 +1181,126 @@ func TestASentCreateAFullReadbackLacksIsKeptWhileItsHistoryIs(t *testing.T) {
 	}
 }
 
+// A full readback whose ask of the service's history fails still applies
+// what it settles. Share B, just acknowledged, was deleted elsewhere and
+// its tombstone pruned, so the readback starts over and lacks it; it
+// also lacks the older create A, sent with no answer and whose re-send
+// the rate limit stopped, and the ask for A's history answers 503. B is
+// not confirmed and its grant goes; A stays owed as it is, unsent, until
+// a later ask settles it (refused: pruned past it, so let go with its
+// grant).
+func TestAFullReadbackWhoseHistoryAskFailsStillAppliesWhatItSettles(t *testing.T) {
+	quietSync(t)
+	quietShares(t)
+	w, srv := newWorker(t, "")
+	w.seedPrompt("prompt-1", `{"text":"held"}`)
+	d := shareDevice(t, srv)
+	ctx := context.Background()
+	// accept accepts another host's invitation, bound, failing as fail
+	// sets the worker to, and returns the share's item id.
+	accept := func(fail func()) (guest.Access, string) {
+		t.Helper()
+		relay, base := shareRelay(t, true)
+		w.mu.Lock()
+		fail()
+		w.mu.Unlock()
+		access, err := d.AcceptGuestInvitation(ctx, relay.InviteLink(base, time.Now().Add(time.Hour)), "account")
+		if err != nil || !access.AccountBound || access.AccountShare == shareConfirmed {
+			t.Fatalf("bound accept: %+v, %v; want it unconfirmed", access, err)
+		}
+		w.mu.Lock()
+		w.failPush, w.failPull = false, false
+		w.mu.Unlock()
+		return access, relay.HostID() + "/" + access.GuestID
+	}
+	a, idA := accept(func() { w.failPush = true }) // sent, no answer
+	b, idB := accept(func() { w.failPull = true }) // owed, unsent
+	// The next round's writes start at B, as after a rate limit that
+	// stopped there (PushFrom), and fill a first push with prompts: B goes
+	// in the first, A in the second, which the rate limit stops.
+	for i := range account.MaxPushChanges {
+		if _, err := d.SavePrompt(SavedPrompt{Text: fmt.Sprintf("prompt %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.storeMu.Lock()
+	state, err := d.loadSyncState()
+	if err == nil {
+		state.PushFrom = "shares/" + idB
+		err = d.storeSyncState(state)
+	}
+	d.storeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.rateLimit, w.windowPosts = 1, 0
+	w.afterPush = func() {
+		w.tombstone(idB)
+		w.prune(idB)
+		// The readback's 410, its pull from 0, then the ask: 503.
+		w.onPull = func() { w.onPull = func() { w.failPull = true } }
+	}
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a round whose history ask failed: no error")
+	}
+	grantOf := func(guestID string) (guest.Access, bool) {
+		t.Helper()
+		grants, err := d.SharedConnections()
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(grants, func(g guest.Access) bool { return g.GuestID == guestID })
+		if i < 0 {
+			return guest.Access{}, false
+		}
+		return grants[i], true
+	}
+	if g, ok := grantOf(b.GuestID); ok && g.AccountShare == shareConfirmed {
+		t.Fatalf("B, deleted before the full readback: %+v; want it not confirmed", g)
+	}
+	if g, ok := grantOf(a.GuestID); !ok || g.AccountShare == shareConfirmed {
+		t.Fatalf("A, its history unknown: %+v (held %v); want it held, unconfirmed", g, ok)
+	}
+	if owed := savedSyncState(t, d).ShareWrites; !slices.ContainsFunc(owed, func(op shareOp) bool {
+		return op.ID == idA && op.Sent != nil && op.Unproven
+	}) {
+		t.Fatalf("A, its history unknown: owed %+v; want it sent, its proof owed", owed)
+	}
+	if _, live := w.live()[idA]; live {
+		t.Fatal("A was written to the account")
+	}
+	// The next sync's ask fails too (its pull, then the ask: 503): the
+	// merge still lets B's grant go, and keeps A as it is, unsent.
+	w.mu.Lock()
+	w.rateLimit = 0
+	w.onPull = func() { w.failPull = true }
+	w.mu.Unlock()
+	if err := d.SyncMachines(ctx); err == nil {
+		t.Fatal("a round whose history ask failed: no error")
+	}
+	if _, ok := grantOf(b.GuestID); ok {
+		t.Fatal("B's grant is still held after a merge that knew it gone")
+	}
+	if g, ok := grantOf(a.GuestID); !ok || g.AccountShare == shareConfirmed {
+		t.Fatalf("A, its history still unknown: %+v (held %v); want it held, unconfirmed", g, ok)
+	}
+	if _, live := w.live()[idA]; live {
+		t.Fatal("A, its history still unknown, was written to the account")
+	}
+	// Asked again, the service answers: pruned past A, which is let go.
+	if err := d.SyncMachines(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := w.live()[idA]; live {
+		t.Fatal("A, its history pruned past it, was written to the account")
+	}
+	if grants, err := d.SharedConnections(); err != nil || len(grants) != 0 {
+		t.Fatalf("after the next sync: %+v, %v; want both grants gone", grants, err)
+	}
+}
+
 // A bound accept owns one sync round: with background syncs on (as in the
 // app) and the account full, it sends its write once; the owed write is
 // left for the next sync, no second round started for it.
