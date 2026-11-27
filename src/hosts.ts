@@ -481,9 +481,10 @@ export function initHosts(container: HTMLElement, form: HTMLFormElement, showAge
  return {
   refresh,
   holdsHome: () => holding,
-  /** Whether this computer is actively polling its own pair request (pair-v1), sharing the
-   *  account's approval budget with initWebAccess. */
-  pairingActive: () => pairView !== null && pairNextStep(pairView, 0, 0) !== null,
+  /** Whether this computer is waiting on its initial pair request (pair-v1), sharing the
+   *  account's approval budget with initWebAccess. Once pairing reaches phase "done" (even with
+   *  the optional 10-minute resend window open), approval discovery resumes. */
+  pairingActive: () => pairView !== null && pairView.phase !== "done" && pairNextStep(pairView, 0, 0) !== null,
   async reconnect() {
    const machine = (await Desk.machines()).find(machine => machine.active);
    if (!machine) throw new Error("Choose a saved host before reconnecting.");

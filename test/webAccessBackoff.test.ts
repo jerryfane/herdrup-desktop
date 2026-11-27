@@ -94,3 +94,56 @@ test("initWebAccess backs off on 429 and honors cooldown across visibilitychange
   jest.useRealTimers();
  }
 });
+
+test("sync-only account:changed preserves 429 cooldown and failure count while sign-out resets them", async () => {
+ jest.useFakeTimers();
+ const doc = new FakeDocument();
+ const on = new Map<string, (payload: unknown) => void>();
+ let approvalCalls = 0;
+ let signedIn = true;
+ let displayHint = "owner@example.com";
+ G.document = doc;
+ G.devicePixelRatio = 1;
+ G.mygo = {
+  on: (name: string, l: (payload: unknown) => void) => { on.set(name, l); return () => on.delete(name); },
+  call: async (method: string) => {
+   switch (method) {
+    case "Desk.AccountState": return { signedIn, displayHint, persistent: true };
+    case "Desk.ApprovalsOffered": return { browsers: true, pairs: true };
+    case "Desk.ApprovalRequests":
+     approvalCalls++;
+     throw new Error("account service: 429 too_many_requests");
+    default: return Promise.withResolvers<never>().promise;
+   }
+  },
+ };
+ const clock = handClock(0);
+ try {
+  initWebAccess(clock);
+  doc.dispatchEvent(new Event("visibilitychange"));
+  await until("first 429", () => approvalCalls === 1 && jest.getTimerCount() === 1);
+  // Sync-status-only account:changed for the SAME session must NOT clear the 16 s cooldown.
+  on.get("account:changed")?.({ signedIn: true, displayHint, persistent: true, syncFailed: true });
+  clock.to(5_000);
+  doc.dispatchEvent(new Event("visibilitychange"));
+  for (let i = 0; i < 20; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  expect(approvalCalls).toBe(1);
+  // Next failure after 16 s must advance backoff to 32 s (not restart at 16 s).
+  clock.to(16_000);
+  jest.advanceTimersByTime(16_000);
+  await until("second 429", () => approvalCalls === 2 && jest.getTimerCount() === 1);
+  clock.to(32_000);
+  jest.advanceTimersByTime(16_000);
+  expect(approvalCalls).toBe(2);
+  // Real sign-out then sign-in resets cooldown so visibilitychange polls immediately.
+  signedIn = false;
+  on.get("account:changed")?.({ signedIn: false, displayHint: "", persistent: true });
+  signedIn = true;
+  on.get("account:changed")?.({ signedIn: true, displayHint, persistent: true });
+  doc.dispatchEvent(new Event("visibilitychange"));
+  await until("poll after session change", () => approvalCalls === 3);
+ } finally {
+  jest.clearAllTimers();
+  jest.useRealTimers();
+ }
+});
