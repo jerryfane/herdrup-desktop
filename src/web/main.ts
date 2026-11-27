@@ -37,7 +37,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 }
 
 const SHELL_RELOAD_KEY = "herdrup.shellReloaded";
-const SHELL_RETURN_KEY = "herdrup.shellAccountReturn";
 function shellLoadFailedAction(): "reload" | "explain" {
  try {
   if (sessionStorage.getItem(SHELL_RELOAD_KEY) === "1") return "explain";
@@ -50,46 +49,29 @@ function shellLoadFailedAction(): "reload" | "explain" {
 function clearShellReload() {
  try { sessionStorage.removeItem(SHELL_RELOAD_KEY); } catch { /* ignore */ }
 }
-function saveShellReturn(openAccount: { problem: string | null } | null | undefined) {
- if (!openAccount) return;
- try { sessionStorage.setItem(SHELL_RETURN_KEY, JSON.stringify(openAccount)); } catch { /* ignore */ }
-}
-function clearShellReturn() {
- try { sessionStorage.removeItem(SHELL_RETURN_KEY); } catch { /* ignore */ }
-}
-function readShellReturn(): { problem: string | null } | null {
- try {
-  const raw = sessionStorage.getItem(SHELL_RETURN_KEY);
-  if (!raw) return null;
-  const parsed = JSON.parse(raw) as { problem?: unknown };
-  return { problem: typeof parsed?.problem === "string" ? parsed.problem : null };
- } catch {
-  return null;
- }
-}
 
 /** Hands the document off to the unified desktop shell (src/main.ts, html.desk). Keeps the
  *  loading card visible until the shell module and its CSS finish downloading; catches both
  *  JS and Vite CSS preload failures and uses its own bounded one-retry key (independent of
- *  bootMarks, which already marked the guest bootstrap loaded), preserving any OAuth return
- *  destination and error across both automatic and interrupted reloads until the shell loads. */
-async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount?: { problem: string | null } | null) {
+ *  bootMarks, which already marked the guest bootstrap loaded). OAuth return state stays in
+ *  accountDesk's sessionStorage until signInEnded() runs after the shell loads, so retries
+ *  at either boot.ts or launchShell preserve it. */
+async function launchShell(bound?: { agentName: string; added: Parameters<typeof boundNotice>[1] }, openAccount = false) {
  if (shellLoading) return shellLoading;
  launched = true;
  shownWelcome = null;
- saveShellReturn(openAccount);
  showOpeningCard("Opening HerdrUp…");
  document.documentElement.classList.add("desk");
  shellLoading = (async () => {
   try {
    await import("../main");
    clearShellReload();
-   clearShellReturn();
+   const ended = openAccount ? signInEnded() : null;
    welcomeView.hidden = true;
    welcomeView.replaceChildren();
    document.body.classList.remove("web-welcome-visible");
    if (bound !== undefined) showAccountNotice(boundNotice(bound.agentName, bound.added));
-   if (openAccount) window.dispatchEvent(new CustomEvent("open-account-settings", { detail: { problem: openAccount.problem ?? "" } }));
+   if (ended) window.dispatchEvent(new CustomEvent("open-account-settings", { detail: { problem: ended.problem ?? "" } }));
   } catch (error) {
    console.error("herdrup: the shell didn't load", error);
    launched = false;
@@ -247,17 +229,14 @@ async function init() {
   started = { kind: "welcome" as const, welcome: { owner: localOwnerHint.get(), error: errorText(error) } };
  }
  if (started.kind === "connected") {
-  const savedReturn = readShellReturn();
-  const openAccount = (signInReturned && pending === null ? signInEnded() : null) ?? savedReturn;
-  await launchShell(started.bound, openAccount);
+  await launchShell(started.bound, signInReturned && pending === null);
   return;
  }
- clearShellReturn();
  await document.fonts.ready;
  const waits = started.kind === "welcome" && plainWelcome(started.welcome) && !boot.guestInstead;
  if (waits) await Promise.race([account.refresh(true), new Promise(done => setTimeout(done, ACCOUNT_LOOKUP_MS))]);
- if (started.kind === "signIn") { void signInToBind(started.payload, started.provider, bindPage); return; }
- if (started.kind === "bind") { void showBindChoice(started.payload, started.problem, bindPage); return; }
+ if (started.kind === "signIn") { if (pending === null && signInReturned) signInEnded(); void signInToBind(started.payload, started.provider, bindPage); return; }
+ if (started.kind === "bind") { if (pending === null && signInReturned) signInEnded(); void showBindChoice(started.payload, started.problem, bindPage); return; }
  showStarted(started);
  if (!waits) void account.refresh(true);
 }

@@ -957,3 +957,49 @@ test("bindSessionDevice: enrols key on the account named, as name; a session bou
  for (const refusal of [new AccountServiceError(409, "device_in_other_account"), new AccountServiceError(403, "too_many_devices"), new AccountServiceError(500, "session_has_device_not"), new SignedOutError()])
   expect(await bindSessionDevice(enrolling(refusal), key, "Chrome on macOS", "acct-1").catch((e: unknown) => e)).toBe(refusal);
 });
+
+test("a stripped sign-in return survives a boot recovery reload until consumed", async () => {
+ const fail = (async () => new Response("{}", { status: 401 })) as unknown as typeof fetch;
+ const items = new Map<string, string>();
+ const tab = {
+  getItem: (k: string) => items.get(k) ?? null,
+  setItem: (k: string, v: string) => { items.set(k, v); },
+  removeItem: (k: string) => { items.delete(k); },
+ };
+ const replaced: string[] = [];
+ const page = (href: string) => ({
+  origin: "https://guest.herdrup.app", href, fetch: fail, navigate() {},
+  replaceURL: (url: string) => { replaced.push(url); },
+  tabStorage: () => tab,
+ });
+
+ // First load: boot.ts imports mygo -> createAccountDesk strips the query marker before
+ // import("./main") fails and triggers a recovery reload; nothing consumed signInEnded yet.
+ const first = createAccountDesk(page("https://guest.herdrup.app/web/?account_error=flow_expired"), quiet);
+ expect(replaced).toEqual(["https://guest.herdrup.app/web/"]);
+ expect(first.signInReturned).toBe(true);
+ expect(items.size).toBe(1);
+
+ // Second load on the cleaned URL (simulating boot.ts reload): return and error survive,
+ // even if accountState() ran first during shell boot before launchShell calls signInEnded().
+ const reloaded = createAccountDesk(page("https://guest.herdrup.app/web/"), quiet);
+ expect(reloaded.signInReturned).toBe(true);
+ expect((await reloaded.desk.accountState()).problem).toBe("The sign-in took too long. Sign in again.");
+ expect(reloaded.signInEnded()).toEqual({ problem: "The sign-in took too long. Sign in again." });
+ expect(items.size).toBe(0);
+
+ // Third load after consumption: the return is gone.
+ const third = createAccountDesk(page("https://guest.herdrup.app/web/"), quiet);
+ expect(third.signInReturned).toBe(false);
+ expect(third.signInEnded()).toBeNull();
+ expect((await third.desk.accountState()).problem).toBeUndefined();
+
+ // Successful return (?account=1) also survives a boot reload and clears once consumed.
+ const okFirst = createAccountDesk(page("https://guest.herdrup.app/web/?account=1"), quiet);
+ expect(okFirst.signInReturned).toBe(true);
+ const okReloaded = createAccountDesk(page("https://guest.herdrup.app/web/"), quiet);
+ expect(okReloaded.signInReturned).toBe(true);
+ expect(okReloaded.signInEnded()).toEqual({ problem: null });
+ expect(items.size).toBe(0);
+ expect(createAccountDesk(page("https://guest.herdrup.app/web/"), quiet).signInReturned).toBe(false);
+});
