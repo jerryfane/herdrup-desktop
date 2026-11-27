@@ -681,6 +681,7 @@ class TopicChat {
  private setPaging(before: string | undefined, restart: boolean) { this.before = before; this.restart = restart; this.earlier.hidden = !this.paging; }
  private active = false;
  private readFailed = false;
+ private liveNotice = "";
  private disposed = false;
  private timer: number | undefined;
  /** The working dots, the recap and the model line under the topic, as under the Inbox. */
@@ -844,8 +845,13 @@ class TopicChat {
     this.entries = live.entries; this.page = live.page;
     this.outgoing = reconcileOutgoing(this.outgoing, held, this.entries, Date.now());
    }
-   this.notice.textContent = "";
-   if (!older) this.readFailed = false;
+   if (!older) {
+    this.readFailed = false;
+    this.liveNotice = "";
+    this.notice.textContent = "";
+   } else {
+    this.notice.textContent = this.liveNotice;
+   }
    this.draw(follow);
    if (older) this.messages.scrollTop += this.messages.scrollHeight - height;
   } catch (error) {
@@ -853,8 +859,14 @@ class TopicChat {
    // newest page.
    if (older && cursorExpired(error)) { this.setPaging(this.before, true); this.again = true; }
    else if (!this.disposed) {
-    this.notice.textContent = errorText(error);
-    if (!older && !this.readFailed) { this.readFailed = true; this.draw(false); }
+    const text = errorText(error);
+    if (!older) {
+     this.liveNotice = text;
+     this.notice.textContent = text;
+     if (!this.readFailed) { this.readFailed = true; this.draw(false); }
+    } else {
+     this.notice.textContent = text;
+    }
    }
   } finally {
    this.busy = false; this.earlier.disabled = false;

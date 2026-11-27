@@ -1501,3 +1501,74 @@ test("the desktop's arrow lands on the owner's prompts herdr marks as theirs, ne
  await settle();
  expect(scroll.scrollTop).toBe(TOPS.u1 - 12);
 });
+
+test("loading Earlier messages after a live read failure keeps the live-read notice until a live read succeeds", async () => {
+ let failLive = false;
+ let failOlder = false;
+ const first = topicPage({
+  before: "b1",
+  after: "a1",
+  working: { intent: "Running", tool: "bash", since_ms: 1 },
+  entries: [{ kind: "reply", id: "r2", ts_ms: 2, text: "Latest reply", final: true }],
+ });
+ const older = topicPage({
+  after: "a1",
+  entries: [{ kind: "reply", id: "r1", ts_ms: 1, text: "Older reply", final: true }],
+ });
+ await openPage("topics", first, topicPage(), {}, {
+  "Desk.TopicTranscript": (_tok: unknown, _tid: unknown, _after: unknown, before: unknown) => {
+   if (before) {
+    if (failOlder) throw new Error("Older page unavailable");
+    return older;
+   }
+   if (failLive) throw new Error("Live transcript read failed");
+   return first;
+  },
+ });
+ const row = doc.body.all().find(n => n.tagName === "button" && n.text().includes(TOPIC.title));
+ if (!row) throw new Error("no row for the topic");
+ row.click();
+ await settle();
+ const chat = doc.body.all().find(n => n.className === "topic-chat")!;
+ const notice = chat.all().find(n => n.className.includes("topic-notice"))!;
+ const earlier = chat.all().find(n => n.tagName === "button" && n.text() === "Earlier messages")!;
+ expect(notice.textContent).toBe("");
+ expect(earlier.hidden).toBe(false);
+
+ const token = calls.find(c => c.method === "Desk.OpenAgentView")!.args[1];
+ const fireTopics = () => emit("topics:changed", {
+  token,
+  topics: [{ topic_id: TOPIC.topicID, title: TOPIC.title, state: "working", turns: 1, queued: 0, created_unix_ms: 1, last_activity_unix_ms: 2 }],
+  offered: true,
+  loaded: true,
+  changed: TOPIC.topicID,
+  suggestions: [],
+  suggestionsServed: false,
+  requestedMs: Date.now(),
+ });
+
+ // Trigger a live-read failure (e.g. topics changed event).
+ failLive = true;
+ fireTopics();
+ await settle();
+ expect(notice.textContent).toBe("Live transcript read failed");
+
+ // A history failure shows its own message, then a successful Earlier messages
+ // restores the still-unrecovered live-read failure notice instead of clearing it.
+ failOlder = true;
+ earlier.click();
+ await settle();
+ expect(notice.textContent).toBe("Older page unavailable");
+
+ failOlder = false;
+ earlier.click();
+ await settle();
+ expect(chat.text()).toContain("Older reply");
+ expect(notice.textContent).toBe("Live transcript read failed");
+
+ // Once a live read succeeds, the live-read notice clears.
+ failLive = false;
+ fireTopics();
+ await settle();
+ expect(notice.textContent).toBe("");
+});
