@@ -25,7 +25,9 @@ package main
 // A revision reaches herdr, by a relabel or an invite, only once the file
 // holding it is durable (Desk.undurable: a store or folder sync that fully
 // succeeded since start): one a crash could take back, the clock gone back
-// since, would let herdr refuse the next rename's.
+// since, would let herdr refuse the next rename's. Once it is durable again,
+// the live link catches up with its profile as stored and relabels its
+// shares if it was behind (reconcileLink), as an invite of it does first.
 //
 // A link knows its profile by its local id (link.profile: every saved
 // profile has one, given at load to those without and used once stored),
@@ -153,6 +155,41 @@ func (d *Desk) renewLabel(ctx context.Context, l *link) bool {
 		l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), rev
 	}
 	return true
+}
+
+// reconcileLink is sharing resuming once the saved machines are durable
+// (Desk.settle) or as an invite is created: the live link, bound to a
+// stored profile at its destination, reads it by local id as stored now;
+// one behind it (a rename whose store failed its folder's sync, now
+// durable) names the machine by it and relabels its shares over its
+// current route. An unbound link waits for a reconnect.
+func (d *Desk) reconcileLink(ctx context.Context) {
+	if !d.storeMu.LockCtx(ctx) {
+		return
+	}
+	defer d.storeMu.Unlock()
+	if d.undurable.Load() {
+		return
+	}
+	st, err := d.readMachines()
+	if err != nil {
+		log.Printf("guest relabel: reading the saved machines: %v", err)
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	l := d.link
+	if l == nil || l.guest != nil {
+		return
+	}
+	i := st.findProfile(l.profile)
+	if i < 0 || machineID(st.Machines[i]) != l.id || st.Machines[i].LabelRev <= l.shareLabelRev {
+		return
+	}
+	l.shareLabel, l.shareLabelRev = inviteLabel(st.Machines[i]), st.Machines[i].LabelRev
+	if herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
+		d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
+	}
 }
 
 // findProfile is the index of the saved profile localID, -1 if none.

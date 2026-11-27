@@ -518,15 +518,16 @@ func (d *Desk) load() (machineStore, error) {
 	if err != nil {
 		return st, err
 	}
-	d.syncStored()
 	tagged := st
 	tagged.Machines = slices.Clone(st.Machines)
 	changed, queued := d.tagProfiles(&tagged)
-	if changed {
+	if changed { // the store syncs the folder too
 		if err := d.store(tagged); err != nil {
 			log.Printf("saved machines: storing their local ids and label revisions: %v", err)
 			return st, nil
 		}
+	} else {
+		d.syncStored()
 	}
 	if queued && !d.undurable.Load() {
 		d.retireRelabelQueue()
@@ -541,11 +542,21 @@ func (d *Desk) syncStored() {
 	if !d.undurable.Load() {
 		return
 	}
-	if err := syncDir(d.dir); err != nil {
+	err := syncDir(d.dir)
+	if err != nil {
 		log.Printf("saved machines: syncing their folder: %v", err)
-		return
 	}
-	d.undurable.Store(false)
+	d.settle(err == nil)
+}
+
+// settle records whether machines.json is durable now (Desk.undurable).
+// Once it becomes so, sharing resumes: the live link catches up with its
+// profile as stored (reconcileLink), on a goroutine of its own, since the
+// caller may hold d.mu. d.storeMu must be held.
+func (d *Desk) settle(durable bool) {
+	if d.undurable.Swap(!durable) && durable {
+		go d.reconcileLink(context.Background())
+	}
 }
 
 // durable reports whether machines.json as read is durable, retrying its
@@ -600,7 +611,7 @@ func (d *Desk) readMachines() (machineStore, error) {
 // in place (its folder's sync), leaves the store not durable
 // (Desk.undurable); a success makes it so.
 func (d *Desk) store(st machineStore) (err error) {
-	defer func() { d.undurable.Store(err != nil) }()
+	defer func() { d.settle(err == nil) }()
 	if err := d.replayCommit(); err != nil {
 		return err
 	}
@@ -768,15 +779,16 @@ func (d *Desk) SaveMachine(m Machine, replacing string) error {
 		return err
 	}
 	// The live link started with this profile, its destination unchanged,
-	// names it to its guests as saved now: a share view opened after a
+	// names it to its guests as saved now: an invite created after a
 	// rename sends the new name (#523), and the shares it has already are
-	// relabeled. A view already open keeps the name it opened with. A
-	// profile moved to another destination is relabeled there on its next
-	// connect.
+	// relabeled, as they are when the link was behind (a save that failed
+	// its folder's sync, now found on disk). A profile moved to another
+	// destination is relabeled there on its next connect.
 	d.mu.Lock()
 	if l := d.link; index >= 0 && sameProfile(l, old) && l.id == id {
+		behind := l.shareLabelRev < m.LabelRev
 		l.shareLabel, l.shareLabelRev = inviteLabel(m), m.LabelRev
-		if relabel && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
+		if (relabel || behind) && herdrapi.CapabilityGuestRelabel.Supported(l.relabelVia.caps) {
 			d.relabelLocked(l, l.shareLabel, l.shareLabelRev)
 		}
 	}

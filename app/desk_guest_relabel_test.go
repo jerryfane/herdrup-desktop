@@ -975,7 +975,8 @@ func TestARenameDuringASessionSwitchIsSent(t *testing.T) {
 
 // #594 round 6: the preview.28 queue folded in, its store failing, gives
 // no revision: the profile reads as saved (none), and a connect sends
-// nothing. The next load stores the fold, and the connect after sends it.
+// nothing. The next load stores the fold, and the link still connected
+// sends it (round 10).
 func TestAFoldNotStoredGivesNoRevision(t *testing.T) {
 	h := newOrderedRelabelHerdr(t, "Old")
 	h.d.Disconnect()
@@ -1002,7 +1003,6 @@ func TestAFoldNotStoredGivesNoRevision(t *testing.T) {
 	}
 	lift()
 	rev := h.labelRev(t)
-	h.reconnect(t)
 	if p := h.answered(t, 1)[0]; rev == 0 || *p.MachineLabel != "Renamed" || *p.MachineLabelRev != rev {
 		t.Fatalf("sent %+v, saved revision %d; want Renamed at it", p, rev)
 	}
@@ -1277,5 +1277,103 @@ func TestAFirstListBindsNoProfileThatTookItsAddress(t *testing.T) {
 	}
 	if p, err := h.tryInvite(t); !refused(err, unboundRefusal) {
 		t.Fatalf("an invite of the unbound link: %+v (rev %v), %v; want it refused", p, p.MachineLabelRev, err)
+	}
+}
+
+// failedRename saves the one machine under nickname with its folder's sync
+// failing: the file holds it, the save reports the failure.
+func (h *relabelHerdr) failedRename(t *testing.T, nickname string) (lift func()) {
+	t.Helper()
+	lift = h.failDirSync(t)
+	saved, err := h.d.Machines()
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	m := saved[0].Machine
+	m.Nickname = nickname
+	if err := h.d.SaveMachine(m, saved[0].ID); err == nil {
+		t.Fatal("a save whose folder sync failed reported none")
+	}
+	h.drain(t)
+	if got := h.updates(); len(got) != 0 {
+		t.Fatalf("a rename not durable sent %+v", got)
+	}
+	return lift
+}
+
+// countDirSyncs counts the syncs of the desk's folder from now on.
+func (h *relabelHerdr) countDirSyncs(t *testing.T) func() int32 {
+	t.Helper()
+	real := syncDir
+	var n atomic.Int32
+	syncDir = func(dir string) error {
+		if filepath.Clean(dir) == filepath.Clean(h.d.dir) {
+			n.Add(1)
+		}
+		return real(dir)
+	}
+	t.Cleanup(func() { syncDir = real })
+	return n.Load
+}
+
+// #594 round 10: a rename whose store failed its folder's sync, the link
+// still connected, is shared once a sync succeeds at an invite: the invite
+// carries it with its revision, and the shares are relabeled.
+func TestAnInviteAfterASyncRecoversCarriesTheRename(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	h.failedRename(t, "New")()
+	p := h.invite(t)
+	rev := h.labelRev(t)
+	if rev == 0 || p.MachineLabel != "New" || p.MachineLabelRev == nil || *p.MachineLabelRev != rev {
+		t.Fatalf("an invite once durable: %+v (rev %v); want New at %d", p, p.MachineLabelRev, rev)
+	}
+	u := h.answered(t, 1)[0]
+	labels, revs := h.labels(t) // the invite just created among them
+	if *u.MachineLabel != "New" || *u.MachineLabelRev != rev || !slices.Equal(labels, append(everywhere("New"), "invite New")) || slices.ContainsFunc(revs, func(r uint64) bool { return r != rev }) {
+		t.Fatalf("sent %+v, shares %v at %v; want New at %d", u, labels, revs, rev)
+	}
+}
+
+// #594 round 10: the same rename saved again once the folder syncs finds
+// the file already renamed, the link behind it: the shares are relabeled.
+func TestARepeatedRenameAfterASyncRecoversIsSent(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	h.failedRename(t, "New")()
+	h.rename(t, "New")
+	rev := h.labelRev(t)
+	if u := h.answered(t, 1)[0]; rev == 0 || *u.MachineLabel != "New" || *u.MachineLabelRev != rev || !h.holds(t, "New", rev) {
+		t.Fatalf("sent %+v, shares %+v; want New at %d", u, h.list(t), rev)
+	}
+}
+
+// #594 round 10: once any load finds the folder syncs again, the link
+// still connected catches up with the rename and relabels its shares.
+func TestARenameNotDurableIsSentOnceItsFolderSyncs(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	h.failedRename(t, "New")()
+	rev := h.labelRev(t)
+	if u := h.answered(t, 1)[0]; rev == 0 || *u.MachineLabel != "New" || *u.MachineLabelRev != rev || !h.holds(t, "New", rev) {
+		t.Fatalf("sent %+v, shares %+v; want New at %d", u, h.list(t), rev)
+	}
+}
+
+// #594 round 10: a load that rewrites machines.json leaves its folder's
+// sync to the rewrite; no second one runs.
+func TestALoadThatRewritesSyncsTheFolderOnce(t *testing.T) {
+	h := newOrderedRelabelHerdr(t, "Old")
+	h.drain(t)
+	h.failedRename(t, "New")()
+	h.d.Disconnect()
+	h.writeRaw(t, func(st *machineStore) { st.Machines[0].LocalID = "" })
+	syncs := h.countDirSyncs(t)
+	m, err := h.d.Machine()
+	if err != nil || m == nil || m.LocalID == "" {
+		t.Fatalf("the saved machine %+v, %v; want a local id stored", m, err)
+	}
+	if n := syncs(); n != 1 {
+		t.Fatalf("%d syncs of the folder; want the rewrite's one", n)
 	}
 }

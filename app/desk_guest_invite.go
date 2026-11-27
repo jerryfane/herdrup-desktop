@@ -128,16 +128,25 @@ func (d *Desk) CreateGuestInvite(ctx context.Context, token, name, ownerName str
 	}
 	ctx, cancel := viewRequest(ctx, v.ctx)
 	defer cancel()
-	if v.guestShare.own && !d.durable(ctx) {
-		return "", errShareUndurable
+	label, rev := v.guestShare.details.MachineLabel, v.guestShare.labelRev
+	if v.guestShare.own {
+		// The machine as saved now, durable: a view opened before a
+		// rename reached the link names it anew (reconcileLink).
+		if !d.durable(ctx) {
+			return "", errShareUndurable
+		}
+		d.reconcileLink(ctx)
+		d.mu.Lock()
+		label, rev = v.at.link.shareLabel, v.at.link.shareLabelRev
+		d.mu.Unlock()
 	}
 	params := herdrapi.GuestInviteCreateParams{
 		Target: v.guestShare.target, Machine: v.guestShare.machine,
-		MachineLabel: v.guestShare.details.MachineLabel,
+		MachineLabel: label,
 		Name:         strings.TrimSpace(name), OwnerName: strings.TrimSpace(ownerName), ShareGram: shareGram,
 	}
 	// A herdr without guest_relabel_rev ignores the field.
-	if rev := v.guestShare.labelRev; rev > 0 {
+	if rev > 0 {
 		params.MachineLabelRev = &rev
 	}
 	created, err := v.client.GuestInviteCreate(ctx, params)
