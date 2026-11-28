@@ -130,20 +130,24 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
   expect(refBlocks[1]).toEqual({ kind: "code", code: "make", language: "sh" });
 });
 
-test("bare www autolinks upgrade to https while preserving case, query entities, and explicit http destinations", () => {
-  const msg = "Bare WWW.Example.com/Runbook and query www.example.com/?q=1&copy;more and www.example.test/path?x=1&amp;y=2 vs explicit [www.example.com](http://www.example.com) and <http://www.example.com>.";
+test("bare www autolinks upgrade to https while preserving case, query entities, emails, and explicit http destinations", () => {
+  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, email ops@example.test or <docs@example.test>, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
   if (blocks[0]!.kind !== "markdown") return;
-  expect(blocks[0]!.html).toContain('Bare <a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>');
+  expect(blocks[0]!.html).toContain('Bare &quot;<a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>&quot;');
+  expect(blocks[0]!.html).toContain('and &quot;<a href="https://www.example.test">www.example.test</a>&quot;');
   expect(blocks[0]!.html).toContain('query <a href="https://www.example.com/?q=1&amp;copy;more">www.example.com/?q=1&amp;copy;more</a>');
-  expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/path?x=1&amp;amp;y=2">www.example.test/path?x=1&amp;amp;y=2</a>');
+  expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/?q=1&amp;amp;">www.example.test/?q=1&amp;amp;</a>');
+  expect(blocks[0]!.html).toContain('prose <a href="https://www.example.test">www.example.test</a>; next');
+  expect(blocks[0]!.html).toContain('email <a href="mailto:ops@example.test">ops@example.test</a>');
+  expect(blocks[0]!.html).toContain('or <a href="mailto:docs@example.test">docs@example.test</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 });
 
-test("raw angle-bracket placeholders and Markdown images preserve readable text instead of disappearing", () => {
+test("raw angle-bracket placeholders, Markdown images, and linked badges preserve readable text and authored destinations", () => {
   const placeholder = parseGramMessage("Deploy using <environment> before 5pm.");
   expect(placeholder).toHaveLength(1);
   expect(placeholder[0]!.kind).toBe("markdown");
@@ -151,12 +155,21 @@ test("raw angle-bracket placeholders and Markdown images preserve readable text 
     expect(placeholder[0]!.html).toContain("Deploy using &lt;environment&gt; before 5pm.");
   }
 
-  const imageOnly = parseGramMessage("![Chart](https://example.com/chart.png)");
+  const imageOnly = parseGramMessage("![Revenue &amp; **costs** & <env>](https://example.com/chart.png?a=1&b=2&amp;c=3)");
   expect(imageOnly).toHaveLength(1);
   expect(imageOnly[0]!.kind).toBe("markdown");
   if (imageOnly[0]!.kind === "markdown") {
     expect(imageOnly[0]!.html).not.toContain("<img");
-    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png">Chart</a>');
+    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;b=2&amp;c=3">Revenue &amp; costs &amp; &lt;env&gt;</a>');
+  }
+
+  // Linked image badge keeps the authored outer link destination and renders plain alt text inside it (#647).
+  const badge = parseGramMessage("[![Build](https://ci.example.test/status.svg)](https://ci.example.test/builds/42)");
+  expect(badge).toHaveLength(1);
+  expect(badge[0]!.kind).toBe("markdown");
+  if (badge[0]!.kind === "markdown") {
+    expect(badge[0]!.html).toContain('<a href="https://ci.example.test/builds/42">Build</a>');
+    expect(badge[0]!.html).not.toContain("status.svg");
   }
 
   // Raw HTML `<pre>` before a nested Markdown fence stays literal escaped text so it cannot

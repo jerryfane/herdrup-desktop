@@ -2,7 +2,8 @@ import { marked, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
-import { MESSAGE_SANITIZE_CONFIG, prepareMarkdownTables } from "./markdownTable";
+import { prepareMarkdownTables } from "./markdownTable";
+import { MESSAGE_SANITIZE_CONFIG } from "./messageSanitize";
 import { accessibilityLabel, diagramKind, sanitizeSVG, svgVariables } from "./svgDiagram";
 
 type Mermaid = { initialize(options: object): void; render(id: string, text: string): Promise<{ svg: string }> };
