@@ -131,7 +131,7 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
 });
 
 test("bare www autolinks upgrade to https while preserving case, query entities, emails, and explicit http destinations", () => {
-  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://example.test/releases, email ops@example.test or <docs@example.test>, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
+  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://example.test/releases, email ops@example.test, www.ops@example.com or <docs@example.test>, path www.example.com/user@host, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
@@ -145,7 +145,9 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
   expect(blocks[0]!.html).toContain('prose <a href="https://www.example.test">www.example.test</a>; next');
   expect(blocks[0]!.html).not.toContain('href="ftp://example.test/releases"');
   expect(blocks[0]!.html).toContain('email <a href="mailto:ops@example.test">ops@example.test</a>');
+  expect(blocks[0]!.html).toContain('<a href="mailto:www.ops@example.com">www.ops@example.com</a>');
   expect(blocks[0]!.html).toContain('or <a href="mailto:docs@example.test">docs@example.test</a>');
+  expect(blocks[0]!.html).toContain('path <a href="https://www.example.com/user@host">www.example.com/user@host</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 });

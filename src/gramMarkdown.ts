@@ -22,6 +22,10 @@ const escapeHTMLPreservingEntities = (s: string) =>
 // `"WWW.Example.test"`), and non-text inline tokens (e.g. `` `docs`www.example.test ``).
 const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
 const BARE_URL_SCAN = /(?:https?:\/\/|www\.)/gi;
+// Bare emails whose local part starts with `www.` (e.g. `www.ops@example.com`) have `@` in the
+// authority segment before any `/`, `?`, `#`, or `:`. Marked's own `url` tokenizer mistakes these
+// for `http://www.ops@example.com`, so `bareUrl` links them directly as `mailto:` (herdrup#910).
+const WWW_EMAIL_RE = /^(www\.[^\s<>":/?#]+@[^\s<>":/?#]+\.[A-Za-z]{2,})/i;
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
  *  without repeated string splits or regex rescans, while preserving terminal semicolons in a
@@ -167,6 +171,13 @@ gramMarked.use({
         const prev = tokens.at(-1);
         if (prev && prev.type === "text" && prev.raw.length > 0 && isWordChar(prev.raw[prev.raw.length - 1]!)) {
           return undefined;
+        }
+        const emailCap = WWW_EMAIL_RE.exec(src);
+        if (emailCap) {
+          const raw = trimBareUrl(emailCap[1]!);
+          if (WWW_EMAIL_RE.test(raw)) {
+            return { type: "bareUrl", raw, text: raw, href: `mailto:${raw}` };
+          }
         }
         const cap = /^((?:https?:\/\/|www\.)[^\s<>"]+)/i.exec(src);
         if (!cap) return undefined;
