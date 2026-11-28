@@ -6,7 +6,8 @@
 // the list, the chat and Gram share the relay's 30 connects a minute).
 
 import { grantKey } from "../grantKey";
-import type { Desk as GoDesk, GramAgent, GramFile, GramMessage, GramSnapshot, GuestGramSnapshot, SavedGram } from "../mygo";
+import type { Desk as GoDesk, GramAgent, GramFile, GramMessage, GramSnapshot, GuestGramSnapshot, GuestGramState, SavedGram } from "../mygo";
+import type { Access as TransportAccess } from "../webguest/transport";
 import { emit } from "./events";
 import { fileForPath, forgetFile, pickFiles, registerFiles } from "./files";
 import { currentLink, onLinkChanged, type WebLink } from "./link";
@@ -107,12 +108,203 @@ function fresh(link: WebLink | null, visible: boolean, owner: OwnerLink | null =
 
 let g: State = fresh(null, false);
 
-/** The link when it shares Gram (an owner's always does); else rejects as gramEngine does. */
-function gramLink(): WebLink {
- const link = g.link;
+/** Multi-grant browser guest Gram source (wired by src/web/mygo.ts from desk.ts): provides all
+ *  held grants in this browser and opens lightweight background links for sibling grants so Guest
+ *  Gram aggregates every shared agent (matching desktop's app/desk_guest_gram_hub.go). */
+export interface GuestGrantSource {
+ listGrants(): Promise<TransportAccess[]>;
+ openGrant(grant: TransportAccess): Promise<{ link: WebLink; close(): void }>;
+ onChange(f: () => void): () => void;
+}
+interface HubEntry {
+ id: string;
+ state: State;
+ link: WebLink;
+ agentName: string;
+ ready: boolean;
+ gram: boolean;
+ error: string;
+ close: () => void;
+}
+let guestSource: GuestGrantSource | null = null;
+let guestSourceOff: (() => void) | null = null;
+const guestHub = new Map<string, HubEntry>();
+let guestOrder: string[] = [];
+let guestRecipient = "";
+let hubSyncVersion = 0;
+
+export function setGuestGramSource(source: GuestGrantSource | null): void {
+ guestSourceOff?.();
+ guestSourceOff = null;
+ guestSource = source;
+ if (source) guestSourceOff = source.onChange(() => { if (g.link && !g.owner) void syncGuestHub(); });
+ if (g.link && !g.owner) void syncGuestHub();
+}
+
+function isLive(state: State): boolean {
+ if (state === g) return true;
+ for (const entry of guestHub.values()) if (entry.state === state) return true;
+ return false;
+}
+
+function hubEntryFor(state: State): HubEntry | null {
+ for (const entry of guestHub.values()) if (entry.state === state) return entry;
+ return null;
+}
+
+function agentNameFor(state: State, link: WebLink): string {
+ if (state === g) return sharedAgentName() || link.access.agentName;
+ const entry = hubEntryFor(state);
+ return (entry?.agentName || link.access.agentName).trim();
+}
+
+function closeHubEntry(entry: HubEntry) {
+ entry.state.life.abort(new Error(NOT_CONNECTED));
+ for (const w of entry.state.headWaiters.splice(0)) w();
+ for (const p of entry.state.composer?.paths() ?? []) forgetFile(p);
+ entry.state.composer?.close();
+ entry.close();
+}
+
+function clearGuestHub() {
+ hubSyncVersion++;
+ for (const entry of guestHub.values()) closeHubEntry(entry);
+ guestHub.clear();
+ guestOrder = [];
+ guestRecipient = "";
+}
+
+async function discoverAndWatch(entry: HubEntry) {
+ const signal = entry.state.life.signal;
+ try {
+  const result = await entry.link.call<{ agents?: { name?: string; terminal_id?: string; pane_id?: string }[] }>("agent.list", {}, signal);
+  if (guestHub.get(entry.id) !== entry || signal.aborted) return;
+  const target = entry.link.access.agentTarget;
+  const agents = Array.isArray(result?.agents) ? result.agents : [];
+  const matched = agents.find(a => a.terminal_id === target || a.pane_id === target) ?? agents[0];
+  if (matched?.name && matched.name.trim() !== "") entry.agentName = matched.name.trim();
+  entry.ready = true;
+  entry.error = "";
+  entry.gram = entry.link.features().gram;
+  publish();
+  if (entry.gram) void watch(entry.state, entry.link);
+ } catch (error) {
+  if (guestHub.get(entry.id) !== entry || signal.aborted) return;
+  entry.ready = true;
+  entry.error = error instanceof Error ? error.message : String(error);
+  publish();
+ }
+}
+
+async function syncGuestHub() {
+ const source = guestSource;
+ const activeLink = g.owner ? null : g.link;
+ if (!source || !activeLink) return;
+ const at = ++hubSyncVersion;
+ const activeID = grantKey(activeLink.access);
+ let grants: TransportAccess[];
+ try { grants = await source.listGrants(); } catch { return; }
+ if (at !== hubSyncVersion || g.owner || g.link !== activeLink) return;
+ const wanted = new Set<string>();
+ const order: string[] = [];
+ for (const grant of grants) {
+  const id = grantKey(grant);
+  if (wanted.has(id)) continue;
+  wanted.add(id);
+  order.push(id);
+ }
+ if (!wanted.has(activeID)) order.unshift(activeID);
+ guestOrder = order;
+ for (const [id, entry] of [...guestHub.entries()]) {
+  if (id === activeID || !wanted.has(id)) {
+   guestHub.delete(id);
+   closeHubEntry(entry);
+  }
+ }
+ if (guestRecipient !== "" && guestRecipient !== activeID && !wanted.has(guestRecipient)) guestRecipient = "";
+ const toOpen = grants.filter(grant => {
+  const id = grantKey(grant);
+  return id !== activeID && !guestHub.has(id);
+ });
+ publish();
+ await Promise.all(toOpen.map(async grant => {
+  const id = grantKey(grant);
+  let opened: { link: WebLink; close(): void };
+  try { opened = await source.openGrant(grant); } catch { return; }
+  if (at !== hubSyncVersion || g.owner || g.link !== activeLink || guestHub.has(id)) {
+   opened.close();
+   return;
+  }
+  const state = fresh(opened.link, g.visible, null);
+  state.composer = newComposer(state);
+  const entry: HubEntry = {
+   id, state, link: opened.link, agentName: grant.agentName,
+   ready: false, gram: false, error: "", close: opened.close,
+  };
+  guestHub.set(id, entry);
+  publish();
+  void discoverAndWatch(entry);
+ }));
+}
+
+/** The link when state shares Gram (an owner's always does); else rejects as gramEngine does. */
+function gramLinkFor(state: State = g): WebLink {
+ const link = state.link;
  if (!link) throw new Error(NOT_CONNECTED);
- if (!g.owner && !link.features().gram) throw new Error(NOT_SHARED);
+ if (!state.owner && !link.features().gram) throw new Error(NOT_SHARED);
  return link;
+}
+
+/** Resolves which grant's State owns a message/file key ("<grant>\x1f<id>"); falls back to g. */
+function stateForKey(key: string): State {
+ if (!g.owner && key.includes(SEP)) {
+  const grantID = key.slice(0, key.indexOf(SEP));
+  if (g.link && grantKey(g.link.access) === grantID) return g;
+  const entry = guestHub.get(grantID);
+  if (entry) return entry.state;
+ }
+ return g;
+}
+
+/** Resolves the State the guest Gram composer currently posts to (guestRecipient, else active/first). */
+function recipientState(): State {
+ if (g.owner || !g.link) return g;
+ const activeID = grantKey(g.link.access);
+ if (guestRecipient === activeID) return g;
+ if (guestRecipient !== "") {
+  const entry = guestHub.get(guestRecipient);
+  if (entry?.gram) return entry.state;
+ }
+ if (g.link.features().gram) return g;
+ for (const id of guestOrder) {
+  const entry = guestHub.get(id);
+  if (entry?.gram) return entry.state;
+ }
+ return g;
+}
+
+/** All live guest States matching the optional grants filter (every Gram-sharing grant when empty). */
+function guestTargetStates(grants?: readonly string[]): State[] {
+ if (g.owner || !g.link) return [];
+ const activeID = grantKey(g.link.access);
+ const filter = grants && grants.length > 0 ? new Set(grants) : null;
+ const out: State[] = [];
+ const seen = new Set<string>();
+ const consider = (id: string, state: State, gram: boolean) => {
+  if (seen.has(id) || !gram || (filter && !filter.has(id))) return;
+  seen.add(id);
+  out.push(state);
+ };
+ for (const id of guestOrder) {
+  if (id === activeID) consider(id, g, g.link.features().gram);
+  else {
+   const entry = guestHub.get(id);
+   if (entry) consider(id, entry.state, entry.gram);
+  }
+ }
+ consider(activeID, g, g.link.features().gram);
+ for (const [id, entry] of guestHub) consider(id, entry.state, entry.gram);
+ return out;
 }
 
 /** gramAnswer: the owner's gram.list as it is (gramstore.FromList), a guest's through its projection
@@ -130,7 +322,7 @@ async function gramAnswer(state: State, link: WebLink, limit: number, unreadOnly
  const list = (n: number, cursor?: string) => link.call<GuestGramPage>("gram.list", cursor ? { limit: n, before_id: cursor } : { limit: n }, signal);
  const { page, error } = await guestGramPage(list, limit, unreadOnly, before);
  if (error !== undefined && page.messages.length === 0) throw error;
- return { answer: projectGuestPage(page, sharedAgentName() || link.access.agentName, unreadOnly), error };
+ return { answer: projectGuestPage(page, agentNameFor(state, link), unreadOnly), error };
 }
 
 // ---- Snapshot ----
@@ -164,35 +356,35 @@ export function gramRow(m: GramInfo, local: string, saved: boolean, pending: boo
 }
 
 /** visibleLocked: your posts not yet listed, then the list (which leaves out deleted messages). */
-function visible(): GramInfo[] {
- const ids = new Set(g.pending.map(m => m.id));
- return [...g.pending, ...g.inbox.messages.filter(m => !ids.has(m.id))];
+function visible(state: State = g): GramInfo[] {
+ const ids = new Set(state.pending.map(m => m.id));
+ return [...state.pending, ...state.inbox.messages.filter(m => !ids.has(m.id))];
 }
 
-function snapshot(): GramSnapshot {
- const saved = savedView();
- const pendingIDs = new Set(g.pending.map(m => m.id));
- const local = g.link?.access.machineLabel ?? "";
+function snapshot(state: State = g): GramSnapshot {
+ const saved = savedView(state);
+ const pendingIDs = new Set(state.pending.map(m => m.id));
+ const local = state.link?.access.machineLabel ?? "";
  const s: GramSnapshot = {
-  phase: g.phase || "idle", messages: [], unreadCount: g.badge, hasMore: g.inbox.hasMore, loadingOlder: g.loadingOlder,
-  refreshing: g.refreshing, markingAllRead: g.markingAll, agents: [], saved: saved.shown, localMachine: local,
-  attachments: [], sending: false, sendProgress: 0, sendProgressShown: false, draftPosted: 0, visible: g.visible,
+  phase: state.phase || "idle", messages: [], unreadCount: state.badge, hasMore: state.inbox.hasMore, loadingOlder: state.loadingOlder,
+  refreshing: state.refreshing, markingAllRead: state.markingAll, agents: [], saved: saved.shown, localMachine: local,
+  attachments: [], sending: false, sendProgress: 0, sendProgressShown: false, draftPosted: 0, visible: state.visible,
  };
- if (g.unavailable) s.unavailable = g.unavailable;
- if (g.olderError) s.olderError = g.olderError;
- const status = banner(g);
+ if (state.unavailable) s.unavailable = state.unavailable;
+ if (state.olderError) s.olderError = state.olderError;
+ const status = banner(state);
  if (status) s.status = status;
- const feed = visible();
+ const feed = visible(state);
  for (const m of feed) s.messages.push(gramRow(m, local, saved.ids.has(m.id), pendingIDs.has(m.id)));
- if (g.owner) s.agents = ownerAgents(feed, g.owner.agents(), local);
+ if (state.owner) s.agents = ownerAgents(feed, state.owner.agents(), local);
  else {
   const seen = new Set<string>();
   for (const row of s.messages) {
    if (row.fromAgent && !seen.has(row.from)) { seen.add(row.from); s.agents.push({ from: row.from, name: row.name, machine: row.machine } satisfies GramAgent); }
   }
  }
- if (g.composer) {
-  const c = g.composer.snapshot();
+ if (state.composer) {
+  const c = state.composer.snapshot();
   s.sending = c.sending; s.draftPosted = c.draftPosted;
   s.sendProgress = c.progress ?? 0; s.sendProgressShown = c.progress !== null;
   s.attachments = c.chips;
@@ -201,53 +393,122 @@ function snapshot(): GramSnapshot {
 }
 
 function publish() {
- const s = snapshot();
+ const s = snapshot(g);
  emit("gramChanged", s);
  emit("guestGramChanged", guestSnapshot(s));
 }
 
-// ---- The guest's one Gram (#697, desk_guest_gram_hub.go) over this browser's one grant ----
+// ---- The guest's one Gram (#697, desk_guest_gram_hub.go) over all held browser grants ----
 
 const SEP = "\u001f";
 /** A message id the page knows ("<grant>\x1f<id>") as this grant's own. */
 function own(id: string): string { return id.includes(SEP) ? id.slice(id.indexOf(SEP) + 1) : id; }
 /** A message's id as the page knows it in the guest's Gram ("<grant>\x1f<id>"); the owner's as it is. */
-function shownID(id: string): string { return g.link && !g.owner ? grantKey(g.link.access) + SEP + id : id; }
+function shownID(id: string, state: State = g): string { return state.link && !state.owner ? grantKey(state.link.access) + SEP + id : id; }
 /** A key the page passed, as download events name it: a prefixed key as it is, a bare id shownID. */
-function shownKey(key: string): string { return key.includes(SEP) ? key : shownID(key); }
+function shownKey(key: string, state: State = g): string { return key.includes(SEP) ? key : shownID(key, state); }
 /** The machine an owner's key names (a Saved row's "<hostID>\x1f<id>"); null for a feed row's. */
 function keyHost(key: string): string | null { return g.owner && key.includes(SEP) ? key.slice(0, key.indexOf(SEP)) : null; }
 /** An owner's saved copy's key on the page: its machine with its id. */
 function savedRowKey(s: OwnerSavedGram): string { return s.hostID + SEP + s.id; }
 
-function guestSnapshot(s: GramSnapshot = snapshot()): GuestGramSnapshot {
+function prefixGuestSnap(s: GramSnapshot, id: string): GramSnapshot {
+ const prefix = id + SEP;
+ return { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) };
+}
+
+function guestSnapshot(activeSnap: GramSnapshot = snapshot(g)): GuestGramSnapshot {
  const link = g.owner ? null : g.link;
- if (!link) return { active: false, grants: [], recipient: "", saved: s.saved };
- const id = grantKey(link.access), prefix = id + SEP;
- const gram = link.features().gram;
- const access = link.access;
+ if (!link) return { active: false, grants: [], recipient: "", saved: activeSnap.saved };
+ const activeID = grantKey(link.access);
+ const grants: GuestGramState[] = [];
+ const savedAll: SavedGram[] = [];
+ const seen = new Set<string>();
+ const addActive = () => {
+  if (seen.has(activeID)) return;
+  seen.add(activeID);
+  const access = link.access;
+  const gram = link.features().gram;
+  grants.push({
+   grant: { id: activeID, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
+   gram: prefixGuestSnap(activeSnap, activeID),
+  });
+  savedAll.push(...activeSnap.saved);
+ };
+ const addEntry = (entry: HubEntry) => {
+  if (seen.has(entry.id)) return;
+  seen.add(entry.id);
+  const access = entry.link.access;
+  const snap = snapshot(entry.state);
+  grants.push({
+   grant: {
+    id: entry.id, agent: entry.agentName || access.agentName, owner: access.ownerName,
+    machine: access.machineLabel, terminal: access.agentTarget, gram: entry.gram, ready: entry.ready,
+    ...(entry.error ? { error: entry.error } : {}),
+   },
+   gram: prefixGuestSnap(snap, entry.id),
+  });
+  savedAll.push(...snap.saved);
+ };
+ for (const id of guestOrder) {
+  if (id === activeID) addActive();
+  else {
+   const entry = guestHub.get(id);
+   if (entry) addEntry(entry);
+  }
+ }
+ addActive();
+ for (const entry of guestHub.values()) addEntry(entry);
+ savedAll.sort((a, b) => (b.createdUnixMs ?? 0) - (a.createdUnixMs ?? 0));
+ const recipientEntry = grants.find(item => item.grant.id === guestRecipient && item.grant.gram)
+  ?? grants.find(item => item.grant.id === activeID && item.grant.gram)
+  ?? grants.find(item => item.grant.gram);
  return {
-  active: true, recipient: gram ? id : "", saved: s.saved,
-  grants: [{
-   grant: { id, agent: sharedAgentName() || access.agentName, owner: access.ownerName, machine: access.machineLabel, terminal: access.agentTarget, gram, ready: true },
-   gram: { ...s, messages: s.messages.map(m => ({ ...m, id: prefix + m.id })) },
-  }],
+  active: true,
+  recipient: recipientEntry?.grant.id ?? "",
+  saved: savedAll,
+  grants,
  };
 }
 
-/** The Desk calls the guest's one Gram makes (desk_guest_gram_hub.go). One grant: they act on it. */
+/** The Desk calls the guest's one Gram makes (desk_guest_gram_hub.go) across all held grants. */
 export const guestGramDesk: Partial<DeskFns> = {
  guestGramState: async () => guestSnapshot(),
- async guestGramSetVisible(shown: boolean) { await gramDesk.gramSetVisible!(shown); },
+ async guestGramSetVisible(shown: boolean) {
+  await setVisibleOn(g, shown);
+  for (const entry of guestHub.values()) await setVisibleOn(entry.state, shown);
+ },
  async guestGramSetRecipient(grant: string) {
-  if (!g.link || grant !== grantKey(g.link.access)) throw new Error("This shared agent doesn't share Gram");
+  if (!g.link || g.owner) throw new Error(NOT_CONNECTED);
+  const activeID = grantKey(g.link.access);
+  if (grant === activeID) {
+   if (!g.link.features().gram) throw new Error("This shared agent doesn't share Gram");
+   guestRecipient = grant;
+   publish();
+   return;
+  }
+  const entry = guestHub.get(grant);
+  if (!entry || !entry.gram) throw new Error("This shared agent doesn't share Gram");
+  guestRecipient = grant;
+  publish();
  },
  async guestGramLoadOlder(grants: string[]) {
-  if (!g.link || !grants.includes(grantKey(g.link.access))) return false;
-  return gramDesk.gramLoadOlder!();
+  const targets = guestTargetStates(grants);
+  if (targets.length === 0) return false;
+  let grew = false;
+  for (const state of targets) {
+   if (await loadOlderOn(state)) grew = true;
+  }
+  return grew;
  },
- async guestGramRefresh() { await gramDesk.gramRefresh!(); },
- async guestGramMarkAllRead() { await gramDesk.gramMarkAllRead!(); },
+ async guestGramRefresh(grants?: string[]) {
+  const targets = guestTargetStates(grants);
+  await Promise.all(targets.map(state => refresh(state, gramLinkFor(state))));
+ },
+ async guestGramMarkAllRead(grants?: string[]) {
+  const targets = guestTargetStates(grants);
+  await Promise.all(targets.map(state => markAllReadOn(state)));
+ },
 };
 
 /** The actions whose failure the banner says (State.notes). */
@@ -262,13 +523,13 @@ function setNote(state: State, kind: NoteKind, text: string): boolean {
  if (text !== "") state.notes.set(kind, text);
  return banner(state) !== before;
 }
-function note(text: string) { if (setNote(g, "send", text)) publish(); }
+function note(text: string, state: State = g) { if (setNote(state, "send", text)) publish(); }
 
-function ack(text: string, expiring: boolean) {
- g.refreshAck = text;
+function ack(text: string, expiring: boolean, state: State = g) {
+ state.refreshAck = text;
  if (!text || !expiring) return;
- const token = ++g.ackToken, state = g;
- setTimeout(() => { if (g === state && g.ackToken === token && g.refreshAck === text) { g.refreshAck = ""; publish(); } }, GRAM_ACK_MS);
+ const token = ++state.ackToken;
+ setTimeout(() => { if (isLive(state) && state.ackToken === token && state.refreshAck === text) { state.refreshAck = ""; publish(); } }, GRAM_ACK_MS);
 }
 
 // ---- Loads ----
@@ -279,7 +540,7 @@ type Outcome = "unchanged" | "updated" | "failed" | "discarded";
 /** gramLoadLocked: one head load covering what is held, entered with loading set. */
 async function loadHead(state: State, link: WebLink): Promise<Outcome> {
  if (state.inbox.hasLoaded && state.phase === "loading") state.phase = "loaded";
- if (!state.inbox.hasLoaded && visible().length === 0) state.phase = "loading";
+ if (!state.inbox.hasLoaded && visible(state).length === 0) state.phase = "loading";
  const limit = Math.min(Math.max(GRAM_PAGE_SIZE, state.inbox.messages.length), GRAM_MAX_REFRESH_LIMIT);
  publish();
  const sent = { ...state.writes };
@@ -306,7 +567,7 @@ function takeOwedHead(state: State): (() => void)[] {
 async function headAnswer(state: State, link: WebLink, limit: number, sent: WriteMark, debt: (() => void)[]): Promise<Outcome> {
  let answer, error: unknown;
  try { ({ answer } = await gramAnswer(state, link, limit, false)); } catch (e) { error = e ?? new Error("Gram list failed"); }
- if (g !== state) return "unchanged";
+ if (!isLive(state)) return "unchanged";
  // Discarded (it overlapped a write): it owes a head list again, and the debt it took goes back
  // with its waiters now, before its slot is released or a replacement can start; whichever head
  // list next takes the debt takes them.
@@ -322,7 +583,7 @@ async function headAnswer(state: State, link: WebLink, limit: number, sent: Writ
  if (discarded) { queueMicrotask(() => recover(state)); publish(); return "discarded"; }
  if (!answer) {
   state.failures++;
-  const empty = visible().length === 0, unavailable = apiCode(error) === "gram_unavailable";
+  const empty = visible(state).length === 0, unavailable = apiCode(error) === "gram_unavailable";
   if (unavailable && empty) { state.phase = "unavailable"; state.unavailable = NOT_DEPLOYED; }
   else if (unavailable) state.refreshNote = UNAVAILABLE_NOW;
   else if (empty) { state.phase = "unavailable"; state.unavailable = NOT_DEPLOYED_OR_LOST; }
@@ -353,13 +614,13 @@ async function load(state: State, link: WebLink) {
 
 /** gramRefresh: never dropped; a tap during a load runs after it. */
 async function refresh(state: State, link: WebLink) {
- if (g !== state) return;
- if (state.loading) { state.refreshQueued = true; ack("Refreshing…", false); publish(); return; }
+ if (!isLive(state)) return;
+ if (state.loading) { state.refreshQueued = true; ack("Refreshing…", false, state); publish(); return; }
  state.loading = true; state.refreshing = true;
  const outcome = await loadHead(state, link);
- if (g !== state) return;
+ if (!isLive(state)) return;
  state.refreshing = false;
- ack(outcome === "unchanged" ? "Up to date" : outcome === "updated" ? "Refreshed" : "", true);
+ ack(outcome === "unchanged" ? "Up to date" : outcome === "updated" ? "Refreshed" : "", true, state);
  publish();
 }
 
@@ -372,7 +633,7 @@ async function badge(state: State, link: WebLink) {
  let answer;
  try { ({ answer } = await gramAnswer(state, link, 0, true)); } catch { return; }
  if (!state.owner && answer.hasMore) return;
- if (g !== state || !accepted(state, sent, "badge")) return;
+ if (!isLive(state) || !accepted(state, sent, "badge")) return;
  // A head list or page accepted since this was asked set a newer count.
  if (state.counted !== counted) return;
  const n = badgeCount(answer);
@@ -412,7 +673,7 @@ const headWritesBadge = (state: State) => state.owner !== null || state.visible;
  *  they settled was sent during them, so recover looks again when it is done. */
 function recover(state: State) {
  const link = state.link;
- if (g !== state || !link || state.writes.inFlight > 0) return;
+ if (!isLive(state) || !link || state.writes.inFlight > 0) return;
  if (state.owed.head && !state.loading) void load(state, link);
  if (state.owed.badge) { state.owed = { ...state.owed, badge: false }; void badge(state, link); }
 }
@@ -426,7 +687,7 @@ const shares = (state: State, link: WebLink) => state.owner !== null || link.fea
  *  an empty inbox's badge read publishes nothing. */
 async function watch(state: State, link: WebLink) {
  let sharing = false;
- while (g === state && !state.life.signal.aborted) {
+ while (isLive(state) && !state.life.signal.aborted) {
   let wait = GRAM_POLL_BADGE_MS;
   if (shares(state, link)) {
    if (state.visible) {
@@ -436,14 +697,14 @@ async function watch(state: State, link: WebLink) {
     await badge(state, link);
     // Gram opened while that list was out (its wake wasn't set yet): load it now, not a hidden
     // tab's interval later.
-    if (g === state && state.visible) continue;
+    if (isLive(state) && state.visible) continue;
    }
   } else if (state.phase !== "idle") {
    state.phase = "idle"; state.unavailable = "";
    state.composer?.pause();
    publish();
   }
-  if (g === state && shares(state, link) !== sharing) {
+  if (isLive(state) && shares(state, link) !== sharing) {
    sharing = shares(state, link);
    publish();
   }
@@ -461,7 +722,7 @@ async function watch(state: State, link: WebLink) {
 
 function newComposer(state: State): Composer {
  const c = new Composer((a, progress, signal) => {
-  const link = gramLink();
+  const link = gramLinkFor(state);
   progress(0, a.size);
   return uploadBlob((method, params, s) => link.call(method, params, s), a.blob, signal, sent => progress(sent, a.size));
  }, id => { void state.link?.call("gram.upload.discard", { upload_id: id }).catch(() => undefined); }, path => composerChanged(state, path));
@@ -470,7 +731,7 @@ function newComposer(state: State): Composer {
 
 /** gramComposerChanged: the upload event at most once a percent, the snapshot on a state change. */
 function composerChanged(state: State, path: string) {
- if (g !== state || !state.composer) return;
+ if (!isLive(state) || !state.composer) return;
  if (path === "") { publish(); return; }
  const chip = state.composer.chip(path);
  const ev = chip ? { path, fraction: chip.fraction, state: chip.state, label: chip.label } : { path, fraction: 0, state: "removed", label: "" };
@@ -501,10 +762,10 @@ export function stage(c: Composer, paths: string[]): { staged: string[]; note: s
  return { staged, note: skipNote(bad, capped) };
 }
 
-function gramComposer(): Composer {
- gramLink();
- if (!g.composer) throw new Error(NOT_CONNECTED);
- return g.composer;
+function gramComposer(state: State = recipientState()): Composer {
+ gramLinkFor(state);
+ if (!state.composer) throw new Error(NOT_CONNECTED);
+ return state.composer;
 }
 
 /** Files the last trusted paste carried, taken before the composer's own paste listener runs. */
@@ -629,19 +890,19 @@ class ElsewhereFile extends Error {}
  *  same id (herdr ids are not unique across machines), and a copy of another machine names it. A
  *  bare key is the open machine's message (its feed row, else its saved copy), never another
  *  machine's copy that happens to share the id. */
-function fileMeta(key: string): WireFile {
+function fileMeta(key: string, state: State = stateForKey(key)): WireFile {
  const id = own(key);
- if (!g.owner) {
-  const f = visible().find(v => v.id === id)?.file ?? guestSavedList().find(s => s.id === id)?.file;
+ if (!state.owner) {
+  const f = visible(state).find(v => v.id === id)?.file ?? guestSavedList(state).find(s => s.id === id)?.file;
   if (!f) throw new Error("that message has no file");
   return f as WireFile;
  }
- const open = g.owner.machine.hostID, host = keyHost(key) ?? open;
+ const open = state.owner.machine.hostID, host = keyHost(key) ?? open;
  if (host === open) {
-  const m = visible().find(v => v.id === id);
+  const m = visible(state).find(v => v.id === id);
   if (m?.file) return m.file;
  }
- const copy = ownerSavedList().find(s => s.id === id && s.hostID === host && s.file);
+ const copy = ownerSavedList(state).find(s => s.id === id && s.hostID === host && s.file);
  if (!copy) throw new Error("that message has no file");
  if (host !== open) throw new ElsewhereFile(`${copy.file!.name} is on ${copy.machine}. Open ${copy.machine} to get it.`);
  return copy.file as WireFile;
@@ -650,9 +911,9 @@ function fileMeta(key: string): WireFile {
 /** The whole file in memory, with download events (gramDownload, under the key the page asked
  *  with); a file over maxSize (a preview's cap) stops at the first chunk with FileTooLarge.
  *  `first`: offset 0, already read. */
-async function fetchBlob(link: WebLink, key: string, size: number, signal?: AbortSignal, maxSize?: number, first?: FileChunk): Promise<Blob> {
+async function fetchBlob(link: WebLink, key: string, size: number, signal?: AbortSignal, maxSize?: number, first?: FileChunk, state: State = stateForKey(key)): Promise<Blob> {
  const parts: Uint8Array<ArrayBuffer>[] = [];
- const progress = (done: number, state: string) => emit("gramDownload", { id: shownKey(key), done, size, state, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
+ const progress = (done: number, st: string) => emit("gramDownload", { id: shownKey(key, state), done, size, state: st, label: displaySize(Math.min(done, size)) + " of " + displaySize(size) });
  const read = chunkOf(link, own(key), signal);
  progress(0, "downloading");
  try {
@@ -684,31 +945,32 @@ type SaveFilePicker = (options: { suggestedName: string; startIn?: "downloads" }
 /** gramSaveFile: streamed into a file the person picks where the browser can, else in memory up to
  *  BLOB_SAVE_MAX_BYTES (refused before anything downloads). Failures go to Gram's banner. */
 async function saveFile(key: string, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
+ const state = stateForKey(key);
  let f: WireFile;
- try { f = fileMeta(key); } catch (error) { note(fileError("save", error)); throw error; }
- try { await writeFile(gramLink(), key, f, saveMaxBytes); }
- catch (error) { note(error instanceof SaveRefused ? error.message : fileError("save", error)); throw error; }
+ try { f = fileMeta(key, state); } catch (error) { note(fileError("save", error), state); throw error; }
+ try { await writeFile(gramLinkFor(state), key, f, saveMaxBytes, state); }
+ catch (error) { note(error instanceof SaveRefused ? error.message : fileError("save", error), state); throw error; }
 }
 
 /** A save the browser can't do (savePlan "too-large"); its message is the note. */
 class SaveRefused extends Error {}
 
 /** The save itself, reporting nothing: its callers say where a failure shows. */
-async function writeFile(link: WebLink, key: string, f: WireFile, saveMaxBytes = BLOB_SAVE_MAX_BYTES) {
+async function writeFile(link: WebLink, key: string, f: WireFile, saveMaxBytes = BLOB_SAVE_MAX_BYTES, state: State = stateForKey(key)) {
  // File System Access is not in TypeScript's DOM library yet.
  const picker = Reflect.get(globalThis, "showSaveFilePicker") as SaveFilePicker | undefined;
  const plan = savePlan(f.size, !!picker, saveMaxBytes);
  if (plan.kind === "too-large") throw new SaveRefused(plan.note);
- if (plan.kind === "blob") { downloadBlob(await fetchBlob(link, key, f.size, g.life.signal), f.name); return; }
+ if (plan.kind === "blob") { downloadBlob(await fetchBlob(link, key, f.size, state.life.signal, undefined, undefined, state), f.name); return; }
  let handle;
  // The picker opens in Downloads, as the desktop's save dialog does.
  try { handle = await picker!({ suggestedName: safeFileName(f.name), startIn: "downloads" }); }
  catch (error) { if (error instanceof DOMException && error.name === "AbortError") return; throw error; }
  const out = await handle.createWritable();
- const progress = (done: number, state: string) => emit("gramDownload", { id: shownKey(key), done, size: f.size, state, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
+ const progress = (done: number, st: string) => emit("gramDownload", { id: shownKey(key, state), done, size: f.size, state: st, label: displaySize(Math.min(done, f.size)) + " of " + displaySize(f.size) });
  try {
   progress(0, "downloading");
-  await readChunks(chunkOf(link, own(key), g.life.signal), f.size, p => out.write(p), done => progress(done, "downloading"), g.life.signal);
+  await readChunks(chunkOf(link, own(key), state.life.signal), f.size, p => out.write(p), done => progress(done, "downloading"), state.life.signal);
   await out.close();
   progress(f.size, "done");
  } catch (error) { progress(f.size, "failed"); await out.abort().catch(() => undefined); throw error; }
@@ -744,12 +1006,12 @@ function preview(blob: Blob, kind: "image" | "text", name: string) {
 /** The stored Saved list as this document renders it: decoded once per Gram (Go's Saved loads
  *  once), read again after another document's change (the storage event) and replaced by this
  *  one's own (gramSaved.ts). */
-function storedSaved(): unknown { return g.link ? g.saved.read() : []; }
+function storedSaved(state: State = g): unknown { return state.link ? state.saved.read() : []; }
 /** The owner's copies, each with its machine (ownerSavedCopies drops any without); [] for a guest. */
-function ownerSavedList(): OwnerSavedGram[] { return g.owner ? ownerSavedCopies(storedSaved()) : []; }
+function ownerSavedList(state: State = g): OwnerSavedGram[] { return state.owner ? ownerSavedCopies(storedSaved(state)) : []; }
 /** The guest's own list, in SavedGram's format; [] for the owner. */
-function guestSavedList(): SavedGram[] {
- const stored = g.owner ? [] : storedSaved();
+function guestSavedList(state: State = g): SavedGram[] {
+ const stored = state.owner ? [] : storedSaved(state);
  return Array.isArray(stored) ? stored as SavedGram[] : [];
 }
 /** Changes the saved list as storage holds it now (another document may have changed it since
@@ -795,12 +1057,12 @@ async function expireOwnerSaved(state: State, messages: readonly GramInfo[]) {
  *  (herdrup #723); the browser keeps them by the grant's own ids, and the calls that take one read
  *  it back with own(). An owner's copy is keyed by its machine and id (savedRowKey), as ids repeat
  *  across machines, and marks a feed row saved only on the machine it was saved from. */
-function savedView(): { ids: Set<string>; shown: SavedGram[] } {
- if (!g.owner) {
-  const list = guestSavedList();
-  return { ids: new Set(list.map(s => s.id)), shown: list.map(s => ({ ...s, id: shownID(s.id) })) };
+function savedView(state: State = g): { ids: Set<string>; shown: SavedGram[] } {
+ if (!state.owner) {
+  const list = guestSavedList(state);
+  return { ids: new Set(list.map(s => s.id)), shown: list.map(s => ({ ...s, id: shownID(s.id, state) })) };
  }
- const host = g.owner.machine.hostID, list = ownerSavedList();
+ const host = state.owner.machine.hostID, list = ownerSavedList(state);
  return {
   ids: new Set(list.filter(s => s.hostID === host).map(s => s.id)),
   shown: list.map(s => {
@@ -815,6 +1077,7 @@ function savedView(): { ids: Set<string>; shown: SavedGram[] } {
 /** A new link starts a new Gram: a guest's, or the owner's when the link comes with its owner
  *  context (desk.ts publishes both together). */
 function reset(link: WebLink | null, owner: OwnerLink | null = null) {
+ clearGuestHub();
  g.life.abort(new Error(NOT_CONNECTED));
  // The link's end settles the posts still waiting on an owed head list (none will be sent).
  for (const w of g.headWaiters.splice(0)) w();
@@ -822,7 +1085,11 @@ function reset(link: WebLink | null, owner: OwnerLink | null = null) {
  g.composer?.close();
  for (const token of [...panes.keys()]) closePaneComposer(token);
  g = fresh(link, g.visible, owner);
- if (link) { g.composer = newComposer(g); void watch(g, link); }
+ if (link) {
+  g.composer = newComposer(g);
+  void watch(g, link);
+  if (!owner) void syncGuestHub();
+ }
  publish();
 }
 onLinkChanged(reset);
@@ -830,10 +1097,102 @@ onLinkChanged(reset);
 // the next snapshot reads the stored list again. A document's own writes don't fire the event.
 if (typeof addEventListener === "function") {
  addEventListener("storage", (event: StorageEvent) => {
-  if (!g.link || (event.key !== null && event.key !== g.saved.key)) return;
-  g.saved.drop();
-  publish();
+  let dropped = false;
+  if (g.link && (event.key === null || event.key === g.saved.key)) { g.saved.drop(); dropped = true; }
+  for (const entry of guestHub.values()) {
+   if (event.key === null || event.key === entry.state.saved.key) { entry.state.saved.drop(); dropped = true; }
+  }
+  if (dropped) publish();
  });
+}
+
+async function setVisibleOn(state: State, shown: boolean) {
+ if (state.visible === shown) return;
+ state.visible = shown;
+ publish();
+ if (shown) state.composer?.resume(); else state.composer?.pause();
+ state.wake?.();
+}
+
+async function loadOlderOn(state: State): Promise<boolean> {
+ const link = gramLinkFor(state);
+ while (state.pageBusy) await sleep(WAIT_STEP_MS, state.life.signal);
+ state.pageBusy = true; state.loadingOlder = true; state.olderError = "";
+ publish();
+ try {
+  for (let round = 0; round < 2; round++) {
+   for (let i = 0; i < WAIT_STEPS && state.loading; i++) await sleep(WAIT_STEP_MS, state.life.signal);
+   const cursor = state.inbox.nextCursor(), generation = state.inbox.generation;
+   if (!cursor) return false;
+   const sent = { ...state.writes };
+   let answer;
+   try { ({ answer } = await gramAnswer(state, link, GRAM_PAGE_SIZE, false, cursor)); }
+   catch (error) {
+    if (isLive(state) && !state.life.signal.aborted && state.inbox.generation !== generation) continue;
+    if (isLive(state) && !state.life.signal.aborted) state.olderError = OLDER_FAILED;
+    throw error;
+   }
+   if (!isLive(state)) return false;
+   if (!accepted(state, sent, "page")) return false;
+   const taken = state.inbox.appendPage(answer, generation);
+   if (taken === "rejected") {
+    if (state.inbox.generation === generation && !state.loading) { state.loading = true; await loadHead(state, link); }
+    if (!isLive(state)) return false;
+    continue;
+   }
+   if (state.owner) { state.badge = state.inbox.unreadCount(); state.counted++; }
+   await expireOwnerSaved(state, answer.messages);
+   if (taken === "grew") return true;
+   if (state.inbox.generation === generation) return false;
+  }
+  return false;
+ } finally {
+  state.pageBusy = false;
+  if (isLive(state)) { state.loadingOlder = false; publish(); }
+ }
+}
+
+async function markAllReadOn(state: State) {
+ const link = gramLinkFor(state);
+ if (state.markingAll) return;
+ state.markingAll = true; setNote(state, "markAll", "");
+ publish();
+ try {
+  let pending: string[] = [], listError: unknown;
+  try {
+   const { answer, error } = await gramAnswer(state, link, 0, true);
+   pending = answer.messages.filter(isUnread).map(m => m.id);
+   listError = error;
+  } catch (error) { listError = error ?? new Error("list failed"); }
+  if (listError !== undefined) for (const m of state.inbox.messages) if (isUnread(m) && !pending.includes(m.id)) pending.push(m.id);
+  let attempted = 0, failed = 0, marked = 0;
+  await writing(state, async () => {
+   for (let pass = 0; pass < 2 && pending.length; pass++) {
+    const inFlight: string[] = [];
+    for (const id of pending) {
+     if (!isLive(state)) throw new Error(NOT_CONNECTED);
+     if (state.markingRead.has(id)) { inFlight.push(id); continue; }
+     const held = state.inbox.messages.find(m => m.id === id);
+     if (held && !isUnread(held)) continue;
+     state.markingRead.add(id);
+     attempted++;
+     try { await link.call("gram.mark_read", state.owner ? { id } : { ids: [id] }, state.life.signal); state.inbox.markRead(id); marked++; }
+     catch { failed++; }
+     finally { state.markingRead.delete(id); }
+    }
+    pending = inFlight;
+   }
+  });
+  if (!isLive(state)) throw new Error(NOT_CONNECTED);
+  if (listError === undefined) { if (headWritesBadge(state)) state.badge = state.inbox.unreadCount(); }
+  else {
+   state.badge = Math.max(state.badge - marked, state.inbox.unreadCount());
+   setNote(state, "markAll", "Couldn't list every unread message. Some may still be unread.");
+  }
+  if (failed > 0) setNote(state, "markAll", ((state.notes.get("markAll") ?? "") + ` ${failed} of ${attempted} could not be marked read.`).trim());
+ } finally {
+  if (isLive(state)) { state.markingAll = false; publish(); }
+ }
 }
 
 /** GramDelete's banner: herdr's message (or the owner refusal's sentence), else a retry hint. */
@@ -845,77 +1204,28 @@ export function deleteNote(error: unknown): string {
 }
 
 export const gramDesk: Partial<DeskFns> = {
- gramState: async () => snapshot(),
+ gramState: async () => snapshot(g),
 
- async gramSetVisible(shown: boolean) {
-  if (g.visible === shown) return;
-  g.visible = shown;
-  publish();
-  if (shown) g.composer?.resume(); else g.composer?.pause();
-  g.wake?.();
- },
+ async gramSetVisible(shown: boolean) { await setVisibleOn(g, shown); },
 
- async gramRefresh() { const link = gramLink(); await refresh(g, link); },
+ async gramRefresh() { const link = gramLinkFor(g); await refresh(g, link); },
 
  /** GramLoadOlder: the page older than everything held; one asked again when a head load replaced
   *  the list meanwhile. */
- async gramLoadOlder() {
-  const link = gramLink(), state = g;
-  while (state.pageBusy) await sleep(WAIT_STEP_MS, state.life.signal);
-  state.pageBusy = true; state.loadingOlder = true; state.olderError = "";
-  publish();
-  try {
-   for (let round = 0; round < 2; round++) {
-    for (let i = 0; i < WAIT_STEPS && state.loading; i++) await sleep(WAIT_STEP_MS, state.life.signal);
-    const cursor = state.inbox.nextCursor(), generation = state.inbox.generation;
-    if (!cursor) return false;
-    const sent = { ...state.writes };
-    let answer;
-    try { ({ answer } = await gramAnswer(state, link, GRAM_PAGE_SIZE, false, cursor)); }
-    catch (error) {
-     // Superseded the same way rows are: a head load since replaced the list (and its cursor, say
-     // one herdr refuses as gone), so this answer is the old list's and the page is asked again
-     // from the new cursor. An error for the list still shown is the page's.
-     if (g === state && !state.life.signal.aborted && state.inbox.generation !== generation) continue;
-     if (g === state && !state.life.signal.aborted) state.olderError = OLDER_FAILED;
-     throw error;
-    }
-    if (g !== state) return false;
-    // A page that overlapped a write is dropped whole (acceptAnswer); the head list it owes
-    // replaces the list, and the next page is asked from there.
-    if (!accepted(state, sent, "page")) return false;
-    const taken = state.inbox.appendPage(answer, generation);
-    if (taken === "rejected") {
-     // Dropped whole, nothing of it applied. A head load since moved the cursor: ask once more
-     // from there. Another state of the store than the shown head's: list the head again first.
-     if (state.inbox.generation === generation && !state.loading) { state.loading = true; await loadHead(state, link); }
-     if (g !== state) return false;
-     continue;
-    }
-    // An owner's page carries the store's count and its expired files, as a head load does.
-    if (state.owner) { state.badge = state.inbox.unreadCount(); state.counted++; }
-    await expireOwnerSaved(state, answer.messages);
-    if (taken === "grew") return true;
-    if (state.inbox.generation === generation) return false;
-   }
-   return false;
-  } finally {
-   state.pageBusy = false;
-   if (g === state) { state.loadingOlder = false; publish(); }
-  }
- },
+ async gramLoadOlder() { return loadOlderOn(g); },
 
  /** GramMarkRead: the local copy flips only after herdr confirms. */
  async gramMarkRead(key: string) {
   const id = own(key);
-  const link = gramLink(), state = g;
-  const m = visible().find(v => v.id === id);
+  const state = stateForKey(key);
+  const link = gramLinkFor(state);
+  const m = visible(state).find(v => v.id === id);
   if (!m || !isUnread(m) || state.markingRead.has(id)) return;
   state.markingRead.add(id);
   // gramRead: the owner marks by id, a guest by its ids (desk_guest_gram.go:144-153).
   try { await writing(state, () => link.call("gram.mark_read", state.owner ? { id } : { ids: [id] }, state.life.signal)); }
   finally { state.markingRead.delete(id); }
-  if (g !== state) return;
+  if (!isLive(state)) return;
   state.inbox.markRead(id);
   if (headWritesBadge(state)) state.badge = state.inbox.unreadCount();
   publish();
@@ -923,94 +1233,55 @@ export const gramDesk: Partial<DeskFns> = {
 
  /** GramMarkAllRead (desk_gram.go:877-972): ids from an unread-only list, each its own mark, in two
   *  passes; failures are counted in the banner. */
- async gramMarkAllRead() {
-  const link = gramLink(), state = g;
-  if (state.markingAll) return;
-  state.markingAll = true; setNote(state, "markAll", "");
-  publish();
-  try {
-   let pending: string[] = [], listError: unknown;
-   try {
-    const { answer, error } = await gramAnswer(state, link, 0, true);
-    pending = answer.messages.filter(isUnread).map(m => m.id);
-    listError = error;
-   } catch (error) { listError = error ?? new Error("list failed"); }
-   if (listError !== undefined) for (const m of state.inbox.messages) if (isUnread(m) && !pending.includes(m.id)) pending.push(m.id);
-   let attempted = 0, failed = 0, marked = 0;
-   // The marks are one batch, one write for the ordering rule (gramInbox.ts): lists overlapping it
-   // are discarded, and what they owe goes out once, after its last mark.
-   await writing(state, async () => {
-    for (let pass = 0; pass < 2 && pending.length; pass++) {
-     const inFlight: string[] = [];
-     for (const id of pending) {
-      if (g !== state) throw new Error(NOT_CONNECTED);
-      if (state.markingRead.has(id)) { inFlight.push(id); continue; }
-      const held = state.inbox.messages.find(m => m.id === id);
-      if (held && !isUnread(held)) continue;
-      state.markingRead.add(id);
-      attempted++;
-      try { await link.call("gram.mark_read", state.owner ? { id } : { ids: [id] }, state.life.signal); state.inbox.markRead(id); marked++; }
-      catch { failed++; }
-      finally { state.markingRead.delete(id); }
-     }
-     pending = inFlight;
-    }
-   });
-   if (g !== state) throw new Error(NOT_CONNECTED);
-   if (listError === undefined) { if (headWritesBadge(state)) state.badge = state.inbox.unreadCount(); }
-   else {
-    state.badge = Math.max(state.badge - marked, state.inbox.unreadCount());
-    setNote(state, "markAll", "Couldn't list every unread message. Some may still be unread.");
-   }
-   if (failed > 0) setNote(state, "markAll", ((state.notes.get("markAll") ?? "") + ` ${failed} of ${attempted} could not be marked read.`).trim());
-  } finally {
-   if (g === state) { state.markingAll = false; publish(); }
-  }
- },
+ async gramMarkAllRead() { await markAllReadOn(g); },
 
  async gramPickFiles() {
-  const c = gramComposer();
+  const state = recipientState();
+  const c = gramComposer(state);
   const files = await pickFiles(true);
   if (!files.length) return [];
   const { staged, note: text } = stage(c, registerFiles(files));
-  note(text);
+  note(text, state);
   return staged;
  },
 
  async gramAttachFiles(paths: string[]) {
-  const { staged, note: text } = stage(gramComposer(), paths);
-  note(text);
+  const state = recipientState();
+  const { staged, note: text } = stage(gramComposer(state), paths);
+  note(text, state);
   return staged;
  },
 
  async gramPasteClipboard() {
-  const c = gramComposer();
+  const state = recipientState();
+  const c = gramComposer(state);
   const files = await clipboardFiles();
   if (!files.length) return false;
-  note(stage(c, registerFiles(files)).note);
+  note(stage(c, registerFiles(files)).note, state);
   return true;
  },
 
- async gramCancelAttachment(path: string) { gramComposer().remove(path); },
+ async gramCancelAttachment(path: string) { gramComposer(recipientState()).remove(path); },
 
- async gramRetryAttachment(path: string) { gramComposer().retry(path); },
+ async gramRetryAttachment(path: string) { gramComposer(recipientState()).retry(path); },
 
  /** GramPost: each attached file its own Gram, the text on the first. The owner's goes to `to` (or
   *  the shared queue) and shows at once until a list has it; a guest's goes to the shared agent and
   *  the list is refreshed after it instead. */
  async gramPost(text: string, to: string[], attachments: string[]) {
   if (to.length > 1) throw new Error("a Gram goes to one agent or to the shared queue");
-  const c = gramComposer(), state = g;
+  const state = recipientState();
+  const c = gramComposer(state);
   const body = text.trim();
   const { staged, note: skipped } = stage(c, attachments);
-  if (skipped) { note(skipped); throw new Error(skipped); }
+  if (skipped) { note(skipped, state); throw new Error(skipped); }
   if (!body && !staged.length) return;
   setNote(state, "send", "");
   publish();
   try {
    await c.send(body, staged, async (caption, a, signal) => {
-    const link = gramLink();
-    const recipient = state.owner ? to[0] ?? "" : sharedAgentName().trim() || link.access.agentName.trim();
+    const link = gramLinkFor(state);
+    const recipient = state.owner ? to[0] ?? "" : agentNameFor(state, link);
     if (!state.owner && !recipient) throw new Error("The shared agent is not available for Gram");
     const params: Record<string, unknown> = { text: caption };
     if (recipient) params.to = recipient;
@@ -1021,14 +1292,14 @@ export const gramDesk: Partial<DeskFns> = {
      // The post's own acknowledgement shows it (pending) until an accepted head list, which is
      // sent after the post settled (gramInbox.ts acceptAnswer), so after this acknowledgement.
      const posted = r?.message;
-     if (state.owner && posted?.id && g === state && !state.inbox.messages.some(m => m.id === posted.id)) {
+     if (state.owner && posted?.id && isLive(state) && !state.inbox.messages.some(m => m.id === posted.id)) {
       state.pending = [ownerInfo(posted), ...state.pending.filter(m => m.id !== posted.id)];
       publish();
      }
      // A guest's post is listed after it, as at base, by one head list: owed here while the post
      // is still in flight, so the first head list sent after it settles (recovery's) is that one
      // and also covers any list the post discarded. The post resolves once that list is done.
-     if (!state.owner && g === state) {
+     if (!state.owner && isLive(state)) {
       state.owed = owe(state.owed, "head");
       const done = Promise.withResolvers<void>();
       state.headWaiters.push(done.resolve);
@@ -1043,7 +1314,7 @@ export const gramDesk: Partial<DeskFns> = {
     return id;
    }, state.life.signal);
   } catch (error) {
-   if (error instanceof SendError && g === state) note(error.note);
+   if (error instanceof SendError && isLive(state)) note(error.note, state);
    throw error;
   }
  },
@@ -1059,7 +1330,7 @@ export const gramDesk: Partial<DeskFns> = {
   let error: unknown;
   try { await writing(state, () => ownerCall("gram.delete", { id }, "ok", { signal: state.life.signal, link: owner })); }
   catch (e) { error = e ?? new Error("gram.delete failed"); }
-  if (g !== state) { if (error !== undefined) throw error; return; }
+  if (!isLive(state)) { if (error !== undefined) throw error; return; }
   if (error !== undefined) {
    setNote(state, "delete", deleteNote(error));
    publish();
@@ -1076,8 +1347,9 @@ export const gramDesk: Partial<DeskFns> = {
 
  /** GramImage: a picture of at most 8 MiB as a data: URL, two fetched at a time. */
  async gramImage(key: string) {
-  const link = gramLink(), state = g;
-  const f = fileMeta(key);
+  const state = stateForKey(key);
+  const link = gramLinkFor(state);
+  const f = fileMeta(key, state);
   if (!f.mime.toLowerCase().startsWith("image/") || f.size > PREVIEW_MAX_BYTES) throw new Error(`${f.name} has no preview`);
   let image = state.images.get(key);
   if (!image) {
@@ -1087,7 +1359,7 @@ export const gramDesk: Partial<DeskFns> = {
     try {
      let blob: Blob;
      // A file listed with an unknown size (0) is checked on its real size, from the first chunk.
-     try { blob = await fetchBlob(link, key, f.size, state.life.signal, PREVIEW_MAX_BYTES); }
+     try { blob = await fetchBlob(link, key, f.size, state.life.signal, PREVIEW_MAX_BYTES, undefined, state); }
      catch (error) { throw error instanceof FileTooLarge ? new Error(`${f.name} has no preview`) : error; }
      const bytes = new Uint8Array(await blob.arrayBuffer());
      return "data:" + imageMime(blob.type.startsWith("image/") ? blob.type : f.mime) + ";base64," + toBase64(bytes);
@@ -1103,14 +1375,15 @@ export const gramDesk: Partial<DeskFns> = {
 
  /** GramOpenFile: a picture or plain text previews in the page; anything else is saved. */
  async gramOpenFile(key: string) {
-  const link = gramLink();
+  const state = stateForKey(key);
+  const link = gramLinkFor(state);
   let f: WireFile;
-  try { f = fileMeta(key); } catch (error) { note(fileError("open", error)); throw error; }
+  try { f = fileMeta(key, state); } catch (error) { note(fileError("open", error), state); throw error; }
   const kind = openPlan(f.name, f.mime, f.size);
   if (kind === "save") { await saveFile(key); return; }
-  try { preview(await fetchBlob(link, key, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES), kind, f.name); }
+  try { preview(await fetchBlob(link, key, f.size, state.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES, undefined, state), kind, f.name); }
   catch (error) {
-   note(error instanceof FileTooLarge ? "Couldn't open the file: it is too large to preview here. Save it instead." : fileError("open", error));
+   note(error instanceof FileTooLarge ? "Couldn't open the file: it is too large to preview here. Save it instead." : fileError("open", error), state);
    throw error;
   }
  },
@@ -1118,35 +1391,36 @@ export const gramDesk: Partial<DeskFns> = {
  /** GramOpenAttachment: a Chat attachment opened as gramOpenFile opens a Gram file, whether or not
   *  Gram has loaded its message. Its errors go back to the chat only, never Gram's banner. */
  async gramOpenAttachment(key: string) {
-  const link = gramLink();
+  const state = stateForKey(key);
+  const link = gramLinkFor(state);
   let f: WireFile | null = null, first: FileChunk | undefined;
-  try { f = fileMeta(key); } catch { /* not in the loaded feed: herdr's first chunk says what it is */ }
+  try { f = fileMeta(key, state); } catch { /* not in the loaded feed: herdr's first chunk says what it is */ }
   if (!f) {
-   first = await chunkOf(link, own(key), g.life.signal)(0);
+   first = await chunkOf(link, own(key), state.life.signal)(0);
    f = { name: first.name, mime: first.mime, size: first.size, sha256: first.sha256 };
   }
   const kind = openPlan(f.name, f.mime, f.size);
   if (kind === "save") {
-   if (!first) { await writeFile(link, key, f); return; }
+   if (!first) { await writeFile(link, key, f, BLOB_SAVE_MAX_BYTES, state); return; }
    // The click's user activation may have run out while that chunk came: a save picker would be
    // refused, so the file downloads in memory instead, which needs none.
    if (f.size > BLOB_SAVE_MAX_BYTES) throw new Error(`this browser can't save files over ${Math.round(BLOB_SAVE_MAX_BYTES / 1e6)} MB from Chat`);
-   downloadBlob(await fetchBlob(link, key, f.size, g.life.signal, undefined, first), f.name);
+   downloadBlob(await fetchBlob(link, key, f.size, state.life.signal, undefined, first, state), f.name);
    return;
   }
-  try { preview(await fetchBlob(link, key, f.size, g.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES, first), kind, f.name); }
+  try { preview(await fetchBlob(link, key, f.size, state.life.signal, kind === "image" ? PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES, first, state), kind, f.name); }
   catch (error) { throw error instanceof FileTooLarge ? new Error("it is too large to preview here") : error; }
  },
 
  async gramCopyText(text: string) { await navigator.clipboard.writeText(text); },
 
- async gramSaved() { return savedView().shown; },
+ async gramSaved() { return g.owner ? savedView(g).shown : guestSnapshot().saved; },
 
  /** GramSetSaved: a copy on this browser, or forgotten. The owner's is gramstore.Saved's (the sender
   *  as shown, newest first); a guest's the grant's own list. Made on the list storage holds now
   *  (another tab's change kept), under the Saved lock. */
  async gramSetSaved(key: string, saved: boolean) {
-  const id = own(key), state = g, m = saved ? visible().find(v => v.id === id) : undefined;
+  const id = own(key), state = stateForKey(key), m = saved ? visible(state).find(v => v.id === id) : undefined;
   if (saved && !m) throw new Error(state.owner ? `no gram message "${id}"` : "that message is not loaded");
   let failed: Error | null;
   if (state.owner) {
@@ -1165,7 +1439,7 @@ export const gramDesk: Partial<DeskFns> = {
     return list;
    }));
   }
-  if (g === state) publish();
+  if (isLive(state)) publish();
   if (failed) throw failed;
  },
 

@@ -401,6 +401,22 @@ export function createGuestDesk(env: DeskEnv) {
   if (shares === undefined || grant.accountBound !== true || grant.account === undefined) return "available";
   return shares.grantState(grant.account, grantKey(grant));
  }
+ const grantWatchers = new Set<() => void>();
+ function notifyGrantsChanged() { for (const f of [...grantWatchers]) f(); }
+ /** Opens a background WebLink for a held guest grant (used by the multi-grant guest Gram hub). */
+ async function openGuestGramGrant(grant: Access): Promise<{ link: WebLink; close(): void }> {
+  const identity = await requireIdentity();
+  let closed = false;
+  const labeled = (machineLabel: string) => {
+   if (closed) return;
+   void env.grants.relabel(grant.endpoint.hostID, grant.guestID, machineLabel).catch(() => undefined);
+  };
+  const transport = new GuestTransport(guestLink(grant, env.statements && boundShareStatements(env.statements), labeled), identity, { now, webSocket: env.webSocket });
+  return {
+   link: transportLink(pageAccess(grant), transport),
+   close: () => { closed = true; transport.close(); },
+  };
+ }
  /** Available grants currently held by this browser. */
  async function unmaskedGrants(): Promise<Access[]> {
   return (await env.grants.list()).filter(g => grantStateOf(g) === "available");
@@ -408,6 +424,7 @@ export function createGuestDesk(env: DeskEnv) {
  /** syncedShares:changed with the shares now, each marked local when this browser holds its grant. */
  async function publishShares(shares: RemoteShare[]) {
   emit("syncedSharesChanged", syncedSharesOf(shares, await unmaskedGrants()));
+  notifyGrantsChanged();
  }
  // A share deleted on the account it is bound to (left on any device) leaves this browser too,
  // when it holds it bound; a plain grant is never dropped by the sync. Each pass reconciles with
@@ -765,6 +782,7 @@ export function createGuestDesk(env: DeskEnv) {
      throw new Error(`Access was accepted but could not be saved: ${message(error)}. Keep this device's guest identity and ask the owner for a new invitation`);
     }
     env.owner.set(access.ownerName);
+    notifyGrantsChanged();
     // Written to the account herdr bound it to (the admitted statement's), once it did: it then
     // shows on the account's other devices. Never to another: with a sign-in changed meanwhile it
     // is refused, and stays on this browser only.
@@ -864,6 +882,7 @@ export function createGuestDesk(env: DeskEnv) {
     if (grant === undefined) return;
     env.owner.set(grant.ownerName);
     await env.grants.remove(id);
+    notifyGrantsChanged();
    };
    const leaveAcct = grant?.accountBound && grant.account !== undefined
     ? grant.account
@@ -1543,7 +1562,12 @@ export function createGuestDesk(env: DeskEnv) {
   return phase === "connecting" || phase === "connected";
  }
 
- return Object.assign(desk, { connectOwner, disconnectOwner, ownerLinkUsable });
+ const guestGramSource = {
+  listGrants: unmaskedGrants,
+  openGrant: openGuestGramGrant,
+  onChange(f: () => void) { grantWatchers.add(f); return () => { grantWatchers.delete(f); }; },
+ };
+ return Object.assign(desk, { connectOwner, disconnectOwner, ownerLinkUsable, guestGramSource });
 }
 
 /** desk_avatars.go definitiveAvatarFailure: whether a failed agent.avatar.get is herdr's answer

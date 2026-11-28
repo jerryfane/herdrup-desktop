@@ -17,11 +17,11 @@ import { bootMarks } from "./bootChoice";
 import { approvalRunning, closingLink, followSession, OwnerWork } from "./ownerSession";
 import { currentOwnerLink } from "./ownerLink";
 import { Desk, events, ownerAccess, ownerDesk, pageExit } from "./mygo";
-import { refreshLists, runApproval, type OwnerPhase } from "./ownerApproval";
+import { refreshLists, runApproval, savedApproval, type OwnerPhase } from "./ownerApproval";
 import { ownerKey } from "./browserKey";
 import { probeList, type MachineStatus } from "./ownerProbe";
 import { OwnerRuns } from "./ownerRuns";
-import { approvalParts, approvedMachines, machineAccess, machineSection, noticeCard, ownerLayout, thisBrowser, type MachineSection, type RowGlyphs } from "./ownerScreen";
+import { approvalParts, approvedMachines, collapsedApprovalParts, machineAccess, machineSection, noticeCard, ownerLayout, thisBrowser, type MachineSection, type RowGlyphs } from "./ownerScreen";
 import { IndexedDBOwnerStore, type OwnerRecord } from "./ownerStore";
 import { sharedMachines, sharedSection, syncedSharesNow } from "../sharedWithYou";
 
@@ -49,7 +49,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
  // nothing new starts (Open, probes, Try again do nothing) until its own account is read back
  // (restored, a new session) or the page starts over.
  const work = new OwnerWork<EnvelopeMachine>();
- let phase: OwnerPhase = { kind: "starting" };
+ let phase: OwnerPhase = { kind: "idle" };
  let probing: (() => Promise<void>) | null = null;
  /** The machine picked last (connectOwner), for Settings' Reconnect; null before the first pick. */
  let opened: EnvelopeMachine | null = null;
@@ -77,7 +77,7 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   header.title("Welcome back", state?.signedIn && state.displayHint ? `Signed in · ${state.displayHint}` : "Signed in");
   const nextSignedIn = state?.signedIn === true;
   signedIn = nextSignedIn;
-  if (signedIn && !container.hidden && !approvalStarted) { approvalStarted = true; begin(); }
+  if (signedIn && !container.hidden && !approvalStarted) { approvalStarted = true; checkSaved(); }
   void refreshShared();
  };
  // SHARED WITH YOU (sharedWithYou.ts), as on the desktop's host home: the grant this browser
@@ -187,6 +187,8 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   } else if (layout.view === "list") {
    shown = machineSection(layout.record, statuses, glyphs, opening?.hostID ?? null, spinner, m => open(m));
    home.replaceChildren(header.root, shared.root, shown.root);
+  } else if (layout.view === "collapsed") {
+   home.replaceChildren(header.root, shared.root, ...collapsedApprovalParts({ approve: begin, guestInstead: () => startOver(true) }));
   } else {
    home.replaceChildren(header.root, shared.root, ...approvalParts(layout, browser, { again: begin, guestInstead: () => startOver(true) }, spinner));
   }
@@ -238,6 +240,24 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
   } finally { if (refreshing === run) refreshing = null; }
  }
 
+ /** Checks for an existing approval on load without starting a new request; stays collapsed
+  *  ("Approve this browser" button) until the user asks. */
+ function checkSaved() {
+  if (work.signal === null) return;
+  draw();
+  runs.begin(ownerAccess.account.current?.accountID,
+   async run => {
+    const saved = await savedApproval({ account: ownerAccess.account, identities: ownerAccess.identities, store }, run);
+    if (!runs.isCurrent(run) || phase.kind !== "idle") return;
+    if (saved !== null) {
+     phase = { kind: "approved", record: saved };
+     void refreshShown(run, saved);
+     draw();
+    }
+   },
+   () => {});
+ }
+
  /** The approval: what this account already has here shows, else this browser asks; Ask again
   *  goes the same way. */
  function begin() {
@@ -257,11 +277,12 @@ export const initHosts: typeof desktopHosts = (container, _form, showAgents, sym
  new MutationObserver(() => {
   if (!container.hidden) {
    if (!signedIn && ownerAccess.account.current === null) { startOverWhenIdle(true); return; }
-   if (!approvalStarted) { approvalStarted = true; begin(); }
+   if (!approvalStarted) { approvalStarted = true; checkSaved(); }
   }
   probe();
  }).observe(container, { attributes: true, attributeFilter: ["hidden"] });
- if (!container.hidden && ownerAccess.account.current !== null) { approvalStarted = true; begin(); }
+ if (!container.hidden && ownerAccess.account.current !== null) { approvalStarted = true; checkSaved(); }
+ else draw();
  void account.refresh(true);
 
  return {

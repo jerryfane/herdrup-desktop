@@ -15,6 +15,8 @@ import { ownerKey } from "./browserKey";
 import type { OwnerRecord, OwnerStore, VerifiedApprover } from "./ownerStore";
 
 export type OwnerPhase =
+ /** Not yet approved and the user hasn't asked to approve this browser yet (collapsed button). */
+ | { kind: "idle" }
  /** This browser can't hold a key that page scripts can't read (WIRE-PLAN §5.3), or can't keep it
   *  from one visit to the next (its storage doesn't give it back). */
  | { kind: "unsupported" }
@@ -68,6 +70,21 @@ const problemOf = (error: unknown): string => {
  }
  return "Couldn't reach the account service. Check the connection and try again.";
 };
+
+/** Checks whether this browser already holds a verified approval for the signed-in account without
+ *  starting a new approval request or binding the session device. Returns null if not approved yet
+ *  or if the browser can't hold an owner key. */
+export async function savedApproval(
+ deps: Pick<ApprovalDeps, "account" | "identities" | "store" | "subtle">,
+ signal: AbortSignal,
+): Promise<OwnerRecord | null> {
+ const key = await ownerKey(deps.identities, deps.subtle).catch(() => null);
+ if (key === null || signal.aborted) return null;
+ const acct = await deps.account.currentAccount(signal).catch(() => null);
+ if (acct === null || signal.aborted) return null;
+ const saved = await untilAborted(deps.store.get(acct, toB64url(key.publicKey)), signal).catch(() => undefined);
+ return saved !== undefined && saved.approvers.length > 0 ? saved : null;
+}
 
 /** Runs one approval until it ends, telling onPhase each step. abort ends it quietly. */
 export async function runApproval(deps: ApprovalDeps, onPhase: (p: OwnerPhase) => void, signal: AbortSignal): Promise<void> {
