@@ -549,6 +549,10 @@ gramMarked.use({
         return `<a href="${escapeHTML(token.href)}">${escapeHTML(token.text)}</a>`;
       }
       const flattened = flattenLinkImages(token.tokens);
+      const decodedHref = decodeSchemeEntities(token.href ?? "").trim();
+      if (!/^(?:https?:\/\/|mailto:)/i.test(decodedHref)) {
+        return this.parser.parseInline(flattened);
+      }
       return Renderer.prototype.link.call(this, flattened === token.tokens ? token : { ...token, tokens: flattened });
     },
     // Keep remote images disabled without turning image-only Markdown messages into empty
