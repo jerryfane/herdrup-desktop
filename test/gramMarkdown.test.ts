@@ -194,6 +194,8 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     '',
     'ftp://files.example.test/get?q=1&amp;mode=2 and &amp;',
     '',
+    'ftp://host/foo a<b "hi" & bar stays',
+    '',
     'ftp://www.example.test',
     '',
     'www.example.test',
@@ -223,6 +225,7 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     expect(html).toContain('ftp://host/<a href="https://logs.example.test">logs</a><a href="https://www.afterlink.test">www.afterlink.test</a>');
     expect(html).toContain('ftp://host/<code>logs</code>&copy;');
     expect(html).toContain('ftp://files.example.test/get?q=1&amp;amp;mode=2 and &amp;');
+    expect(html).toContain('ftp://host/foo a&lt;b &quot;hi&quot; &amp; bar stays');
     expect(html).toContain('<p><a href="https://www.example.test">www.example.test</a></p>');
     expect(html).toContain('<li><a href="https://example.test">https://example.test</a></li>');
     expect(html).toContain('<td><a href="https://www.example.test">www.example.test</a></td>');

@@ -60,12 +60,12 @@ class GramLexer extends Lexer {
     this.pendingNestedParent = null;
     let initialEnd = -1;
     if (parent && parent.src.length > parent.endRemaining) {
-      const probe = src.slice(0, 8);
-      const openerLen =
-        parent.src.length >= 2 && parent.src[0] === parent.src[1] && parent.src.startsWith(probe, 2) ? 2 : 1;
-      const overlap = parent.src.length - openerLen - parent.endRemaining;
-      if (overlap > 0) {
-        initialEnd = Math.max(0, src.length - overlap);
+      const openerLen = parent.src.indexOf(src, 1);
+      if (openerLen > 0) {
+        const overlap = parent.src.length - openerLen - parent.endRemaining;
+        if (overlap > 0) {
+          initialEnd = Math.max(0, src.length - overlap);
+        }
       }
     }
     this.suppressStack.push(initialEnd);
@@ -465,7 +465,9 @@ gramMarked.use({
         const suppressedChars = Math.min(tok.raw.length, src.length - endRemaining);
         const literalRaw = tok.raw.slice(0, suppressedChars);
         gramLexer.advanceTo(src.length - literalRaw.length);
-        return { type: "text", raw: literalRaw, text: escapeHTML(literalRaw), escaped: true };
+        // Keep `escaped: false` so Marked still escapes any prose merged onto this token (#682),
+        // while `escapeHTML` keeps entity spellings in the rejected URL literal through `escape(s, false)`.
+        return { type: "text", raw: literalRaw, text: escapeHTML(literalRaw), escaped: false };
       }
       gramLexer.advanceTo(src.length - tok.raw.length);
       // When native text stops right after a word char before a glued bare URL (`cowww.`,
