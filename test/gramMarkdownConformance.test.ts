@@ -3,7 +3,7 @@
 // themartianapp/herdrup's Tests/HerdrKitTests/Fixtures/gram-markdown-fixtures.json.
 import { describe, expect, test } from "bun:test";
 import corpus from "./fixtures/gram-markdown-fixtures.json";
-import { parseGramMessage } from "../src/gramMarkdown";
+import { parseGramMessage, type GramBlock } from "../src/gramMarkdown";
 
 interface FixtureExpect {
   blocks: string[];
@@ -19,9 +19,133 @@ interface FixtureCase {
   expect: FixtureExpect;
 }
 
+interface ParsedTag {
+  name: string;
+  closing: boolean;
+  selfClosing: boolean;
+  attrs: Map<string, string>;
+}
+
+const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+const FORBIDDEN_ELEMENTS = new Set(["script", "iframe", "object", "embed", "img"]);
 const SAFE_HREF_RE = /^(?:https?:\/\/|mailto:)/i;
-const HREF_ATTR_RE = /\bhref="([^"]*)"/gi;
-const EVENT_HANDLER_TAG_RE = /<[^>]*\bon(?:error|load|click|mouseover|focus)\s*=/i;
+
+// Minimal quote-aware HTML tag tokenizer so quoted attribute values (e.g. title="mentions onload=literal")
+// are never mistaken for live event-handler attributes, and top-level block order can be projected exactly.
+function tokenizeHTMLTags(html: string): ParsedTag[] {
+  const tags: ParsedTag[] = [];
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) break;
+    let pos = lt + 1;
+    let closing = false;
+    if (html[pos] === "/") {
+      closing = true;
+      pos++;
+    }
+    const nameStart = pos;
+    while (pos < html.length && /[A-Za-z0-9-]/.test(html[pos]!)) pos++;
+    const name = html.slice(nameStart, pos).toLowerCase();
+    if (!name) {
+      i = lt + 1;
+      continue;
+    }
+    const attrs = new Map<string, string>();
+    let selfClosing = false;
+    while (pos < html.length) {
+      while (pos < html.length && /\s/.test(html[pos]!)) pos++;
+      if (html[pos] === ">") {
+        pos++;
+        break;
+      }
+      if (html[pos] === "/" && html[pos + 1] === ">") {
+        selfClosing = true;
+        pos += 2;
+        break;
+      }
+      const attrStart = pos;
+      while (pos < html.length && !/[\s=/>]/.test(html[pos]!)) pos++;
+      const attrName = html.slice(attrStart, pos).toLowerCase();
+      if (!attrName) {
+        pos++;
+        continue;
+      }
+      while (pos < html.length && /\s/.test(html[pos]!)) pos++;
+      let value = "";
+      if (html[pos] === "=") {
+        pos++;
+        while (pos < html.length && /\s/.test(html[pos]!)) pos++;
+        const quote = html[pos];
+        if (quote === '"' || quote === "'") {
+          pos++;
+          const valStart = pos;
+          while (pos < html.length && html[pos] !== quote) pos++;
+          value = html.slice(valStart, pos);
+          if (html[pos] === quote) pos++;
+        } else {
+          const valStart = pos;
+          while (pos < html.length && !/[\s>]/.test(html[pos]!)) pos++;
+          value = html.slice(valStart, pos);
+        }
+      }
+      attrs.set(attrName, value);
+    }
+    tags.push({ name, closing, selfClosing: selfClosing || VOID_ELEMENTS.has(name), attrs });
+    i = pos;
+  }
+  return tags;
+}
+
+function decodeHrefForCheck(raw: string): string {
+  const decoded = raw.replace(/&(?:amp|colon|sol|Tab|NewLine|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (m, dec?: string, hex?: string) => {
+    if (dec !== undefined) {
+      const cp = Number.parseInt(dec, 10);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
+    if (hex !== undefined) {
+      const cp = Number.parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    }
+    if (m === "&colon;") return ":";
+    if (m === "&sol;") return "/";
+    if (m === "&Tab;") return "\t";
+    if (m === "&NewLine;") return "\n";
+    return "&";
+  });
+  return decoded.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+}
+
+function projectTopLevelBlockTags(blocks: GramBlock[]): string[] {
+  const out: string[] = [];
+  for (const block of blocks) {
+    if (block.kind === "code") {
+      out.push(block.language ? `code:${block.language}` : "code");
+      continue;
+    }
+    let depth = 0;
+    for (const tag of tokenizeHTMLTags(block.html)) {
+      if (tag.closing) {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
+      if (depth === 0) {
+        if (tag.name === "p") out.push("paragraph");
+        else if (/^h[1-6]$/.test(tag.name)) out.push(`heading:${tag.name[1]}`);
+        else if (tag.name === "ul") out.push("list:unordered");
+        else if (tag.name === "ol") {
+          const start = tag.attrs.get("start");
+          out.push(start && start !== "1" ? `list:ordered:${start}` : "list:ordered");
+        } else if (tag.name === "table") out.push("table");
+        else if (tag.name === "blockquote") out.push("quote");
+        else if (tag.name === "hr") out.push("rule");
+        else if (tag.name === "pre") out.push("code");
+      }
+      if (!tag.selfClosing) depth++;
+    }
+  }
+  return out;
+}
 
 function combinedOutput(input: string) {
   const blocks = parseGramMessage(input);
@@ -33,16 +157,16 @@ function combinedOutput(input: string) {
 }
 
 function assertSafeHTML(html: string, context: string) {
-  const lower = html.toLowerCase();
-  for (const bad of ["<script", "<iframe", "<object", "<embed", "<img "]) {
-    expect(lower, `${context}: unexpected ${bad}`).not.toContain(bad);
-  }
-  expect(EVENT_HANDLER_TAG_RE.test(html), `${context}: live HTML event handler attribute`).toBe(false);
-  HREF_ATTR_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = HREF_ATTR_RE.exec(html)) !== null) {
-    const href = match[1] ?? "";
-    expect(SAFE_HREF_RE.test(href), `${context}: unsafe href "${href}"`).toBe(true);
+  for (const tag of tokenizeHTMLTags(html)) {
+    if (tag.closing) continue;
+    expect(FORBIDDEN_ELEMENTS.has(tag.name), `${context}: unexpected <${tag.name}>`).toBe(false);
+    for (const [attrName, attrValue] of tag.attrs) {
+      expect(attrName.startsWith("on"), `${context}: live event handler attribute ${attrName}`).toBe(false);
+      if (attrName === "href") {
+        const decoded = decodeHrefForCheck(attrValue);
+        expect(SAFE_HREF_RE.test(decoded), `${context}: unsafe href "${attrValue}"`).toBe(true);
+      }
+    }
   }
 }
 
@@ -51,30 +175,9 @@ describe("shared Gram Markdown conformance corpus", () => {
     test(`fixture: ${c.id}`, () => {
       const out = combinedOutput(c.input);
       expect(out.blocks.length).toBeGreaterThan(0);
+      expect(projectTopLevelBlockTags(out.blocks)).toEqual(c.expect.blocks);
       expect(out.hasTable).toBe(c.expect.hasTable);
       expect(out.hasCode).toBe(c.expect.hasCode);
-
-      for (const expectedBlock of c.expect.blocks) {
-        if (expectedBlock === "table") expect(out.html).toContain("<table>");
-        else if (expectedBlock.startsWith("heading:")) {
-          const level = expectedBlock.split(":")[1];
-          expect(out.html).toContain(`<h${level}>`);
-        } else if (expectedBlock === "list:unordered") expect(out.html).toContain("<ul>");
-        else if (expectedBlock.startsWith("list:ordered")) {
-          const start = expectedBlock.split(":")[2];
-          expect(out.html).toContain("<ol");
-          if (start && start !== "1") expect(out.html).toContain(`start="${start}"`);
-        } else if (expectedBlock === "quote") expect(out.html).toContain("<blockquote>");
-        else if (expectedBlock === "rule") expect(out.html).toContain("<hr>");
-        else if (expectedBlock.startsWith("code")) {
-          expect(out.hasCode).toBe(true);
-          const lang = expectedBlock.split(":")[1];
-          if (lang) {
-            const topCode = out.blocks.find(b => b.kind === "code");
-            expect(topCode?.kind === "code" ? topCode.language : "").toBe(lang);
-          }
-        }
-      }
 
       for (const text of c.expect.containsText) {
         expect(out.allText).toContain(text);
@@ -88,6 +191,29 @@ describe("shared Gram Markdown conformance corpus", () => {
       assertSafeHTML(out.html, c.id);
     });
   }
+});
+
+test("link scheme normalization preserves named whitespace entities and rejects non-URL whitespace/unsafe schemes", () => {
+  const tab = combinedOutput("[docs](&Tab;https://example.test)");
+  expect(tab.html).toContain('<a href="&Tab;https://example.test">docs</a>');
+  assertSafeHTML(tab.html, "named-tab");
+
+  const nl = combinedOutput("[docs](&NewLine;https://example.test)");
+  expect(nl.html).toContain('<a href="&NewLine;https://example.test">docs</a>');
+  assertSafeHTML(nl.html, "named-newline");
+
+  const nbsp = combinedOutput("[docs](&#160;https://example.test)");
+  expect(nbsp.html).not.toContain("<a ");
+  expect(nbsp.html).toContain("docs");
+
+  const badJsTab = combinedOutput("[bad](java&Tab;script:alert(1))");
+  expect(badJsTab.html).not.toContain("<a ");
+  expect(badJsTab.html).toContain("bad");
+
+  // Quoted title attribute containing `onload=` text is not a live event handler.
+  const quotedTitle = combinedOutput('[docs](https://example.test "mentions onload=literal")');
+  expect(quotedTitle.html).toContain('title="mentions onload=literal"');
+  assertSafeHTML(quotedTitle.html, "quoted-title");
 });
 
 // Deterministic PRNG (mulberry32) for pre-PR property/fuzz invariants.
@@ -117,8 +243,11 @@ const FRAGMENTS = [
   "```sh\necho <script>1</script>\n```",
   "~~~md\n```ts\nconst x = 1;\n```\n~~~",
   "[safe](https://herdrup.app)",
+  '[titled](https://herdrup.app "mentions onload=literal")',
+  "[tab](&Tab;https://herdrup.app)",
   "[mail](mailto:ops@herdrup.app)",
   "[bad-js](javascript:alert(1))",
+  "[bad-js-tab](java&Tab;script:alert(1))",
   "[bad-data](data:text/html,<script>1</script>)",
   "ftp://[2001:db8::1]/report@example.test",
   "https://guest.herdrup.app/web/?a=1&b=2",
@@ -142,7 +271,7 @@ test("property/fuzz: 400 seeded randomized markdown documents never crash or emi
   }
 });
 
-test("property/fuzz: 1,500-line adversarial input parses in bounded linear time (< 2s)", () => {
+test("latency smoke: 1,500-line adversarial input parses well under budget (< 2s)", () => {
   const lines: string[] = [];
   for (let i = 0; i < 500; i++) {
     lines.push(`- item ${i} with **bold** \`code\` ftp://host/${i} <script>${i}</script>`);

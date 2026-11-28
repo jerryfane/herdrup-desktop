@@ -229,10 +229,12 @@ function serializeMarkdownHref(rawDest: string): string {
   return out;
 }
 
-// Match HTML named entities case-sensitively (`&colon;`, `&sol;`, `&amp;` — matching browser
-// decoding so uppercase `&COLON;` is rejected) and numeric character references in one pass.
+// Match HTML named entities case-sensitively (`&colon;`, `&sol;`, `&amp;`, `&Tab;`, `&NewLine;` —
+// matching browser decoding so uppercase `&COLON;` or lowercase `&tab;` are rejected) and numeric
+// character references in one pass, then strip WHATWG URL leading/trailing C0+space and ASCII
+// tab/newline characters so scheme checks match browser href parsing.
 function decodeSchemeEntities(href: string): string {
-  return href.replace(/&(?:amp|colon|sol|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (match, dec?: string, hex?: string) => {
+  const decoded = href.replace(/&(?:amp|colon|sol|Tab|NewLine|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (match, dec?: string, hex?: string) => {
     if (dec !== undefined) {
       const cp = Number.parseInt(dec, 10);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
@@ -243,8 +245,11 @@ function decodeSchemeEntities(href: string): string {
     }
     if (match === "&colon;") return ":";
     if (match === "&sol;") return "/";
+    if (match === "&Tab;") return "\t";
+    if (match === "&NewLine;") return "\n";
     return "&";
   });
+  return decoded.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
 }
 
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
@@ -549,7 +554,7 @@ gramMarked.use({
         return `<a href="${escapeHTML(token.href)}">${escapeHTML(token.text)}</a>`;
       }
       const flattened = flattenLinkImages(token.tokens);
-      const decodedHref = decodeSchemeEntities(token.href ?? "").trim();
+      const decodedHref = decodeSchemeEntities(token.href ?? "");
       if (!/^(?:https?:\/\/|mailto:)/i.test(decodedHref)) {
         return this.parser.parseInline(flattened);
       }
