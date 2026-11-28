@@ -1,13 +1,6 @@
-// Shared table preparation and HTML sanitization policy for Chat (chatMarkdown.ts) and Gram
-// (gramMarkdown.ts).
+// Shared table presentation helpers for Chat (`chatMarkdown.ts`) and Gram (`gramMarkdown.ts`).
 
 export const CHAT_OK_COLOR = "#7fc89a";
-
-export const MESSAGE_SANITIZE_CONFIG = {
-  USE_PROFILES: { html: true },
-  FORBID_TAGS: ["img", "video", "audio", "iframe", "style", "form", "input"],
-  FORBID_ATTR: ["style"],
-};
 
 export interface MarkdownTableClasses {
   scroller: string;

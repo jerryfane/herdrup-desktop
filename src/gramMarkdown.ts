@@ -2,24 +2,94 @@
 // tables, blockquotes, rules, code blocks, inline bold/italic/code/strikethrough/links, and bare
 // URLs). Each message is lexed ONCE as a whole document so nested fences inside lists, tilde
 // fences containing backticks, and reference links defined across code blocks parse intact.
-import { Marked, type Token, type Tokens } from "marked";
+import { Marked, Renderer, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
-import { MESSAGE_SANITIZE_CONFIG, prepareMarkdownTables } from "./markdownTable";
+import { prepareMarkdownTables } from "./markdownTable";
+import { MESSAGE_SANITIZE_CONFIG } from "./messageSanitize";
 
 const escapeHTML = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+// Like Marked's `escape(s, false)`: escapes raw `&`, `<`, `>`, `"` without double-escaping
+// entities already decoded/preserved by Marked in parsed inline tokens or Markdown link hrefs.
+const escapeHTMLPreservingEntities = (s: string) =>
+  s.replace(/&(?!#?\w+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+// Single case-insensitive boundary rule shared by `start()` and `tokenizer()` so lowercase
+// `www.` and mixed-case `WWW.` follow identical recognition rules (including inside quotes).
+const BARE_URL_START = /(?:^|[\s(\[{"'*_~])(?:https?:\/\/|www\.)/i;
+const BARE_URL_PREV = /[\s(\[{"'*_~]$/;
+
+/** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
+ *  without repeated string splits, while preserving terminal entity-like query semicolons such
+ *  as `www.example.test/?q=1&amp;`. */
+function trimBareUrl(raw: string): string {
+  let openParen = 0;
+  let closeParen = 0;
+  let openBracket = 0;
+  let closeBracket = 0;
+  let openBrace = 0;
+  let closeBrace = 0;
+  for (let i = 0; i < raw.length; i++) {
+    switch (raw[i]) {
+      case "(": openParen++; break;
+      case ")": closeParen++; break;
+      case "[": openBracket++; break;
+      case "]": closeBracket++; break;
+      case "{": openBrace++; break;
+      case "}": closeBrace++; break;
+    }
+  }
+  const queryIndex = raw.indexOf("?");
+  let end = raw.length;
+  while (end > 0) {
+    const tail = raw[end - 1]!;
+    if (tail === ";") {
+      if (queryIndex !== -1 && end - 1 > queryIndex && /&[A-Za-z0-9#]+;$/.test(raw.slice(queryIndex + 1, end))) {
+        break;
+      }
+      end--;
+      continue;
+    }
+    if ("?!.,:*_~'\"".includes(tail)) {
+      end--;
+      continue;
+    }
+    if (tail === ")" && closeParen > openParen) {
+      closeParen--;
+      end--;
+      continue;
+    }
+    if (tail === "]" && closeBracket > openBracket) {
+      closeBracket--;
+      end--;
+      continue;
+    }
+    if (tail === "}" && closeBrace > openBrace) {
+      closeBrace--;
+      end--;
+      continue;
+    }
+    break;
+  }
+  return raw.slice(0, end);
+}
+
+let renderLinkDepth = 0;
+
 const gramMarked = new Marked({ gfm: true, breaks: true });
 gramMarked.use({
-  // Replace Marked's case-sensitive, entity-decoding GFM autolink with a case-insensitive bare
-  // URL tokenizer so `WWW.Example.com/Runbook` stays clickable, `www.` upgrades to `https://`,
-  // literal query strings like `?q=1&copy;more` are never entity-decoded, and explicit Markdown
-  // links like `[www.example.com](http://www.example.com)` keep their authored scheme.
+  // Delegate bare email autolinks (`ops@example.test`) to Marked's default `url` tokenizer while
+  // routing bare `http(s)://` and `www.` URLs through our case-insensitive `bareUrl` extension so
+  // `WWW.Example.com/Runbook` stays clickable, `www.` upgrades to `https://`, literal query
+  // entities (`?q=1&copy;more`, `?q=1&amp;`) are never decoded or truncated, and explicit
+  // Markdown links (`[www.example.com](http://www.example.com)`) keep their authored scheme.
   tokenizer: {
-    url() {
-      return undefined;
+    url(src: string) {
+      if (/^(?:https?:\/\/|www\.)/i.test(src)) return undefined;
+      return false;
     },
   },
   extensions: [
@@ -27,30 +97,17 @@ gramMarked.use({
       name: "bareUrl",
       level: "inline",
       start(src: string) {
-        const match = /(?:^|[\s(\[{])(?:https?:\/\/|www\.)/i.exec(src);
+        const match = BARE_URL_START.exec(src);
         if (!match) return undefined;
-        return match.index + (match[0].length - match[0].replace(/^[\s(\[{]/, "").length);
+        return match.index + (match[0].length - match[0].replace(/^[\s(\[{"'*_~]/, "").length);
       },
       tokenizer(src: string, tokens) {
         if (this.lexer.state.inLink) return undefined;
         const prev = tokens.at(-1);
-        if (prev && /[A-Za-z0-9]$/.test(prev.raw)) return undefined;
+        if (prev && !BARE_URL_PREV.test(prev.raw)) return undefined;
         const cap = /^((?:https?:\/\/|www\.)[^\s<>"]+)/i.exec(src);
         if (!cap) return undefined;
-        let raw = cap[1]!;
-        for (;;) {
-          const tail = raw[raw.length - 1]!;
-          if ("?!.,;:*_~'\"".includes(tail)) {
-            raw = raw.slice(0, -1);
-            continue;
-          }
-          const pair = ({ ")": "(", "]": "[", "}": "{" } as Record<string, string>)[tail];
-          if (pair && raw.split(tail).length > raw.split(pair).length) {
-            raw = raw.slice(0, -1);
-            continue;
-          }
-          break;
-        }
+        const raw = trimBareUrl(cap[1]!);
         if (/^(?:www\.|https?:\/\/)$/i.test(raw)) return undefined;
         const href = /^www\./i.test(raw) ? `https://${raw}` : raw;
         return { type: "bareUrl", raw, text: raw, href };
@@ -74,11 +131,26 @@ gramMarked.use({
       const trimmed = raw.trimEnd();
       return trimmed ? `<p>${escapeHTML(trimmed)}</p>\n` : "";
     },
+    // Track nested link rendering so linked image badges (`[![Build](img)](link)`) render their
+    // alt text inside the authored outer anchor instead of emitting nested `<a>` tags (#647).
+    link(token: Tokens.Link) {
+      renderLinkDepth++;
+      try {
+        return Renderer.prototype.link.call(this, token);
+      } finally {
+        renderLinkDepth--;
+      }
+    },
     // Keep remote images disabled without turning image-only Markdown messages into empty
-    // bubbles: preserve the label and destination as a safe link or plain text.
-    image({ href, text }: Tokens.Image) {
-      const label = escapeHTML(text || href || "");
-      return href ? `<a href="${escapeHTML(href)}">${label}</a>` : label;
+    // bubbles: render parsed plain alt text (preserving HTML entities without double-escaping)
+    // as label text inside an existing link, or as a safe link for standalone images.
+    image({ href, text, tokens }: Tokens.Image) {
+      const parsedAlt = tokens?.length
+        ? escapeHTMLPreservingEntities(this.parser.parseInline(tokens, this.parser.textRenderer))
+        : escapeHTMLPreservingEntities(text || "");
+      const label = parsedAlt || (href ? escapeHTMLPreservingEntities(href) : "");
+      if (renderLinkDepth > 0 || !href) return label;
+      return `<a href="${escapeHTMLPreservingEntities(href)}">${label}</a>`;
     },
   },
 });
