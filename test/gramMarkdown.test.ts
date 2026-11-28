@@ -131,18 +131,23 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
 });
 
 test("bare www autolinks upgrade to https while preserving case, query entities, emails, and explicit http destinations", () => {
-  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, email ops@example.test or <docs@example.test>, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
+  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://example.test/releases, email ops@example.test, www.ops@example.com or <docs@example.test>, path www.example.com/user@host, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
   if (blocks[0]!.kind !== "markdown") return;
   expect(blocks[0]!.html).toContain('Bare &quot;<a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>&quot;');
   expect(blocks[0]!.html).toContain('and &quot;<a href="https://www.example.test">www.example.test</a>&quot;');
+  expect(blocks[0]!.html).toContain('Docs:<a href="https://example.test/api?cursor=ready;">https://example.test/api?cursor=ready;</a>');
+  expect(blocks[0]!.html).toContain('<code>docs</code><a href="https://www.example.test">www.example.test</a>');
   expect(blocks[0]!.html).toContain('query <a href="https://www.example.com/?q=1&amp;copy;more">www.example.com/?q=1&amp;copy;more</a>');
   expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/?q=1&amp;amp;">www.example.test/?q=1&amp;amp;</a>');
   expect(blocks[0]!.html).toContain('prose <a href="https://www.example.test">www.example.test</a>; next');
+  expect(blocks[0]!.html).not.toContain('href="ftp://example.test/releases"');
   expect(blocks[0]!.html).toContain('email <a href="mailto:ops@example.test">ops@example.test</a>');
+  expect(blocks[0]!.html).toContain('<a href="mailto:www.ops@example.com">www.ops@example.com</a>');
   expect(blocks[0]!.html).toContain('or <a href="mailto:docs@example.test">docs@example.test</a>');
+  expect(blocks[0]!.html).toContain('path <a href="https://www.example.com/user@host">www.example.com/user@host</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 });
@@ -155,12 +160,21 @@ test("raw angle-bracket placeholders, Markdown images, and linked badges preserv
     expect(placeholder[0]!.html).toContain("Deploy using &lt;environment&gt; before 5pm.");
   }
 
-  const imageOnly = parseGramMessage("![Revenue &amp; **costs** & <env>](https://example.com/chart.png?a=1&b=2&amp;c=3)");
+  const imageOnly = parseGramMessage("![Write `&amp;` to encode &amp; & <env>](https://example.com/chart.png?a=1\\&copy;&amp;b=2)");
   expect(imageOnly).toHaveLength(1);
   expect(imageOnly[0]!.kind).toBe("markdown");
   if (imageOnly[0]!.kind === "markdown") {
     expect(imageOnly[0]!.html).not.toContain("<img");
-    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;b=2&amp;c=3">Revenue &amp; costs &amp; &lt;env&gt;</a>');
+    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;copy;&amp;b=2">Write &amp;amp; to encode &amp; &amp; &lt;env&gt;</a>');
+  }
+
+  // Relative image destinations render plain alt text instead of a dead link.
+  const relImage = parseGramMessage("![Screenshot](docs/image.png)");
+  expect(relImage).toHaveLength(1);
+  expect(relImage[0]!.kind).toBe("markdown");
+  if (relImage[0]!.kind === "markdown") {
+    expect(relImage[0]!.html).not.toContain("<a ");
+    expect(relImage[0]!.html).toContain("Screenshot");
   }
 
   // Linked image badge keeps the authored outer link destination and renders plain alt text inside it (#647).
