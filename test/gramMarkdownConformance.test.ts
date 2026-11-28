@@ -3,7 +3,7 @@
 // themartianapp/herdrup's Tests/HerdrKitTests/Fixtures/gram-markdown-fixtures.json.
 import { describe, expect, test } from "bun:test";
 import corpus from "./fixtures/gram-markdown-fixtures.json";
-import { parseGramMessage, type GramBlock } from "../src/gramMarkdown";
+import { parseGramMessage, type GramMarkdownBlock } from "../src/gramMarkdown";
 
 interface FixtureExpect {
   blocks: string[];
@@ -28,7 +28,7 @@ interface ParsedTag {
 
 const VOID_ELEMENTS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 const FORBIDDEN_ELEMENTS = new Set(["script", "iframe", "object", "embed", "img"]);
-const SAFE_HREF_RE = /^(?:https?:\/\/|mailto:)/i;
+const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 // Minimal quote-aware HTML tag tokenizer so quoted attribute values (e.g. title="mentions onload=literal")
 // are never mistaken for live event-handler attributes, and top-level block order can be projected exactly.
@@ -97,8 +97,8 @@ function tokenizeHTMLTags(html: string): ParsedTag[] {
   return tags;
 }
 
-function decodeHrefForCheck(raw: string): string {
-  const decoded = raw.replace(/&(?:amp|colon|sol|Tab|NewLine|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (m, dec?: string, hex?: string) => {
+function decodeHTMLAttributeEntities(raw: string): string {
+  return raw.replace(/&(?:amp|lt|gt|quot|colon|sol|Tab|NewLine|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (m, dec?: string, hex?: string) => {
     if (dec !== undefined) {
       const cp = Number.parseInt(dec, 10);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
@@ -107,16 +107,21 @@ function decodeHrefForCheck(raw: string): string {
       const cp = Number.parseInt(hex, 16);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
     }
-    if (m === "&colon;") return ":";
-    if (m === "&sol;") return "/";
-    if (m === "&Tab;") return "\t";
-    if (m === "&NewLine;") return "\n";
-    return "&";
+    switch (m) {
+      case "&amp;": return "&";
+      case "&lt;": return "<";
+      case "&gt;": return ">";
+      case "&quot;": return '"';
+      case "&colon;": return ":";
+      case "&sol;": return "/";
+      case "&Tab;": return "\t";
+      case "&NewLine;": return "\n";
+      default: return m;
+    }
   });
-  return decoded.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
 }
 
-function projectTopLevelBlockTags(blocks: GramBlock[]): string[] {
+function projectTopLevelBlockTags(blocks: GramMarkdownBlock[]): string[] {
   const out: string[] = [];
   for (const block of blocks) {
     if (block.kind === "code") {
@@ -140,6 +145,7 @@ function projectTopLevelBlockTags(blocks: GramBlock[]): string[] {
         else if (tag.name === "blockquote") out.push("quote");
         else if (tag.name === "hr") out.push("rule");
         else if (tag.name === "pre") out.push("code");
+        else out.push(`unexpected:${tag.name}`);
       }
       if (!tag.selfClosing) depth++;
     }
@@ -163,8 +169,14 @@ function assertSafeHTML(html: string, context: string) {
     for (const [attrName, attrValue] of tag.attrs) {
       expect(attrName.startsWith("on"), `${context}: live event handler attribute ${attrName}`).toBe(false);
       if (attrName === "href") {
-        const decoded = decodeHrefForCheck(attrValue);
-        expect(SAFE_HREF_RE.test(decoded), `${context}: unsafe href "${attrValue}"`).toBe(true);
+        // Parse decoded href with the standard WHATWG URL parser (without duplicating production trimming).
+        let parsed: URL | null = null;
+        try {
+          parsed = new URL(decodeHTMLAttributeEntities(attrValue));
+        } catch {
+          parsed = null;
+        }
+        expect(parsed !== null && ALLOWED_PROTOCOLS.has(parsed.protocol), `${context}: unsafe or relative href "${attrValue}"`).toBe(true);
       }
     }
   }
@@ -214,6 +226,14 @@ test("link scheme normalization preserves named whitespace entities and rejects 
   const quotedTitle = combinedOutput('[docs](https://example.test "mentions onload=literal")');
   expect(quotedTitle.html).toContain('title="mentions onload=literal"');
   assertSafeHTML(quotedTitle.html, "quoted-title");
+
+  // Long interior whitespace entity run in a valid HTTPS URL stays linear-time (no backtracking).
+  const longQuery = `[docs](https://example.test/?q=${"&#32;".repeat(8000)}z)`;
+  const t0 = performance.now();
+  const longOut = combinedOutput(longQuery);
+  const elapsedMs = performance.now() - t0;
+  expect(longOut.html).toContain("<a href=");
+  expect(elapsedMs).toBeLessThan(1500);
 });
 
 // Deterministic PRNG (mulberry32) for pre-PR property/fuzz invariants.

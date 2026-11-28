@@ -231,8 +231,8 @@ function serializeMarkdownHref(rawDest: string): string {
 
 // Match HTML named entities case-sensitively (`&colon;`, `&sol;`, `&amp;`, `&Tab;`, `&NewLine;` —
 // matching browser decoding so uppercase `&COLON;` or lowercase `&tab;` are rejected) and numeric
-// character references in one pass, then strip WHATWG URL leading/trailing C0+space and ASCII
-// tab/newline characters so scheme checks match browser href parsing.
+// character references in one pass, then strip WHATWG URL leading/trailing C0+space (via O(N)
+// endpoint scans, never backtracking regexes) and ASCII tab/newline characters.
 function decodeSchemeEntities(href: string): string {
   const decoded = href.replace(/&(?:amp|colon|sol|Tab|NewLine|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (match, dec?: string, hex?: string) => {
     if (dec !== undefined) {
@@ -249,7 +249,11 @@ function decodeSchemeEntities(href: string): string {
     if (match === "&NewLine;") return "\n";
     return "&";
   });
-  return decoded.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+  let start = 0;
+  let end = decoded.length;
+  while (start < end && decoded.charCodeAt(start) <= 0x20) start++;
+  while (end > start && decoded.charCodeAt(end - 1) <= 0x20) end--;
+  return decoded.slice(start, end).replace(/[\t\n\r]/g, "");
 }
 
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
