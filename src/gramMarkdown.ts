@@ -48,14 +48,27 @@ function ensureCaseInsensitiveWwwTextRule(tokenizer: { rules: Tokenizer["rules"]
 
 /** Lexer subclass that scopes rejected bare-URL suppression (`ftp://...` and word-glued
  *  `cohttps://...` / `cowww....`) to each `inlineTokens` frame in O(1), so suppression never
- *  leaks into later paragraphs/list items/table cells (#676) and stays intact across nested
- *  emphasis/formatting while propagating into nested spans inside the rejected URL (#677). */
+ *  leaks into later paragraphs/list items/table cells (#676), stays intact across nested
+ *  emphasis/formatting (#677), and translates only the actual rejected overlap into nested
+ *  frames without disabling links past the rejected URL boundary (#679). */
 class GramLexer extends Lexer {
   private suppressStack: number[] = [];
+  private pendingNestedParent: { src: string; endRemaining: number } | null = null;
 
   override inlineTokens(src: string, tokens: Token[] = []): Token[] {
-    const parentEnd = this.suppressStack.length > 0 ? this.suppressStack[this.suppressStack.length - 1]! : -1;
-    this.suppressStack.push(parentEnd >= 0 ? 0 : -1);
+    const parent = this.pendingNestedParent;
+    this.pendingNestedParent = null;
+    let initialEnd = -1;
+    if (parent && parent.src.length > parent.endRemaining) {
+      const probe = src.slice(0, 8);
+      const openerLen =
+        parent.src.length >= 2 && parent.src[0] === parent.src[1] && parent.src.startsWith(probe, 2) ? 2 : 1;
+      const overlap = parent.src.length - openerLen - parent.endRemaining;
+      if (overlap > 0) {
+        initialEnd = Math.max(0, src.length - overlap);
+      }
+    }
+    this.suppressStack.push(initialEnd);
     try {
       return super.inlineTokens(src, tokens);
     } finally {
@@ -63,14 +76,30 @@ class GramLexer extends Lexer {
     }
   }
 
+  withNestedSpan<T extends { raw: string } | undefined>(src: string, run: () => T): T {
+    this.advanceTo(src.length);
+    const endRemaining = this.suppressedEndRemaining();
+    const prevPending = this.pendingNestedParent;
+    this.pendingNestedParent = endRemaining >= 0 && src.length > endRemaining ? { src, endRemaining } : null;
+    try {
+      const tok = run();
+      if (tok) this.advanceTo(src.length - tok.raw.length);
+      return tok;
+    } finally {
+      this.pendingNestedParent = prevPending;
+    }
+  }
+
   suppressBareUrl(src: string): void {
     if (this.suppressStack.length === 0) return;
-    const cap = /^[^\s<>"]+/.exec(src);
-    if (!cap) return;
-    const endRemaining = src.length - cap[0].length;
     const idx = this.suppressStack.length - 1;
     const cur = this.suppressStack[idx]!;
-    this.suppressStack[idx] = cur >= 0 ? Math.min(cur, endRemaining) : endRemaining;
+    // Reuse the active rejected-span boundary when already inside one (every non-whitespace
+    // suffix shares the exact same end boundary, keeping repeated `:cowww.` prefixes O(N)).
+    if (cur >= 0 && src.length > cur) return;
+    const cap = /^[^\s<>"]+/.exec(src);
+    if (!cap) return;
+    this.suppressStack[idx] = src.length - cap[0].length;
   }
 
   suppressedEndRemaining(): number {
@@ -379,6 +408,16 @@ gramMarked.use({
       }
       return tok;
     },
+    emStrong(src: string, maskedSrc: string, prevChar?: string) {
+      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
+      if (!gramLexer) return Tokenizer.prototype.emStrong.call(this, src, maskedSrc, prevChar);
+      return gramLexer.withNestedSpan(src, () => Tokenizer.prototype.emStrong.call(this, src, maskedSrc, prevChar));
+    },
+    del(src: string, maskedSrc: string, prevChar?: string) {
+      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
+      if (!gramLexer) return Tokenizer.prototype.del.call(this, src, maskedSrc, prevChar);
+      return gramLexer.withNestedSpan(src, () => Tokenizer.prototype.del.call(this, src, maskedSrc, prevChar));
+    },
     inlineText(src: string) {
       ensureCaseInsensitiveWwwTextRule(this);
       // Inside authored link labels and image alt text, Marked disables bare autolinks (`url()`
@@ -395,16 +434,15 @@ gramMarked.use({
       if (!tok) return tok;
       const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
       if (gramLexer) {
-        // Preserve literal entity spellings (e.g. `&amp;` in `ftp://files.example.test/get?q=1&amp;mode=2`)
-        // within the rejected URL portion of `tok.raw`, while keeping normal decoding after it.
+        // Emit only the literal rejected-URL prefix up to `endRemaining` so literal entity
+        // spellings (`ftp://files.example.test/get?q=1&amp;mode=2`) stay verbatim and Marked's
+        // normal inline pass handles any trailing prose cleanly.
         const endRemaining = gramLexer.suppressedEndRemaining();
         if (endRemaining >= 0 && src.length > endRemaining && !this.lexer.state.inRawBlock) {
           const suppressedChars = Math.min(tok.raw.length, src.length - endRemaining);
-          const literalPart = escapeHTML(tok.raw.slice(0, suppressedChars));
-          const tailPart = tok.raw.slice(suppressedChars);
-          tok.text = tailPart
-            ? literalPart + (Tokenizer.prototype.inlineText.call(this, tailPart)?.text ?? escapeHTMLPreservingEntities(tailPart))
-            : literalPart;
+          const literalRaw = tok.raw.slice(0, suppressedChars);
+          gramLexer.advanceTo(src.length - literalRaw.length);
+          return { type: "text", raw: literalRaw, text: escapeHTML(literalRaw), escaped: true };
         }
         gramLexer.advanceTo(src.length - tok.raw.length);
         // When native text stops right after a word char before a glued bare URL (`cowww.`,
