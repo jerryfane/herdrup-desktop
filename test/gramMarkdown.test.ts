@@ -160,6 +160,16 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
   expect(blocks[0]!.html).toContain('url-with-at <a href="https://www.ops@example.com/report">www.ops@example.com/report</a> and <a href="https://www.ops@example.com?x=1">www.ops@example.com?x=1</a> and <a href="https://www.ops@example.com:8080">www.ops@example.com:8080</a> and <a href="https://www.ops@example.com#top">www.ops@example.com#top</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
+
+  // Authored link and image labels preserve Markdown formatting even around `cohttps://` and `ftp://` (#670).
+  const formattedLabels = parseGramMessage('[cohttps://**docs**.example.test](https://out.example.test) and [ftp://`code`.test](https://out.example.test/2) and ![ftp://`&amp;`](https://img.example.test/ftp)');
+  expect(formattedLabels).toHaveLength(1);
+  expect(formattedLabels[0]!.kind).toBe("markdown");
+  if (formattedLabels[0]!.kind === "markdown") {
+    expect(formattedLabels[0]!.html).toContain('<a href="https://out.example.test">cohttps://<strong>docs</strong>.example.test</a>');
+    expect(formattedLabels[0]!.html).toContain('<a href="https://out.example.test/2">ftp://<code>code</code>.test</a>');
+    expect(formattedLabels[0]!.html).toContain('<a href="https://img.example.test/ftp">ftp://&amp;amp;</a>');
+  }
 });
 
 test("raw angle-bracket placeholders, Markdown images, and linked badges preserve readable text and authored destinations", () => {
@@ -215,15 +225,25 @@ test("raw angle-bracket placeholders, Markdown images, and linked badges preserv
     expect(refImg[0]!.html).toContain('<a href="https://example.test/img?q=&amp;copy;&amp;x=&#X3B;">Badge</a>');
   }
 
-  // Entity-encoded https scheme stays an openable link while escaped `\&colon;` and `javascript&colon;` stay plain text.
-  const entityScheme = parseGramMessage("![A](https&colon;//img.example.test/a) and ![B](https\\&colon;//img.example.test/b) and ![C](javascript&colon;alert(1))");
+  // Padded image destination with trailing parens preserves Markdown escapes (#669).
+  const paddedImage = parseGramMessage("![Badge]( https://example.test/right?q=\\&copy;))");
+  expect(paddedImage).toHaveLength(1);
+  expect(paddedImage[0]!.kind).toBe("markdown");
+  if (paddedImage[0]!.kind === "markdown") {
+    expect(paddedImage[0]!.html).toContain('<a href="https://example.test/right?q=&amp;copy;">Badge</a>');
+  }
+
+  // Case-sensitive named entity scheme validation: lowercase `&colon;` stays openable while
+  // browser-unrecognized `&COLON;`, escaped `\&colon;`, and `javascript&colon;` stay plain text.
+  const entityScheme = parseGramMessage("![A](https&colon;//img.example.test/a) and ![B](https\\&colon;//img.example.test/b) and ![C](javascript&colon;alert(1)) and ![D](https&COLON;//img.example.test/d)");
   expect(entityScheme).toHaveLength(1);
   expect(entityScheme[0]!.kind).toBe("markdown");
   if (entityScheme[0]!.kind === "markdown") {
     expect(entityScheme[0]!.html).toContain('<a href="https&colon;//img.example.test/a">A</a>');
     expect(entityScheme[0]!.html).not.toContain('img.example.test/b');
     expect(entityScheme[0]!.html).not.toContain('javascript');
-    expect(entityScheme[0]!.html).toContain("and B and C");
+    expect(entityScheme[0]!.html).not.toContain('img.example.test/d');
+    expect(entityScheme[0]!.html).toContain("and B and C and D");
   }
 
   // Relative image destinations render plain alt text instead of a dead link.

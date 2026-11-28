@@ -18,11 +18,40 @@ const escapeHTMLPreservingEntities = (s: string) =>
   s.replace(/&(?!#?\w+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
-const isEmailLocalChar = (ch: string) => /[A-Za-z0-9._%+-]/.test(ch);
-const BARE_WEB_SCAN = /(?:(?:https?|ftp):\/\/|www\.)/gi;
 // Leading `.` is excluded so an ellipsis (`...ops@example.test`) stays prose while valid
 // leading `-`, `_` (unformatted), and `+` recipients remain intact (#662, #667).
 const BARE_EMAIL_RE = /^([A-Za-z0-9_%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
+
+const inlineTextRulesCache = new WeakMap<RegExp, RegExp>();
+
+/** Extends Marked's native `inline.text` rule so case-insensitive `WWW.` stops at the same
+ *  lookahead boundary as lowercase `www.`, keeping both formatted prose and repeated `WWW.` O(N). */
+function caseInsensitiveWwwTextRule(nativeRule: RegExp): RegExp {
+  let cached = inlineTextRulesCache.get(nativeRule);
+  if (!cached) {
+    cached = new RegExp(nativeRule.source.replace("www\\.", "[wW][wW][wW]\\."), nativeRule.flags);
+    inlineTextRulesCache.set(nativeRule, cached);
+  }
+  return cached;
+}
+
+/** Matches Marked's `findClosingBracket(str, "()")` so padded inline image destinations keep
+ *  their exact balanced-parenthesis boundary even when `tok.raw` omits a trailing `)` (#669). */
+function findClosingParen(str: string): number {
+  if (!str.includes("(") && !str.includes(")")) return -1;
+  let level = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === "\\") {
+      i++;
+    } else if (str[i] === "(") {
+      level++;
+    } else if (str[i] === ")") {
+      level--;
+      if (level < 0) return i;
+    }
+  }
+  return level > 0 ? -2 : -1;
+}
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
  *  without repeated string splits or regex rescans, while preserving terminal semicolons only
@@ -107,8 +136,10 @@ function serializeMarkdownHref(rawDest: string): string {
   return out;
 }
 
+// Match HTML named entities case-sensitively (`&colon;`, `&sol;`, `&amp;` — matching browser
+// decoding so uppercase `&COLON;` is rejected) and numeric character references in one pass.
 function decodeSchemeEntities(href: string): string {
-  return href.replace(/&(?:amp|colon|sol|#(\d+)|#[xX]([0-9a-fA-F]+));/gi, (match, dec?: string, hex?: string) => {
+  return href.replace(/&(?:amp|colon|sol|#(\d+)|#[xX]([0-9a-fA-F]+));/g, (match, dec?: string, hex?: string) => {
     if (dec !== undefined) {
       const cp = Number.parseInt(dec, 10);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
@@ -117,9 +148,8 @@ function decodeSchemeEntities(href: string): string {
       const cp = Number.parseInt(hex, 16);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
     }
-    const lower = match.toLowerCase();
-    if (lower === "&colon;") return ":";
-    if (lower === "&sol;") return "/";
+    if (match === "&colon;") return ":";
+    if (match === "&sol;") return "/";
     return "&";
   });
 }
@@ -127,11 +157,6 @@ function decodeSchemeEntities(href: string): string {
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
 type AnnotatedDefToken = Tokens.Def & { gramSerializedHref?: string };
 type GramAutolinkToken = Tokens.Link & { gramAutolink?: boolean };
-
-// Matches Marked's exact reference-label folding (`N(label.replace(/\s+/g, " "))`) so padded
-// labels (`[  art  ]`) and Unicode case folds (`STRAẞE` == `STRASSE`) resolve identically (#666).
-const foldRefLabel = (label: string) =>
-  label.replace(/\s+/g, " ").trim().toLowerCase().toUpperCase().toLowerCase();
 
 // Lazily built per-lex map of ONLY accepted `def` tokens (never rejected paragraph continuations
 // like `- intro\n  [art]: ...`) keyed by Marked's `tokens.links` object (#665).
@@ -160,23 +185,6 @@ function acceptedRawDefs(tokens: Token[], links: object): Map<string, string> {
     rawDefsByLinks.set(links, map);
   }
   return map;
-}
-
-/** Finds the earliest case-insensitive bare web URL start (`http(s)://`, `ftp://`, `www.`) in
- *  `src` after a non-word character (excluding email local parts like `ops+WWW.alerts@example.com`)
- *  so `inlineText` clips *before* invoking Marked's native text scan on long paragraphs. */
-function findClippedWebStart(src: string): number {
-  BARE_WEB_SCAN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = BARE_WEB_SCAN.exec(src)) !== null) {
-    if (match.index === 0) continue;
-    if (isWordChar(src[match.index - 1]!)) continue;
-    let end = match.index;
-    while (end < src.length && isEmailLocalChar(src[end]!)) end++;
-    if (src[end] === "@") continue;
-    return match.index;
-  }
-  return -1;
 }
 
 /** Renders Markdown inline tokens as escaped plain text while keeping code spans literal
@@ -275,34 +283,53 @@ gramMarked.use({
     },
     link(src: string) {
       const tok = Tokenizer.prototype.link.call(this, src);
-      // Only inspect `tok.raw` AFTER Marked has already accepted an image and resolved its
-      // balanced-parenthesis boundary (zero regex overhead on prose/links; never absorbs `)` #664).
+      // Only extract the raw destination AFTER Marked accepts an image, applying the same
+      // balanced-paren slice on `cap[2]` from `src` so leading-whitespace destinations whose
+      // `tok.raw` omits `)` still preserve Markdown escapes (#664, #669).
       if (tok && tok.type === "image") {
-        const cap = this.rules.inline.link.exec(tok.raw);
+        const cap = this.rules.inline.link.exec(src);
         if (cap?.[2] !== undefined) {
-          (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(cap[2].trim()));
+          let rawDest = cap[2];
+          if (!rawDest.trim().startsWith("<")) {
+            const end = findClosingParen(rawDest);
+            if (end > -1) rawDest = rawDest.slice(0, end);
+          }
+          (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(rawDest.trim()));
         }
       }
       return tok;
     },
     reflink(src: string, links) {
-      const tok = Tokenizer.prototype.reflink.call(this, src, links);
-      if (tok && tok.type === "image") {
-        const cap = this.rules.inline.reflink.exec(tok.raw) || this.rules.inline.nolink.exec(tok.raw);
-        if (cap) {
-          const key = foldRefLabel(cap[2] || cap[1] || "");
-          const serialized = acceptedRawDefs(this.lexer.tokens, links).get(key);
-          if (serialized !== undefined) {
-            (tok as AnnotatedImageToken).gramSerializedHref = serialized;
-          }
+      if (!src.startsWith("!")) {
+        return Tokenizer.prototype.reflink.call(this, src, links);
+      }
+      // Let Marked itself parse the reference and fold the label key; observe the exact tag key
+      // Marked reads from `links` so reference resolution never diverges (#665, #666).
+      let matchedTag: string | undefined;
+      const trackedLinks = new Proxy(links, {
+        get(target, prop, receiver) {
+          if (typeof prop === "string") matchedTag = prop;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      const tok = Tokenizer.prototype.reflink.call(this, src, trackedLinks);
+      if (tok && tok.type === "image" && matchedTag !== undefined) {
+        const serialized = acceptedRawDefs(this.lexer.tokens, links).get(matchedTag);
+        if (serialized !== undefined) {
+          (tok as AnnotatedImageToken).gramSerializedHref = serialized;
         }
       }
       return tok;
     },
     inlineText(src: string) {
-      // Unsupported `ftp://` bare URLs stay one typed plain-text token so their host/user suffix
-      // (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
-      const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
+      // Inside authored link labels and image alt text, Marked disables bare autolinks (`url()`
+      // returns undefined); keep native inline parsing intact so formatting stays parsed (#670).
+      if (this.lexer.state.inLink) {
+        return Tokenizer.prototype.inlineText.call(this, src);
+      }
+      // Unsupported `ftp://` bare URLs stay plain text up to any Markdown delimiter so their
+      // host/user suffix (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
+      const ftpCap = /^(ftp:\/\/[^\s<>"`*~[\]\\]+)/i.exec(src);
       if (ftpCap) {
         const raw = trimBareUrl(ftpCap[1]!);
         if (raw.length > "ftp://".length) {
@@ -310,32 +337,32 @@ gramMarked.use({
         }
       }
       // Leave leading ellipsis dots as prose so `...ops@example.test` links `ops@example.test` (#667).
-      const dotEmail = /^(\.+)([A-Za-z0-9_%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/.exec(src);
-      if (dotEmail) {
-        const dots = dotEmail[1]!;
-        return { type: "text", raw: dots, text: dots };
+      const dots = /^\.+/.exec(src);
+      if (dots && BARE_EMAIL_RE.test(src.slice(dots[0].length))) {
+        return { type: "text", raw: dots[0], text: dots[0] };
       }
-      // Clip before Marked's native text scan so repeated uppercase `WWW.` links never cause
-      // quadratic scanning across the rest of the paragraph.
-      const clip = findClippedWebStart(src);
-      const bounded = clip !== -1 ? src.slice(0, clip) : src;
-      const tok = Tokenizer.prototype.inlineText.call(this, bounded);
-      if (!tok) return tok;
-      // Enforce the same word-boundary rule when Marked's native text rule splits right before
-      // lowercase `www.` or `https?://` inside a word (e.g. `cowww.example.test`, `cohttps://...`).
-      if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
-        const rest = src.slice(tok.raw.length);
-        const glued = /^((?:(?:https?|ftp):\/\/|www\.)[^\s<>"]*)/i.exec(rest);
+      // Use Marked's native `inline.text` rule extended with case-insensitive `[wW][wW][wW]\.`
+      // so both formatted prose and repeated uppercase `WWW.` stay O(N).
+      const cap = caseInsensitiveWwwTextRule(this.rules.inline.text).exec(src);
+      if (!cap) return undefined;
+      const inRaw = this.lexer.state.inRawBlock;
+      const raw = cap[0];
+      // Enforce the same word-boundary rule when text splits right before `www.` or `http(s)|ftp://`
+      // inside a word (`cowww.example.test`, `coWWW.example.test`, `cohttps://example.test`),
+      // stopping before Markdown formatting delimiters.
+      if (raw.length > 0 && isWordChar(raw[raw.length - 1]!)) {
+        const rest = src.slice(raw.length);
+        const glued = /^((?:(?:https?|ftp):\/\/|www\.)[^\s<>"`*~[\]\\]*)/i.exec(rest);
         if (glued) {
-          const merged = tok.raw + trimBareUrl(glued[1]!);
-          return { type: "text", raw: merged, text: escapeHTMLPreservingEntities(merged), escaped: false };
+          const merged = raw + trimBareUrl(glued[1]!);
+          return { type: "text", raw: merged, text: inRaw ? merged : escapeHTMLPreservingEntities(merged), escaped: inRaw };
         }
       }
-      return tok;
+      return { type: "text", raw, text: inRaw ? raw : escapeHTMLPreservingEntities(raw), escaped: inRaw };
     },
     url(src: string) {
       if (this.lexer.state.inLink) return undefined;
-      // Reject unsupported `ftp://` so `inlineText()` consumes it as one typed plain-text span.
+      // Reject unsupported `ftp://` so `inlineText()` consumes it as plain text.
       if (/^ftp:\/\//i.test(src)) return undefined;
       // Explicit `http(s)://` bare URLs.
       const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
@@ -345,28 +372,24 @@ gramMarked.use({
           return { type: "link", raw, text: raw, href: raw, tokens: [], gramAutolink: true } as GramAutolinkToken;
         }
       }
+      // Classify any competing `www.` span once so email disambiguation (herdrup#920) and web
+      // autolinking share the exact same trimmed candidate.
+      const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
+      const wwwRaw = wwwCap ? trimBareUrl(wwwCap[1]!) : "";
       // Complete bare email addresses (including `+ops@`, `-ops@`, `_ops@` when unformatted,
-      // `ops+www.alerts@`, and `www.ops@`). Only yield to a competing `www.` web URL when the
-      // trimmed web candidate actually keeps a `/`, `?`, `#`, or `:` suffix (never sentence
-      // punctuation like `www.ops@example.com?` or `www.ops@example.com:` — herdrup#920).
+      // `ops+www.alerts@`, and `www.ops@`). Yield to `wwwRaw` only when it actually retains a
+      // `/`, `?`, `#`, or `:` suffix (never sentence punctuation like `www.ops@example.com?`).
       const emailCap = BARE_EMAIL_RE.exec(src);
       if (emailCap) {
         const raw = emailCap[1]!;
-        const next = src[raw.length];
-        const wwwCap = /^www\./i.test(raw) ? /^(www\.[^\s<>"]+)/i.exec(src) : null;
-        const wwwTrimmed = wwwCap ? trimBareUrl(wwwCap[1]!) : "";
-        const webOwnsSuffix = wwwTrimmed.length > raw.length && "/?#:".includes(wwwTrimmed[raw.length]!);
-        if (next !== "@" && !webOwnsSuffix) {
+        const webOwnsSuffix = wwwRaw.length > raw.length && "/?#:".includes(wwwRaw[raw.length]!);
+        if (src[raw.length] !== "@" && !webOwnsSuffix) {
           return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
         }
       }
       // Bare `www.` web URLs (upgraded to `https://`, case-insensitive).
-      const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
-      if (wwwCap) {
-        const raw = trimBareUrl(wwwCap[1]!);
-        if (!/^www\.$/i.test(raw)) {
-          return { type: "link", raw, text: raw, href: `https://${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
-        }
+      if (wwwRaw && !/^www\.$/i.test(wwwRaw)) {
+        return { type: "link", raw: wwwRaw, text: wwwRaw, href: `https://${wwwRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
       }
       return undefined;
     },
