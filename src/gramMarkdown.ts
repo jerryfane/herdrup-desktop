@@ -13,18 +13,19 @@ const escapeHTML = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 // Like Marked's `escape(s, false)`: escapes raw `&`, `<`, `>`, `"` without double-escaping
-// entities already decoded/preserved by Marked in parsed inline tokens or Markdown link hrefs.
+// character references already present in prose tokens.
 const escapeHTMLPreservingEntities = (s: string) =>
   s.replace(/&(?!#?\w+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Single case-insensitive boundary rule shared by `start()` and `tokenizer()` so lowercase
-// `www.` and mixed-case `WWW.` follow identical recognition rules (including inside quotes).
-const BARE_URL_START = /(?:^|[\s(\[{"'*_~])(?:https?:\/\/|www\.)/i;
-const BARE_URL_PREV = /[\s(\[{"'*_~]$/;
+// Single word-boundary predicate shared by `bareUrl.start()` and `bareUrl.tokenizer()` so
+// `www.` and `WWW.` match identically after whitespace, punctuation (e.g. `Docs:https://...`,
+// `"WWW.Example.test"`), and non-text inline tokens (e.g. `` `docs`www.example.test ``).
+const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
+const BARE_URL_SCAN = /(?:https?:\/\/|www\.)/gi;
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
- *  without repeated string splits, while preserving terminal entity-like query semicolons such
- *  as `www.example.test/?q=1&amp;`. */
+ *  without repeated string splits or regex rescans, while preserving terminal semicolons in a
+ *  query component (`?cursor=ready;`, `?q=1&amp;`). */
 function trimBareUrl(raw: string): string {
   let openParen = 0;
   let closeParen = 0;
@@ -47,9 +48,7 @@ function trimBareUrl(raw: string): string {
   while (end > 0) {
     const tail = raw[end - 1]!;
     if (tail === ";") {
-      if (queryIndex !== -1 && end - 1 > queryIndex && /&[A-Za-z0-9#]+;$/.test(raw.slice(queryIndex + 1, end))) {
-        break;
-      }
+      if (queryIndex !== -1 && end - 1 > queryIndex) break;
       end--;
       continue;
     }
@@ -77,18 +76,75 @@ function trimBareUrl(raw: string): string {
   return raw.slice(0, end);
 }
 
-let renderLinkDepth = 0;
+/** Renders Markdown inline tokens as escaped plain text while keeping code spans literal
+ *  (so `` `&amp;` `` stays `&amp;` while prose `&amp;` displays as `&`). */
+function renderPlainAlt(tokens: Token[]): string {
+  let out = "";
+  for (const token of tokens) {
+    switch (token.type) {
+      case "codespan":
+        out += escapeHTML((token as Tokens.Codespan).text);
+        break;
+      case "escape":
+        out += escapeHTML((token as Tokens.Escape).text);
+        break;
+      case "html":
+        out += escapeHTML(token.raw);
+        break;
+      case "br":
+        out += " ";
+        break;
+      case "text": {
+        const textToken = token as Tokens.Text;
+        out += textToken.tokens?.length
+          ? renderPlainAlt(textToken.tokens)
+          : escapeHTMLPreservingEntities(textToken.text);
+        break;
+      }
+      default:
+        if ("tokens" in token && Array.isArray(token.tokens)) {
+          out += renderPlainAlt(token.tokens);
+        } else if ("text" in token && typeof token.text === "string") {
+          out += escapeHTMLPreservingEntities(token.text);
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+function imageAltLabel(token: Tokens.Image): string {
+  const alt = token.tokens?.length
+    ? renderPlainAlt(token.tokens)
+    : escapeHTMLPreservingEntities(token.text || "");
+  return alt || (token.href ? escapeHTML(token.href) : "");
+}
+
+/** Replaces nested `image` tokens inside a Markdown link with already-escaped plain text tokens
+ *  so linked badges (`[![Build](img)](link)`) keep the outer authored destination without nested
+ *  anchors or module-wide link nesting state. */
+function flattenLinkImages(tokens: Token[]): Token[] {
+  return tokens.map((token) => {
+    if (token.type === "image") {
+      return { type: "text", raw: token.raw, text: imageAltLabel(token as Tokens.Image), escaped: true } as Tokens.Text;
+    }
+    if ("tokens" in token && Array.isArray(token.tokens)) {
+      return { ...token, tokens: flattenLinkImages(token.tokens) };
+    }
+    return token;
+  });
+}
 
 const gramMarked = new Marked({ gfm: true, breaks: true });
 gramMarked.use({
-  // Delegate bare email autolinks (`ops@example.test`) to Marked's default `url` tokenizer while
-  // routing bare `http(s)://` and `www.` URLs through our case-insensitive `bareUrl` extension so
+  // Delegate only bare email autolinks (`ops@example.test`) to Marked's default `url` tokenizer;
+  // reject unsupported `ftp://` bare links and route `http(s)://` / `www.` through `bareUrl` so
   // `WWW.Example.com/Runbook` stays clickable, `www.` upgrades to `https://`, literal query
-  // entities (`?q=1&copy;more`, `?q=1&amp;`) are never decoded or truncated, and explicit
-  // Markdown links (`[www.example.com](http://www.example.com)`) keep their authored scheme.
+  // values (`?cursor=ready;`, `?q=1&copy;more`, `?q=1&amp;`) are never decoded or truncated, and
+  // explicit Markdown links (`[www.example.com](http://www.example.com)`) keep their scheme.
   tokenizer: {
     url(src: string) {
-      if (/^(?:https?:\/\/|www\.)/i.test(src)) return undefined;
+      if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(src)) return undefined;
       return false;
     },
   },
@@ -97,14 +153,21 @@ gramMarked.use({
       name: "bareUrl",
       level: "inline",
       start(src: string) {
-        const match = BARE_URL_START.exec(src);
-        if (!match) return undefined;
-        return match.index + (match[0].length - match[0].replace(/^[\s(\[{"'*_~]/, "").length);
+        BARE_URL_SCAN.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = BARE_URL_SCAN.exec(src)) !== null) {
+          if (match.index === 0 || !isWordChar(src[match.index - 1]!)) {
+            return match.index;
+          }
+        }
+        return undefined;
       },
       tokenizer(src: string, tokens) {
         if (this.lexer.state.inLink) return undefined;
         const prev = tokens.at(-1);
-        if (prev && !BARE_URL_PREV.test(prev.raw)) return undefined;
+        if (prev && prev.type === "text" && prev.raw.length > 0 && isWordChar(prev.raw[prev.raw.length - 1]!)) {
+          return undefined;
+        }
         const cap = /^((?:https?:\/\/|www\.)[^\s<>"]+)/i.exec(src);
         if (!cap) return undefined;
         const raw = trimBareUrl(cap[1]!);
@@ -131,26 +194,20 @@ gramMarked.use({
       const trimmed = raw.trimEnd();
       return trimmed ? `<p>${escapeHTML(trimmed)}</p>\n` : "";
     },
-    // Track nested link rendering so linked image badges (`[![Build](img)](link)`) render their
-    // alt text inside the authored outer anchor instead of emitting nested `<a>` tags (#647).
+    // Flatten any nested image tokens inside a Markdown link before delegating to Marked's link
+    // renderer so linked image badges open the authored outer link (#647).
     link(token: Tokens.Link) {
-      renderLinkDepth++;
-      try {
-        return Renderer.prototype.link.call(this, token);
-      } finally {
-        renderLinkDepth--;
-      }
+      return Renderer.prototype.link.call(this, { ...token, tokens: flattenLinkImages(token.tokens) });
     },
     // Keep remote images disabled without turning image-only Markdown messages into empty
-    // bubbles: render parsed plain alt text (preserving HTML entities without double-escaping)
-    // as label text inside an existing link, or as a safe link for standalone images.
-    image({ href, text, tokens }: Tokens.Image) {
-      const parsedAlt = tokens?.length
-        ? escapeHTMLPreservingEntities(this.parser.parseInline(tokens, this.parser.textRenderer))
-        : escapeHTMLPreservingEntities(text || "");
-      const label = parsedAlt || (href ? escapeHTMLPreservingEntities(href) : "");
-      if (renderLinkDepth > 0 || !href) return label;
-      return `<a href="${escapeHTMLPreservingEntities(href)}">${label}</a>`;
+    // bubbles: emit an anchor only for openable http(s) destinations (escaping the URL attribute
+    // independently of alt text so `\&copy;` stays literal while `&amp;` is not double-escaped),
+    // and render plain alt text for relative or non-HTTP destinations.
+    image(token: Tokens.Image) {
+      const label = imageAltLabel(token);
+      if (!token.href || !/^https?:\/\//i.test(token.href)) return label;
+      const href = escapeHTML(token.href.replace(/&amp;/gi, "&"));
+      return `<a href="${href}">${label}</a>`;
     },
   },
 });
@@ -169,12 +226,15 @@ export interface NestedCodeBlock {
   language: string | null;
 }
 
+function codeTokenToBlock(token: Tokens.Code): NestedCodeBlock {
+  const language = (token.lang ?? "").trim().split(/\s+/)[0] || null;
+  return { code: token.text, language };
+}
+
 function collectCodeBlocks(tokens: Token[], out: NestedCodeBlock[]): void {
   for (const token of tokens) {
     if (token.type === "code") {
-      const codeToken = token as Tokens.Code;
-      const language = (codeToken.lang ?? "").trim().split(/\s+/)[0] || null;
-      out.push({ code: codeToken.text, language });
+      out.push(codeTokenToBlock(token as Tokens.Code));
     } else if (token.type === "list") {
       for (const item of (token as Tokens.List).items) collectCodeBlocks(item.tokens, out);
     } else if ("tokens" in token && Array.isArray(token.tokens)) {
@@ -229,9 +289,7 @@ export function parseGramMessage(text: string): GramMarkdownBlock[] {
   for (const token of tokens) {
     if (token.type === "code") {
       flushRun();
-      const codeToken = token as Tokens.Code;
-      const language = (codeToken.lang ?? "").trim().split(/\s+/)[0] || null;
-      out.push({ kind: "code", code: codeToken.text, language });
+      out.push({ kind: "code", ...codeTokenToBlock(token as Tokens.Code) });
     } else {
       run.push(token);
     }
