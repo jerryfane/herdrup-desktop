@@ -17,19 +17,38 @@ const escapeHTML = (s: string) =>
 const escapeHTMLPreservingEntities = (s: string) =>
   s.replace(/&(?!#?\w+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Single word-boundary predicate shared by `bareUrl.start()` and `bareUrl.tokenizer()` so
-// `www.` and `WWW.` match identically after whitespace, punctuation (e.g. `Docs:https://...`,
-// `"WWW.Example.test"`), and non-text inline tokens (e.g. `` `docs`www.example.test ``).
+// Single word-boundary predicate shared by `bareAutolink.start()` and `bareAutolink.tokenizer()` so
+// `www.`, `WWW.`, `https?://`, `ftp://`, and bare emails follow one consistent boundary rule.
 const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
-const BARE_URL_SCAN = /(?:https?:\/\/|www\.)/gi;
-// Bare emails whose local part starts with `www.` (e.g. `www.ops@example.com`) have `@` in the
-// authority segment before any `/`, `?`, `#`, or `:`. Marked's own `url` tokenizer mistakes these
-// for `http://www.ops@example.com`, so `bareUrl` links them directly as `mailto:` (herdrup#910).
-const WWW_EMAIL_RE = /^(www\.[^\s<>":/?#]+@[^\s<>":/?#]+\.[A-Za-z]{2,})/i;
+const isEmailLocalChar = (ch: string) => /[A-Za-z0-9._%+-]/.test(ch);
+const BARE_WEB_SCAN = /(?:(?:https?|ftp):\/\/|www\.)/gi;
+const BARE_EMAIL_DOMAIN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
+const BARE_EMAIL_RE = /^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
+
+/** Finds the earliest index of a bare email candidate in `src` in O(N) without regex
+ *  backtracking (even on adversarial runs of `@` characters). */
+function findEmailStart(src: string): number {
+  let pos = 0;
+  while (pos < src.length) {
+    const at = src.indexOf("@", pos);
+    if (at === -1) return -1;
+    pos = at + 1;
+    if (at === 0 || !isEmailLocalChar(src[at - 1]!)) continue;
+    if (!BARE_EMAIL_DOMAIN.test(src.slice(at + 1))) continue;
+    let start = at - 1;
+    while (start > 0 && isEmailLocalChar(src[start - 1]!)) start--;
+    // Strip leading punctuation like `.` or `-` so `...ops@example.com` starts at `ops`.
+    while (start < at && !isWordChar(src[start]!)) start++;
+    if (start < at && (start === 0 || !isWordChar(src[start - 1]!))) {
+      return start;
+    }
+  }
+  return -1;
+}
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
- *  without repeated string splits or regex rescans, while preserving terminal semicolons in a
- *  query component (`?cursor=ready;`, `?q=1&amp;`). */
+ *  without repeated string splits or regex rescans, while preserving terminal semicolons only
+ *  when the URL ends inside its query component (before any `#` fragment). */
 function trimBareUrl(raw: string): string {
   let openParen = 0;
   let closeParen = 0;
@@ -48,11 +67,13 @@ function trimBareUrl(raw: string): string {
     }
   }
   const queryIndex = raw.indexOf("?");
+  const hashIndex = raw.indexOf("#");
+  const inQuery = (idx: number) => queryIndex !== -1 && idx > queryIndex && (hashIndex === -1 || idx < hashIndex);
   let end = raw.length;
   while (end > 0) {
     const tail = raw[end - 1]!;
     if (tail === ";") {
-      if (queryIndex !== -1 && end - 1 > queryIndex) break;
+      if (inQuery(end - 1)) break;
       end--;
       continue;
     }
@@ -78,6 +99,81 @@ function trimBareUrl(raw: string): string {
     break;
   }
   return raw.slice(0, end);
+}
+
+/** Extracts the raw (still backslash-escaped) destination substring from an inline Markdown
+ *  image `![alt](dest ...)` so escaped `\&` and unescaped HTML entities (`&#59;`, `&amp;`)
+ *  remain distinguishable when serializing the fallback anchor's `href` (#655). */
+function extractInlineRawDest(raw: string): string | null {
+  if (!raw.startsWith("![")) return null;
+  let i = 2;
+  let depth = 1;
+  while (i < raw.length && depth > 0) {
+    const ch = raw[i]!;
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "`") {
+      let ticks = 0;
+      while (i + ticks < raw.length && raw[i + ticks] === "`") ticks++;
+      const close = raw.indexOf("`".repeat(ticks), i + ticks);
+      if (close !== -1) { i = close + ticks; continue; }
+    }
+    if (ch === "[") depth++;
+    else if (ch === "]") depth--;
+    i++;
+  }
+  if (depth !== 0 || raw[i] !== "(") return null;
+  i++;
+  while (i < raw.length && /\s/.test(raw[i]!)) i++;
+  if (i >= raw.length) return null;
+  if (raw[i] === "<") {
+    const start = ++i;
+    while (i < raw.length) {
+      if (raw[i] === "\\") { i += 2; continue; }
+      if (raw[i] === ">") return raw.slice(start, i);
+      i++;
+    }
+    return null;
+  }
+  const start = i;
+  let parens = 0;
+  while (i < raw.length) {
+    const ch = raw[i]!;
+    if (ch === "\\") { i += 2; continue; }
+    if (/\s/.test(ch)) break;
+    if (ch === "(") parens++;
+    else if (ch === ")") {
+      if (parens === 0) break;
+      parens--;
+    }
+    i++;
+  }
+  return raw.slice(start, i);
+}
+
+/** Serializes a raw Markdown link/image destination into an HTML `href` attribute value:
+ *  backslash-escaped punctuation (e.g. `\&amp;`, `\&copy;`) is emitted literally via `escapeHTML`,
+ *  unescaped HTML character references (e.g. `&#59;`, `&amp;`, `&copy;`) stay verbatim for the
+ *  browser to decode, and bare `&`/`<`/`>`/`"` are escaped once. */
+function serializeMarkdownHref(rawDest: string): string {
+  let out = "";
+  for (let i = 0; i < rawDest.length; i++) {
+    const ch = rawDest[i]!;
+    if (ch === "\\" && i + 1 < rawDest.length && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(rawDest[i + 1]!)) {
+      out += escapeHTML(rawDest[++i]!);
+    } else if (ch === "&") {
+      const ent = /^&(?:#\d+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]+);/.exec(rawDest.slice(i));
+      if (ent) {
+        out += ent[0];
+        i += ent[0].length - 1;
+      } else {
+        out += "&amp;";
+      }
+    } else if (ch === "<") out += "&lt;";
+    else if (ch === ">") out += "&gt;";
+    else if (ch === '"') out += "&quot;";
+    else out += ch;
+  }
+  return out;
 }
 
 /** Renders Markdown inline tokens as escaped plain text while keeping code spans literal
@@ -126,45 +222,55 @@ function imageAltLabel(token: Tokens.Image): string {
 
 /** Replaces nested `image` tokens inside a Markdown link with already-escaped plain text tokens
  *  so linked badges (`[![Build](img)](link)`) keep the outer authored destination without nested
- *  anchors or module-wide link nesting state. */
+ *  anchors or module-wide state. Returns the original array when no image is present. */
 function flattenLinkImages(tokens: Token[]): Token[] {
-  return tokens.map((token) => {
+  let changed = false;
+  const next = tokens.map((token) => {
     if (token.type === "image") {
+      changed = true;
       return { type: "text", raw: token.raw, text: imageAltLabel(token as Tokens.Image), escaped: true } as Tokens.Text;
     }
     if ("tokens" in token && Array.isArray(token.tokens)) {
-      return { ...token, tokens: flattenLinkImages(token.tokens) };
+      const inner = flattenLinkImages(token.tokens);
+      if (inner !== token.tokens) {
+        changed = true;
+        return { ...token, tokens: inner };
+      }
     }
     return token;
   });
+  return changed ? next : tokens;
 }
 
 const gramMarked = new Marked({ gfm: true, breaks: true });
 gramMarked.use({
-  // Delegate only bare email autolinks (`ops@example.test`) to Marked's default `url` tokenizer;
-  // reject unsupported `ftp://` bare links and route `http(s)://` / `www.` through `bareUrl` so
-  // `WWW.Example.com/Runbook` stays clickable, `www.` upgrades to `https://`, literal query
-  // values (`?cursor=ready;`, `?q=1&copy;more`, `?q=1&amp;`) are never decoded or truncated, and
-  // explicit Markdown links (`[www.example.com](http://www.example.com)`) keep their scheme.
+  // Disable Marked's built-in GFM `url` tokenizer so one unified `bareAutolink` extension
+  // classifies bare emails, `http(s)://`, `www.`, and unsupported `ftp://` spans cleanly without
+  // competing boundary rules, truncated email local parts (#653), or rescanned FTP tails.
   tokenizer: {
-    url(src: string) {
-      if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(src)) return undefined;
-      return false;
+    url() {
+      return undefined;
     },
   },
   extensions: [
     {
-      name: "bareUrl",
+      name: "bareAutolink",
       level: "inline",
       start(src: string) {
-        BARE_URL_SCAN.lastIndex = 0;
+        let best = -1;
+        BARE_WEB_SCAN.lastIndex = 0;
         let match: RegExpExecArray | null;
-        while ((match = BARE_URL_SCAN.exec(src)) !== null) {
+        while ((match = BARE_WEB_SCAN.exec(src)) !== null) {
           if (match.index === 0 || !isWordChar(src[match.index - 1]!)) {
-            return match.index;
+            best = match.index;
+            break;
           }
         }
-        return undefined;
+        const emailStart = findEmailStart(src);
+        if (emailStart !== -1 && (best === -1 || emailStart < best)) {
+          best = emailStart;
+        }
+        return best === -1 ? undefined : best;
       },
       tokenizer(src: string, tokens) {
         if (this.lexer.state.inLink) return undefined;
@@ -172,19 +278,43 @@ gramMarked.use({
         if (prev && prev.type === "text" && prev.raw.length > 0 && isWordChar(prev.raw[prev.raw.length - 1]!)) {
           return undefined;
         }
-        const emailCap = WWW_EMAIL_RE.exec(src);
-        if (emailCap) {
-          const raw = trimBareUrl(emailCap[1]!);
-          if (WWW_EMAIL_RE.test(raw)) {
-            return { type: "bareUrl", raw, text: raw, href: `mailto:${raw}` };
+        // Unsupported `ftp://` bare URLs are consumed as one plain-text token so their host/user
+        // suffix (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
+        const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
+        if (ftpCap) {
+          const raw = trimBareUrl(ftpCap[1]!);
+          if (raw.length > "ftp://".length) {
+            return { type: "text", raw, text: escapeHTML(raw), escaped: true };
           }
         }
-        const cap = /^((?:https?:\/\/|www\.)[^\s<>"]+)/i.exec(src);
-        if (!cap) return undefined;
-        const raw = trimBareUrl(cap[1]!);
-        if (/^(?:www\.|https?:\/\/)$/i.test(raw)) return undefined;
-        const href = /^www\./i.test(raw) ? `https://${raw}` : raw;
-        return { type: "bareUrl", raw, text: raw, href };
+        // Explicit `http(s)://` bare URLs.
+        const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
+        if (httpCap) {
+          const raw = trimBareUrl(httpCap[1]!);
+          if (!/^https?:\/\/$/i.test(raw)) {
+            return { type: "bareAutolink", raw, text: raw, href: raw };
+          }
+        }
+        // Complete bare email addresses (including `ops+www.alerts@example.com` and
+        // `www.ops@example.com`), excluding candidates followed by web-URL suffixes (`/`, `?`,
+        // `#`, `:`) or `@` so `www.ops@example.com/report` stays an HTTPS web URL (#653, #654).
+        const emailCap = BARE_EMAIL_RE.exec(src);
+        if (emailCap) {
+          const raw = emailCap[1]!;
+          const next = src[raw.length];
+          if (next === undefined || !"/?#:@".includes(next)) {
+            return { type: "bareAutolink", raw, text: raw, href: `mailto:${raw}` };
+          }
+        }
+        // Bare `www.` web URLs (upgraded to `https://`, case-insensitive).
+        const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
+        if (wwwCap) {
+          const raw = trimBareUrl(wwwCap[1]!);
+          if (!/^www\.$/i.test(raw)) {
+            return { type: "bareAutolink", raw, text: raw, href: `https://${raw}` };
+          }
+        }
+        return undefined;
       },
       renderer(token) {
         return `<a href="${escapeHTML(String(token.href))}">${escapeHTML(String(token.text))}</a>`;
@@ -208,16 +338,18 @@ gramMarked.use({
     // Flatten any nested image tokens inside a Markdown link before delegating to Marked's link
     // renderer so linked image badges open the authored outer link (#647).
     link(token: Tokens.Link) {
-      return Renderer.prototype.link.call(this, { ...token, tokens: flattenLinkImages(token.tokens) });
+      const flattened = flattenLinkImages(token.tokens);
+      return Renderer.prototype.link.call(this, flattened === token.tokens ? token : { ...token, tokens: flattened });
     },
     // Keep remote images disabled without turning image-only Markdown messages into empty
-    // bubbles: emit an anchor only for openable http(s) destinations (escaping the URL attribute
-    // independently of alt text so `\&copy;` stays literal while `&amp;` is not double-escaped),
-    // and render plain alt text for relative or non-HTTP destinations.
+    // bubbles: emit an anchor only for openable http(s) destinations, serializing from the raw
+    // Markdown destination when available so `\&amp;` / `\&copy;` stay literal while unescaped
+    // HTML entities (`&#59;`, `&amp;`) decode normally (#655).
     image(token: Tokens.Image) {
       const label = imageAltLabel(token);
       if (!token.href || !/^https?:\/\//i.test(token.href)) return label;
-      const href = escapeHTML(token.href.replace(/&amp;/gi, "&"));
+      const rawDest = extractInlineRawDest(token.raw);
+      const href = rawDest !== null ? serializeMarkdownHref(rawDest) : escapeHTMLPreservingEntities(token.href);
       return `<a href="${href}">${label}</a>`;
     },
   },
