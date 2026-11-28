@@ -107,6 +107,23 @@ function serializeMarkdownHref(rawDest: string): string {
   return out;
 }
 
+function decodeSchemeEntities(href: string): string {
+  return href.replace(/&(?:amp|colon|sol|#(\d+)|#[xX]([0-9a-fA-F]+));/gi, (match, dec?: string, hex?: string) => {
+    if (dec !== undefined) {
+      const cp = Number.parseInt(dec, 10);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
+    }
+    if (hex !== undefined) {
+      const cp = Number.parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
+    }
+    const lower = match.toLowerCase();
+    if (lower === "&colon;") return ":";
+    if (lower === "&sol;") return "/";
+    return "&";
+  });
+}
+
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
 type AnnotatedDefToken = Tokens.Def & { gramSerializedHref?: string };
 type GramAutolinkToken = Tokens.Link & { gramAutolink?: boolean };
@@ -329,14 +346,17 @@ gramMarked.use({
         }
       }
       // Complete bare email addresses (including `+ops@`, `-ops@`, `_ops@` when unformatted,
-      // `ops+www.alerts@`, and `www.ops@`). Only reject web-URL suffixes (`/`, `?`, `#`, `:`)
-      // when a competing `www.` candidate owns them (`www.ops@example.com/report`).
+      // `ops+www.alerts@`, and `www.ops@`). Only yield to a competing `www.` web URL when the
+      // trimmed web candidate actually keeps a `/`, `?`, `#`, or `:` suffix (never sentence
+      // punctuation like `www.ops@example.com?` or `www.ops@example.com:` — herdrup#920).
       const emailCap = BARE_EMAIL_RE.exec(src);
       if (emailCap) {
         const raw = emailCap[1]!;
         const next = src[raw.length];
-        const isWwwCandidate = /^www\./i.test(raw);
-        if (next !== "@" && (!isWwwCandidate || next === undefined || !"/?#:".includes(next))) {
+        const wwwCap = /^www\./i.test(raw) ? /^(www\.[^\s<>"]+)/i.exec(src) : null;
+        const wwwTrimmed = wwwCap ? trimBareUrl(wwwCap[1]!) : "";
+        const webOwnsSuffix = wwwTrimmed.length > raw.length && "/?#:".includes(wwwTrimmed[raw.length]!);
+        if (next !== "@" && !webOwnsSuffix) {
           return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
         }
       }
@@ -379,8 +399,9 @@ gramMarked.use({
     // captured at Marked's `link`/`def` tokenizer boundary (#655, #657, #658, #661).
     image(token: Tokens.Image) {
       const label = imageAltLabel(token);
-      if (!token.href || !/^https?:\/\//i.test(token.href)) return label;
+      if (!token.href) return label;
       const href = (token as AnnotatedImageToken).gramSerializedHref ?? escapeHTMLPreservingEntities(token.href);
+      if (!/^https?:\/\//i.test(decodeSchemeEntities(href))) return label;
       return `<a href="${href}">${label}</a>`;
     },
   },
