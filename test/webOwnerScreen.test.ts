@@ -4,7 +4,7 @@
 // the signed-out page (AccountWelcome with the guest's way). On test/fakeDom.ts's document.
 import { afterEach, expect, test } from "bun:test";
 import jsQR from "jsqr";
-import { approvalParts, approvedByLabel, copyText, guideCode, guideSteps, IOS_APP_URL, machineAccess, machineRows, machineSection, noticeCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice, type OwnerLayout } from "../src/web/ownerScreen";
+import { approvalParts, approvedByLabel, collapsedApprovalParts, copyText, guideCode, guideSteps, IOS_APP_URL, machineAccess, machineRows, machineSection, noticeCard, ownerLayout, pageLink, thisBrowser, timeLeft, unsupportedNotice, type OwnerLayout } from "../src/web/ownerScreen";
 import { signInFirst } from "../src/web/bootChoice";
 import { plainWelcome } from "../src/web/start";
 import { admittedAccess, browserAccessRows } from "../src/shellModel";
@@ -64,7 +64,8 @@ test("the link to copy is this page's, without the visit's query or fragment", (
 const LIVE: OwnerPhase[] = [{ kind: "starting" }, { kind: "waiting" }, { kind: "code", code: "4827", approver: "Mac", expiresAt: 0 }];
 const ENDED: OwnerPhase[] = [{ kind: "denied" }, { kind: "expired" }, { kind: "failed", problem: "x" }, { kind: "elsewhere" }];
 
-test("each phase has its screen, decided once: the approval until it ends, the list once approved, the notice when it can't be approved", () => {
+test("each phase has its screen, decided once: collapsed when idle, the approval until it ends, the list once approved, the notice when it can't be approved", () => {
+ expect(ownerLayout({ kind: "idle" })).toEqual({ view: "collapsed" });
  expect([...LIVE, ...ENDED].map(p => ownerLayout(p).view)).toEqual(Array(7).fill("guide"));
  const record = { v: 2, account: "a", devicePub: "B", approvers: [] } as OwnerRecord;
  expect(ownerLayout({ kind: "approved", record })).toEqual({ view: "list", record });
@@ -232,6 +233,19 @@ function approval(phase: OwnerPhase) {
  const parts = approvalParts(layout, BROWSER, { again: () => done.push("again"), guestInstead: () => done.push("guest") }, "<svg/>");
  return { nodes: all(parts), done };
 }
+
+test("collapsed approval renders a clean Approve this browser button without expanding the approval card", () => {
+ fakePage();
+ const done: string[] = [];
+ const parts = collapsedApprovalParts({ approve: () => done.push("approve"), guestInstead: () => done.push("guest") });
+ const nodes = all(parts);
+ expect(nodes.some(n => n.tagName === "h2" && n.textContent === "APPROVE THIS BROWSER")).toBe(false);
+ expect(withClass(nodes, "host-home-step")).toEqual([]);
+ buttonNamed(nodes, "Approve this browser")!.click();
+ buttonNamed(nodes, "Use a guest invitation instead")!.click();
+ expect(done).toEqual(["approve", "guest"]);
+ expectNoDesktopOnlyParts(nodes);
+});
 
 test("a live request is one host-home section: what the page waits for, the code and the three steps as rows, then the guest's way", () => {
  for (const phase of LIVE) {

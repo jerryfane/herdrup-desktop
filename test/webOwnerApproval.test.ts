@@ -11,7 +11,7 @@ import { MemoryIdentityStore } from "../src/webguest/identity";
 import { AccountServiceError, type ApprovalStatus, type BrowserSelf } from "../src/web/account";
 import { browserDeviceName } from "../src/web/browserIdentity";
 import { ownerKey } from "../src/web/browserKey";
-import { refreshLists, runApproval, type OwnerPhase } from "../src/web/ownerApproval";
+import { refreshLists, runApproval, savedApproval, type OwnerPhase } from "../src/web/ownerApproval";
 import { MemoryOwnerStore, type OwnerRecord } from "../src/web/ownerStore";
 
 
@@ -250,4 +250,26 @@ test("a cached approval refreshes on a new sign-in: the session is bound to the 
  await refreshLists(account, "acct-1", key, store, "Chrome on macOS");
  expect(asked).toEqual(["self", "enrol", "self"]);
  expect((await kept())!.approvers.map(a => a.envelope.seq)).toEqual([8]);
+});
+
+test("savedApproval returns null without starting approval or enrolling when no record exists, and returns the record when approved", async () => {
+ const identities = await webcryptoIdentities();
+ const store = new MemoryOwnerStore();
+ const calls: string[] = [];
+ const account = {
+  async currentAccount() { calls.push("currentAccount"); return "acct-1"; },
+  async enrol() { calls.push("enrol"); throw new Error("should not enrol"); },
+  async requestApproval() { calls.push("requestApproval"); throw new Error("should not request"); },
+  async approvalState() { throw new Error("should not poll"); },
+  async reveal() { throw new Error("should not reveal"); },
+  async browserSelf() { throw new Error("should not read self"); },
+ };
+ expect(await savedApproval({ account, identities, store }, new AbortController().signal)).toBeNull();
+ expect(calls).toEqual(["currentAccount"]);
+
+ const w = world();
+ const { store: approvedStore } = await run(w, identities);
+ const found = await savedApproval({ account, identities, store: approvedStore }, new AbortController().signal);
+ expect(found).not.toBeNull();
+ expect(found!.approvers).toHaveLength(1);
 });

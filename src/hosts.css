@@ -70,6 +70,8 @@
 .host-home-step .host-home-icon { font-size:calc(15px * var(--ui-font-scale, 1)); font-weight:600; }
 .host-home-step .host-home-name, .host-home-step .host-home-address { white-space:normal; }
 .host-home .host-home-guest { align-self:flex-start; }
+.host-home-approval-collapsed { display:flex; flex-direction:column; align-items:flex-start; gap:10px; padding-top:4px; }
+.host-home .host-home-approve { align-self:stretch; justify-content:center; }
 .host-home-note { margin:0 18px; font-size:calc(13px * var(--ui-font-scale, 1)); line-height:1.4; color:var(--color-text-faint); }
 /* The host actions are large capsules (buttons.css): Scan pairing code filled, the others secondary. */
 .host-home .host-add, .host-home .host-pair, .host-home .host-invite { display:flex; align-items:center; justify-content:center; gap:8px; }

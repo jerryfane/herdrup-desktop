@@ -271,7 +271,7 @@ test("the account's note shows while any row adds this device, even on a machine
  expect(accountNote(held)).toBeNull();
 });
 
-test("a machine with several shares: its row, then a row per share, each opening its own", async () => {
+test("a machine with several shares: one clickable machine row (no expanded agent list), opening its held grant first", async () => {
  const { calls } = bridge({ "Desk.OpenSyncedShare": undefined, "Desk.ConnectGuest": undefined });
  const symbol = async () => (G.document as FakeDocument).createElement("span") as unknown as HTMLElement;
  let opened = 0;
@@ -279,15 +279,15 @@ test("a machine with several shares: its row, then a row per share, each opening
  const root = section.root as unknown as FakeElement;
  const machines = sharedMachines([grant("H1", "g1", "enyo", "jerry", "hetzner")], [share("H1", "g2", "orgstudio", "jerry", "hetzner", false)]);
  expect(await section.draw(machines)).toBe(true);
- expect(shown(root)).toEqual(expect.arrayContaining(["SHARED WITH YOU", "hetzner", "shared by jerry", "enyo", "orgstudio"]));
- // The machine's row is a heading here, not a control; each share is its own button.
- expect(buttons(root).map(b => b.getAttribute("aria-label"))).toEqual(["enyo on hetzner", "orgstudio on hetzner"]);
- named(root, "orgstudio").click();
+ expect(shown(root)).toEqual(expect.arrayContaining(["SHARED WITH YOU", "hetzner", "shared by jerry"]));
+ // Individual agent names are not listed in the host machines list; all shared agents appear in the Agents sidebar.
+ expect(shown(root)).not.toContain("enyo");
+ expect(shown(root)).not.toContain("orgstudio");
+ expect(buttons(root)).toHaveLength(1);
+ named(root, "hetzner").click();
  await settle();
- named(root, "enyo").click();
- await settle();
- expect(calls).toEqual([["Desk.OpenSyncedShare", "H1/g2"], ["Desk.ConnectGuest", "H1/g1"]]);
- expect(opened).toBe(2);
+ expect(calls).toEqual([["Desk.ConnectGuest", "H1/g1"]]);
+ expect(opened).toBe(1);
 });
 
 test("a row the account brought opens with openSyncedShare; one held here connects its grant", async () => {
@@ -301,8 +301,8 @@ test("a row the account brought opens with openSyncedShare; one held here connec
  expect(await section.draw(rows)).toBe(true);
  expect(root.shown()).toBe(true);
  expect(shown(root)).toContain("SHARED WITH YOU");
- // One machine, one share: the machine's row is the control, the machine over its line.
- expect(buttons(root).map(b => [b.text(), b.disabled])).toEqual([["mac-minilanding · shared by maya", false], ["hetznerenyo · shared by jerry", false]]);
+ // One clickable machine row per machine ("<machine>" over "shared by <owner>"), without agent names.
+ expect(buttons(root).map(b => [b.text(), b.disabled])).toEqual([["mac-minishared by maya", false], ["hetznershared by jerry", false]]);
  expect(shown(root)).toContain("From your HerdrUp account: nothing to accept here. jerry sees each device you open it on.");
  named(root, "hetzner").click();
  await settle();
@@ -375,9 +375,9 @@ test("SHARED WITH YOU: a queued or refused account write shows muted on its gran
  // Muted: the row's dim second-line ink, nothing else (no colour, no dot).
  const pending = root.all().filter(n => n.className.includes("host-shared-state"));
  expect(pending.map(n => [n.className, n.textContent])).toEqual([["host-home-address host-shared-state", QUEUED], ["host-home-address host-shared-state", QUOTA], ["host-home-address host-shared-state", QUEUED]]);
- expect([named(root, "mac-mini").text(), named(root, "studio").text()]).toEqual([`mac-minidocs · shared by jerry${QUEUED}`, `studioops · shared by jerry${QUOTA}`]);
- expect([named(root, "hetzner").text(), named(root, "nuc").text()]).toEqual(["hetznerenyo · shared by jerry", "nucweb · shared by jerry"]);
- expect(buttons(root).slice(-2).map(b => b.getAttribute("aria-label"))).toEqual([`a on pi. ${QUEUED}`, "b on pi"]);
+ expect([named(root, "mac-mini").text(), named(root, "studio").text()]).toEqual([`mac-minishared by jerry${QUEUED}`, `studioshared by jerry${QUOTA}`]);
+ expect([named(root, "hetzner").text(), named(root, "nuc").text()]).toEqual(["hetznershared by jerry", "nucshared by jerry"]);
+ expect(named(root, "pi").text()).toBe(`pishared by jerry${QUEUED}`);
  expect(shown(root).filter(t => t.startsWith("Added"))).toEqual([]);
 });
 
@@ -398,7 +398,7 @@ test("SHARED WITH YOU reads the grants again on syncedShares:changed, so a share
  state = "confirmed";
  emit("syncedShares:changed", []);
  for (let i = 0; i < 3; i++) await settle();
- expect([reads(), pending(), named(container, "hetzner").text()]).toEqual([before + 1, [], "hetznerenyo · shared by jerry"]);
+ expect([reads(), pending(), named(container, "hetzner").text()]).toEqual([before + 1, [], "hetznershared by jerry"]);
  state = "refused";
  emit("syncedShares:changed", []);
  for (let i = 0; i < 3; i++) await settle();

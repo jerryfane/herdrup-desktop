@@ -8,7 +8,7 @@
 
 import type { Desk as GoDesk, Dictation as GoDictation } from "../mygo";
 import { browserEnv, createGuestDesk } from "./desk";
-import { gramDesk, guestGramDesk } from "./gram";
+import { gramDesk, guestGramDesk, setGuestGramSource } from "./gram";
 import { browserAccountHere, browserAccountPage, createAccountDesk } from "./accountDesk";
 import { agentActionsDesk } from "./agentActionsDesk";
 import { createSettingsAccountsDesk, startAccountLabels } from "./settingsAccountsDesk";
@@ -34,6 +34,7 @@ const statements = statementCache(account.account);
 // The account's shares (a share bound to the account, on every device of it).
 const shares = createShareSync(account.account, { storage: here.storage, locks: here.locks, name: here.name, background: true });
 const guest = createGuestDesk({ ...env, statements, shares });
+setGuestGramSource(guest.guestGramSource);
 const implemented: Partial<Record<keyof DeskFns, unknown>> = { ...gramDesk, ...guestGramDesk, ...guest, ...account.desk, ...account.sync.prompts, ...agentActionsDesk, ...createSettingsAccountsDesk(), ...guestsDesk, ...createServerUpdateDesk(), ...terminalsDesk, ...createDesk };
 // The agent rows' account labels (the `accounts` method, accountsChanged) follow the open owner link.
 startAccountLabels();

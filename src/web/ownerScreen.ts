@@ -100,12 +100,14 @@ const retryWith = (action: Retry["action"]): Retry => ({ action, text: `${action
  *  failure says what failed on its own (the phase's problem), so its retry words claim nothing
  *  about it. The code shown is the phase's own (guideCode), held once. */
 export type OwnerLayout =
+ | { view: "collapsed" }
  | { view: "list"; record: OwnerRecord }
  | { view: "notice" }
  | { view: "guide"; phase: LivePhase; retry: null }
  | { view: "guide"; phase: EndedPhase; retry: Retry };
 export function ownerLayout(phase: OwnerPhase): OwnerLayout {
  switch (phase.kind) {
+  case "idle": return { view: "collapsed" };
   case "approved": return { view: "list", record: phase.record };
   case "unsupported": return { view: "notice" };
   case "starting":
@@ -228,6 +230,17 @@ function copyButton(cls: string, label: string, text: string, failed: () => void
 
 /** The words under the approval for a key this browser made: no machine takes it before. */
 const KEY_NOTE = "This browser made its own key. Your machines accept it only after you approve it.";
+
+/** Collapsed browser approval on the host home: a single clean "Approve this browser" button that
+ *  only starts and expands the approval flow when clicked, plus the guest invitation fallback. */
+export function collapsedApprovalParts(actions: { approve(): void; guestInstead(): void }): HTMLElement[] {
+ const wrap = el("div", "host-home-approval-collapsed");
+ wrap.append(
+  button("button-secondary button-large host-home-approve", "Approve this browser", actions.approve),
+  button("host-home-guest button-plain button-large", "Use a guest invitation instead", actions.guestInstead),
+ );
+ return [wrap];
+}
 
 /** The approval inside the host home (the layout's guide), the parts after the header: the section
  *  "APPROVE THIS BROWSER" (what the page waits for, the title, the code and its expiry while a

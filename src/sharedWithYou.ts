@@ -89,10 +89,11 @@ export function sharedListStale(previous: Pick<ConnState, "guest">, next: Pick<C
 }
 
 /** The section, drawn again with draw(): the native sharedSection rows (person.2, the machine over
- *  sharedLine, the chevron) and the account's note. A machine with one share is one row that opens
- *  it; one with more is its row (the machine over who shared it), then a row per share, the agent's
- *  name, each opening its own. Picking a row opens it (openShared), then opened(); a failure goes
- *  to report. busy keeps the rows disabled while another connect runs. label: the heading. */
+ *  "shared by <owner>", the chevron) and the account's note. Each machine is one clickable row that
+ *  opens its first share (held grant first, else synced share), landing in the shell where all
+ *  shared agents appear in the Agents sidebar. Picking a row opens it (openShared), then opened();
+ *  a failure goes to report. busy keeps the rows disabled while another connect runs. label: the
+ *  heading. */
 export function sharedSection(symbol: SymbolRenderer, opened: () => void, report: (error: unknown) => void, busy: () => boolean = () => false, label = "SHARED WITH YOU") {
  const { root, rows } = hostSection(label); root.hidden = true;
  const note = element("p", "host-home-note host-shared-note"); note.hidden = true;
@@ -118,17 +119,12 @@ export function sharedSection(symbol: SymbolRenderer, opened: () => void, report
    const at = ++version;
    const nodes: HTMLElement[] = [];
    for (const m of machines) {
+    const primary = m.grants[0];
+    if (!primary) continue;
     const icon = hostRowIcon(await hostGlyph(symbol, "person.2", usersIcon));
-    const only = m.grants.length === 1 ? m.grants[0] : undefined;
-    if (only) { nodes.push(openRow(only.open, icon, rowLines(m.machine, sharedLine(m), only.pending), hostRowChevron(await symbol("chevron.right", 13, "semibold")))); continue; }
-    const head = element("div", "host-home-row host-shared-machine");
-    head.append(icon, hostRowLines(m.machine, m.owner ? `shared by ${m.owner}` : null));
-    nodes.push(head);
-    for (const g of m.grants) {
-     const row = openRow(g.open, hostRowIcon(""), rowLines(g.agent || m.machine, null, g.pending), hostRowChevron(await symbol("chevron.right", 13, "semibold")));
-     row.setAttribute("aria-label", `${g.agent || m.machine} on ${m.machine}${g.pending === undefined ? "" : `. ${g.pending}`}`);
-     nodes.push(row);
-    }
+    const pending = m.grants.find(g => g.pending !== undefined)?.pending;
+    const second = m.owner ? `shared by ${m.owner}` : null;
+    nodes.push(openRow(primary.open, icon, rowLines(m.machine, second, pending), hostRowChevron(await symbol("chevron.right", 13, "semibold"))));
    }
    if (at !== version) return false;
    rows.replaceChildren(...nodes);
