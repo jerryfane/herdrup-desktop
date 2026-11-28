@@ -285,10 +285,13 @@ func (d *Desk) ConnectGuest(id string) error {
 	x.stop()
 	x.remove()
 	hub.sync()
-	go func() {
+	if !l.work.Go(func() {
 		defer cancel()
 		d.runGuest(ctx, l, identity.Fingerprint())
-	}()
+	}) {
+		cancel()
+		_ = l.guest.Close()
+	}
 	return nil
 }
 
