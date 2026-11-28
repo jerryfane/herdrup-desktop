@@ -161,7 +161,8 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 
-  // Authored link and image labels preserve Markdown formatting even around `cohttps://` and `ftp://` (#670).
+  // Authored link and image labels preserve Markdown formatting even around `cohttps://` and `ftp://` (#670),
+  // while plain-prose FTP/glued URLs with brackets never expose clickable suffixes (#672).
   const formattedLabels = parseGramMessage('[cohttps://**docs**.example.test](https://out.example.test) and [ftp://`code`.test](https://out.example.test/2) and ![ftp://`&amp;`](https://img.example.test/ftp)');
   expect(formattedLabels).toHaveLength(1);
   expect(formattedLabels[0]!.kind).toBe("markdown");
@@ -169,6 +170,15 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     expect(formattedLabels[0]!.html).toContain('<a href="https://out.example.test">cohttps://<strong>docs</strong>.example.test</a>');
     expect(formattedLabels[0]!.html).toContain('<a href="https://out.example.test/2">ftp://<code>code</code>.test</a>');
     expect(formattedLabels[0]!.html).toContain('<a href="https://img.example.test/ftp">ftp://&amp;amp;</a>');
+  }
+  const ftpBrackets = parseGramMessage("ftp://[2001:db8::1]/report@example.test and ftp://files.example.test/get?file=[www.example.test] and cohttps://[www.example.test]");
+  expect(ftpBrackets).toHaveLength(1);
+  expect(ftpBrackets[0]!.kind).toBe("markdown");
+  if (ftpBrackets[0]!.kind === "markdown") {
+    expect(ftpBrackets[0]!.html).not.toContain("<a ");
+    expect(ftpBrackets[0]!.html).toContain("ftp://[2001:db8::1]/report@example.test");
+    expect(ftpBrackets[0]!.html).toContain("ftp://files.example.test/get?file=[www.example.test]");
+    expect(ftpBrackets[0]!.html).toContain("cohttps://[www.example.test]");
   }
 });
 
