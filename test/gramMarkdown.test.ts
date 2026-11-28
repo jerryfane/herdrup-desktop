@@ -131,7 +131,7 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
 });
 
 test("bare www autolinks upgrade to https while preserving case, query entities, emails, and explicit http destinations", () => {
-  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://example.test/releases, email ops@example.test, www.ops@example.com or <docs@example.test>, path www.example.com/user@host, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
+  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; and frag https://example.test/#faq?mode; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://www.example.test/releases and ftp://ops@example.test/releases, email ops@example.test, ops+www.alerts@example.com, team.www.alerts@example.com, www.ops@example.com,www.team@example.org or <docs@example.test>, url-with-at www.ops@example.com/report and www.ops@example.com?x=1, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
@@ -139,15 +139,18 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
   expect(blocks[0]!.html).toContain('Bare &quot;<a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>&quot;');
   expect(blocks[0]!.html).toContain('and &quot;<a href="https://www.example.test">www.example.test</a>&quot;');
   expect(blocks[0]!.html).toContain('Docs:<a href="https://example.test/api?cursor=ready;">https://example.test/api?cursor=ready;</a>');
+  expect(blocks[0]!.html).toContain('frag <a href="https://example.test/#faq?mode">https://example.test/#faq?mode</a>;');
   expect(blocks[0]!.html).toContain('<code>docs</code><a href="https://www.example.test">www.example.test</a>');
   expect(blocks[0]!.html).toContain('query <a href="https://www.example.com/?q=1&amp;copy;more">www.example.com/?q=1&amp;copy;more</a>');
   expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/?q=1&amp;amp;">www.example.test/?q=1&amp;amp;</a>');
   expect(blocks[0]!.html).toContain('prose <a href="https://www.example.test">www.example.test</a>; next');
-  expect(blocks[0]!.html).not.toContain('href="ftp://example.test/releases"');
+  expect(blocks[0]!.html).toContain('next, ftp://www.example.test/releases and ftp://ops@example.test/releases, email');
   expect(blocks[0]!.html).toContain('email <a href="mailto:ops@example.test">ops@example.test</a>');
-  expect(blocks[0]!.html).toContain('<a href="mailto:www.ops@example.com">www.ops@example.com</a>');
+  expect(blocks[0]!.html).toContain('<a href="mailto:ops+www.alerts@example.com">ops+www.alerts@example.com</a>');
+  expect(blocks[0]!.html).toContain('<a href="mailto:team.www.alerts@example.com">team.www.alerts@example.com</a>');
+  expect(blocks[0]!.html).toContain('<a href="mailto:www.ops@example.com">www.ops@example.com</a>,<a href="mailto:www.team@example.org">www.team@example.org</a>');
   expect(blocks[0]!.html).toContain('or <a href="mailto:docs@example.test">docs@example.test</a>');
-  expect(blocks[0]!.html).toContain('path <a href="https://www.example.com/user@host">www.example.com/user@host</a>');
+  expect(blocks[0]!.html).toContain('url-with-at <a href="https://www.ops@example.com/report">www.ops@example.com/report</a> and <a href="https://www.ops@example.com?x=1">www.ops@example.com?x=1</a>');
   expect(blocks[0]!.html).toContain('explicit <a href="http://www.example.com">www.example.com</a>');
   expect(blocks[0]!.html).toContain('and <a href="http://www.example.com">http://www.example.com</a>');
 });
@@ -160,12 +163,12 @@ test("raw angle-bracket placeholders, Markdown images, and linked badges preserv
     expect(placeholder[0]!.html).toContain("Deploy using &lt;environment&gt; before 5pm.");
   }
 
-  const imageOnly = parseGramMessage("![Write `&amp;` to encode &amp; & <env>](https://example.com/chart.png?a=1\\&copy;&amp;b=2)");
+  const imageOnly = parseGramMessage("![Write `&amp;` to encode &amp; & <env>](https://example.com/chart.png?a=1\\&amp;&b=2\\&copy;&c=&#59;)");
   expect(imageOnly).toHaveLength(1);
   expect(imageOnly[0]!.kind).toBe("markdown");
   if (imageOnly[0]!.kind === "markdown") {
     expect(imageOnly[0]!.html).not.toContain("<img");
-    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;copy;&amp;b=2">Write &amp;amp; to encode &amp; &amp; &lt;env&gt;</a>');
+    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;amp;&amp;b=2&amp;copy;&amp;c=&#59;">Write &amp;amp; to encode &amp; &amp; &lt;env&gt;</a>');
   }
 
   // Relative image destinations render plain alt text instead of a dead link.
