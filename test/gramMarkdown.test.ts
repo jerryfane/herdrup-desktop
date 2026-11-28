@@ -131,11 +131,14 @@ test("whole-message parsing preserves indented list fences, tilde fences contain
 });
 
 test("bare www autolinks upgrade to https while preserving case, query entities, emails, and explicit http destinations", () => {
-  const msg = 'Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; and frag https://example.test/#faq?mode; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://www.example.test/releases and ftp://ops@example.test/releases, email ops@example.test, ops+www.alerts@example.com, team.www.alerts@example.com, www.ops@example.com,www.team@example.org or <docs@example.test>, url-with-at www.ops@example.com/report and www.ops@example.com?x=1, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
+  const msg = '+ops@example.test and +ops@example.test, _ops@example.test_, Email ops@example.test: or docs@example.test?, Bare "WWW.Example.com/Runbook" and "www.example.test", Docs:https://example.test/api?cursor=ready; and frag https://example.test/#faq?mode; or `docs`www.example.test, query www.example.com/?q=1&copy;more and www.example.test/?q=1&amp; vs prose www.example.test; next, ftp://www.example.test/releases and ftp://ops@example.test/releases, email ops+www.alerts@example.com, team.www.alerts@example.com, www.ops@example.com,www.team@example.org or <docs@example.test>, url-with-at www.ops@example.com/report and www.ops@example.com?x=1, explicit [www.example.com](http://www.example.com) and <http://www.example.com>.';
   const blocks = parseGramMessage(msg);
   expect(blocks).toHaveLength(1);
   expect(blocks[0]!.kind).toBe("markdown");
   if (blocks[0]!.kind !== "markdown") return;
+  expect(blocks[0]!.html).toContain('<a href="mailto:+ops@example.test">+ops@example.test</a> and <a href="mailto:+ops@example.test">+ops@example.test</a>');
+  expect(blocks[0]!.html).toContain('<em><a href="mailto:ops@example.test">ops@example.test</a></em>');
+  expect(blocks[0]!.html).toContain('Email <a href="mailto:ops@example.test">ops@example.test</a>: or <a href="mailto:docs@example.test">docs@example.test</a>?');
   expect(blocks[0]!.html).toContain('Bare &quot;<a href="https://WWW.Example.com/Runbook">WWW.Example.com/Runbook</a>&quot;');
   expect(blocks[0]!.html).toContain('and &quot;<a href="https://www.example.test">www.example.test</a>&quot;');
   expect(blocks[0]!.html).toContain('Docs:<a href="https://example.test/api?cursor=ready;">https://example.test/api?cursor=ready;</a>');
@@ -145,7 +148,6 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
   expect(blocks[0]!.html).toContain('and <a href="https://www.example.test/?q=1&amp;amp;">www.example.test/?q=1&amp;amp;</a>');
   expect(blocks[0]!.html).toContain('prose <a href="https://www.example.test">www.example.test</a>; next');
   expect(blocks[0]!.html).toContain('next, ftp://www.example.test/releases and ftp://ops@example.test/releases, email');
-  expect(blocks[0]!.html).toContain('email <a href="mailto:ops@example.test">ops@example.test</a>');
   expect(blocks[0]!.html).toContain('<a href="mailto:ops+www.alerts@example.com">ops+www.alerts@example.com</a>');
   expect(blocks[0]!.html).toContain('<a href="mailto:team.www.alerts@example.com">team.www.alerts@example.com</a>');
   expect(blocks[0]!.html).toContain('<a href="mailto:www.ops@example.com">www.ops@example.com</a>,<a href="mailto:www.team@example.org">www.team@example.org</a>');
@@ -163,12 +165,29 @@ test("raw angle-bracket placeholders, Markdown images, and linked badges preserv
     expect(placeholder[0]!.html).toContain("Deploy using &lt;environment&gt; before 5pm.");
   }
 
-  const imageOnly = parseGramMessage("![Write `&amp;` to encode &amp; & <env>](https://example.com/chart.png?a=1\\&amp;&b=2\\&copy;&c=&#59;)");
+  const imageOnly = parseGramMessage("![Write `&amp;` to encode &amp; & <env>](https://example.com/chart.png?a=1\\&amp;&b=2\\&copy;&c=&#59;&d=&#X3B;)");
   expect(imageOnly).toHaveLength(1);
   expect(imageOnly[0]!.kind).toBe("markdown");
   if (imageOnly[0]!.kind === "markdown") {
     expect(imageOnly[0]!.html).not.toContain("<img");
-    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;amp;&amp;b=2&amp;copy;&amp;c=&#59;">Write &amp;amp; to encode &amp; &amp; &lt;env&gt;</a>');
+    expect(imageOnly[0]!.html).toContain('<a href="https://example.com/chart.png?a=1&amp;amp;&amp;b=2&amp;copy;&amp;c=&#59;&amp;d=&#X3B;">Write &amp;amp; to encode &amp; &amp; &lt;env&gt;</a>');
+  }
+
+  // Code span inside image alt containing longer backtick runs and `](url)` keeps authored destination (#657).
+  const trickyAlt = parseGramMessage("![``hello ``` tick ` ](https://example.test/wrong) end``](https://example.test/right)");
+  expect(trickyAlt).toHaveLength(1);
+  expect(trickyAlt[0]!.kind).toBe("markdown");
+  if (trickyAlt[0]!.kind === "markdown") {
+    expect(trickyAlt[0]!.html).toContain('href="https://example.test/right"');
+    expect(trickyAlt[0]!.html).not.toContain('href="https://example.test/wrong"');
+  }
+
+  // Reference image preserves backslash-escaped ampersand and uppercase hex entity (#658).
+  const refImg = parseGramMessage("![Badge][art]\n\n[art]: https://example.test/img?q=\\&copy;&x=&#X3B;");
+  expect(refImg).toHaveLength(1);
+  expect(refImg[0]!.kind).toBe("markdown");
+  if (refImg[0]!.kind === "markdown") {
+    expect(refImg[0]!.html).toContain('<a href="https://example.test/img?q=&amp;copy;&amp;x=&#X3B;">Badge</a>');
   }
 
   // Relative image destinations render plain alt text instead of a dead link.
