@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -319,5 +320,55 @@ func TestGuestKeyOnAFreeTextPromptReadsAsNative(t *testing.T) {
 	}
 	if reply, err := d.ChatAnswer(ctx, view.Token, "q1", "Yes"); err != nil || reply.OwnerAnswers || reply.Status != "answered" {
 		t.Fatalf("answer on the same host: %+v, %v", reply, err)
+	}
+}
+
+// Disconnect must wait for ConnectGuest's runGuest goroutine (and any
+// hello-time guestRelabeled store write) to finish before returning, so
+// tearing down the Desk's data directory never races a late relabel write.
+func TestGuestDisconnectDrainsRunGuestBeforeCleanup(t *testing.T) {
+	owner := &guestOwnerHost{status: "blocked", seq: 4}
+	relay, err := fakeherdr.NewGuestRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.Handle = owner.handle
+	relay.TerminalID, relay.AgentName = "t2", "docs"
+	relay.OwnerName, relay.MachineLabel, relay.GuestName = "Jerry", "studio", "visitor"
+	base, err := relay.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = relay.Close() })
+
+	dir := t.TempDir()
+	d := newDesk(dir)
+	d.guestClock = guest.SystemClock
+	access, err := d.AcceptGuestInvitation(context.Background(), relay.InviteLink(base, time.Now().Add(time.Hour)), "device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ConnectGuest(access.ID()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the shared agent's page", func() bool {
+		_, err := d.OpenAgentView(AgentTarget{MachineID: "guest:" + access.ID(), PaneID: "w1:p2"}, "guest-view")
+		return err == nil
+	})
+	d.mu.Lock()
+	l := d.link
+	d.mu.Unlock()
+	if l == nil {
+		t.Fatal("expected active guest link")
+	}
+	if l.work.Wait(0) {
+		t.Fatal("runGuest is not tracked in link.work; Disconnect will not wait for it to drain")
+	}
+	d.Disconnect()
+	if !l.work.Wait(0) {
+		t.Fatal("link.work still active after Disconnect returned")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("RemoveAll after Disconnect: %v", err)
 	}
 }
