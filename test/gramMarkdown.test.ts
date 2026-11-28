@@ -180,6 +180,18 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     expect(ftpBrackets[0]!.html).toContain("ftp://files.example.test/get?file=[www.example.test]");
     expect(ftpBrackets[0]!.html).toContain("cohttps://[www.example.test]");
   }
+  // Rejected FTP/glued URLs never swallow adjacent authored Markdown links, code spans, or emphasis (#674),
+  // and suppression never leaks into a following URL or paragraph.
+  const adjacentMarkdown = parseGramMessage('ftp://files.example.test[runbook](https://docs.example.test/runbook) and cohttps://files.example.test[guide](https://docs.example.test/guide) and ftp://files.example.test`code` and cohttps://**docs**.example.test https://ok.example.test\n\nhttps://next.example.test');
+  expect(adjacentMarkdown).toHaveLength(1);
+  expect(adjacentMarkdown[0]!.kind).toBe("markdown");
+  if (adjacentMarkdown[0]!.kind === "markdown") {
+    expect(adjacentMarkdown[0]!.html).toContain('ftp://files.example.test<a href="https://docs.example.test/runbook">runbook</a>');
+    expect(adjacentMarkdown[0]!.html).toContain('cohttps://files.example.test<a href="https://docs.example.test/guide">guide</a>');
+    expect(adjacentMarkdown[0]!.html).toContain('ftp://files.example.test<code>code</code>');
+    expect(adjacentMarkdown[0]!.html).toContain('cohttps://<strong>docs</strong>.example.test <a href="https://ok.example.test">https://ok.example.test</a>');
+    expect(adjacentMarkdown[0]!.html).toContain('<p><a href="https://next.example.test">https://next.example.test</a></p>');
+  }
 });
 
 test("raw angle-bracket placeholders, Markdown images, and linked badges preserve readable text and authored destinations", () => {
