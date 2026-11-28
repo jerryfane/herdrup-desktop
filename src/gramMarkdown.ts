@@ -23,19 +23,50 @@ const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
 const BARE_EMAIL_RE = /^([A-Za-z0-9_%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
 
 const inlineTextRulesCache = new WeakMap<RegExp, RegExp>();
+const adaptedTextRules = new WeakSet<RegExp>();
 
-/** Extends Marked's native `inline.text` rule so case-insensitive `WWW.` stops at the same
- *  lookahead boundary as lowercase `www.`, keeping both formatted prose and repeated `WWW.` O(N). */
-function caseInsensitiveWwwTextRule(nativeRule: RegExp): RegExp {
-  let cached = inlineTextRulesCache.get(nativeRule);
-  if (!cached) {
+/** Installs Marked's `inline.text` rule extended with case-insensitive `[wW][wW][wW]\.` directly
+ *  on the tokenizer instance so native `inlineText` matches and constructs each token in a single
+ *  pass while keeping both formatted prose and repeated uppercase `WWW.` O(N). */
+function ensureCaseInsensitiveWwwTextRule(tokenizer: { rules: Tokenizer["rules"] }): void {
+  const nativeRule = tokenizer.rules.inline.text;
+  if (adaptedTextRules.has(nativeRule)) return;
+  let adapted = inlineTextRulesCache.get(nativeRule);
+  if (!adapted) {
     if (!nativeRule.source.includes("www\\.")) {
       throw new Error("Expected marked inline.text rule to contain www\\.");
     }
-    cached = new RegExp(nativeRule.source.replace("www\\.", "[wW][wW][wW]\\."), nativeRule.flags);
-    inlineTextRulesCache.set(nativeRule, cached);
+    adapted = new RegExp(nativeRule.source.replace("www\\.", "[wW][wW][wW]\\."), nativeRule.flags);
+    inlineTextRulesCache.set(nativeRule, adapted);
+    adaptedTextRules.add(adapted);
   }
-  return cached;
+  tokenizer.rules = {
+    ...tokenizer.rules,
+    inline: { ...tokenizer.rules.inline, text: adapted },
+  };
+}
+
+type SuppressedBareUrl = { startLen: number; rejected: string };
+const suppressedBareUrls = new WeakMap<object, SuppressedBareUrl>();
+
+/** Suppresses bare autolinking in `url()` for the current non-whitespace rejected candidate
+ *  (`ftp://...` or word-glued `cohttps://...` / `cowww....`) without consuming adjacent authored
+ *  Markdown links, code spans, or emphasis in `inlineText()` (#672, #674). */
+function suppressBareUrlSpan(lexer: object, src: string): void {
+  const cap = /^[^\s<>"]+/.exec(src);
+  if (!cap) return;
+  suppressedBareUrls.set(lexer, { startLen: src.length, rejected: cap[0] });
+}
+
+function isBareUrlSuppressed(lexer: object, src: string): boolean {
+  const entry = suppressedBareUrls.get(lexer);
+  if (!entry) return false;
+  const pos = entry.startLen - src.length;
+  if (pos >= 0 && pos < entry.rejected.length && src.startsWith(entry.rejected.slice(pos))) {
+    return true;
+  }
+  if (pos >= entry.rejected.length) suppressedBareUrls.delete(lexer);
+  return false;
 }
 
 /** Matches Marked's `findClosingBracket(str, "()")` so padded inline image destinations keep
@@ -325,49 +356,39 @@ gramMarked.use({
       return tok;
     },
     inlineText(src: string) {
+      ensureCaseInsensitiveWwwTextRule(this);
       // Inside authored link labels and image alt text, Marked disables bare autolinks (`url()`
       // returns undefined); keep native inline parsing intact so formatting stays parsed (#670).
       if (this.lexer.state.inLink) {
         return Tokenizer.prototype.inlineText.call(this, src);
-      }
-      // Unsupported `ftp://` bare URLs stay one plain-text token (including IPv6 brackets and
-      // query brackets like `ftp://[2001:db8::1]/report@example.test`) so no suffix is rescanned (#672).
-      const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
-      if (ftpCap) {
-        const raw = trimBareUrl(ftpCap[1]!);
-        if (raw.length > "ftp://".length) {
-          return { type: "text", raw, text: escapeHTML(raw), escaped: true };
-        }
       }
       // Leave leading ellipsis dots as prose so `...ops@example.test` links `ops@example.test` (#667).
       const dots = /^\.+/.exec(src);
       if (dots && BARE_EMAIL_RE.test(src.slice(dots[0].length))) {
         return { type: "text", raw: dots[0], text: dots[0] };
       }
-      // Bound the text span with Marked's `inline.text` extended for uppercase `WWW.`, then
-      // delegate token construction to Marked's native `inlineText` so escaping matches upstream.
-      const cap = caseInsensitiveWwwTextRule(this.rules.inline.text).exec(src);
-      if (!cap) return undefined;
-      const tok = Tokenizer.prototype.inlineText.call(this, cap[0]);
+      const tok = Tokenizer.prototype.inlineText.call(this, src);
       if (!tok) return tok;
-      // Enforce the word-boundary rule when text splits right before `www.` or `http(s)|ftp://`
-      // inside a word (`cowww.example.test`, `coWWW.example.test`, `cohttps://example.test`),
-      // consuming the full rejected candidate so bracketed suffixes stay plain text (#672).
+      // When native text stops right after a word char before a glued bare URL (`cowww.`,
+      // `coWWW.`, `cohttps://`, `coftp://`), suppress bare autolinking across that rejected
+      // candidate in `url()` while letting authored Markdown parse normally (#672, #674).
       if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
         const rest = src.slice(tok.raw.length);
-        const glued = /^((?:(?:https?|ftp):\/\/|www\.)[^\s<>"]*)/i.exec(rest);
-        if (glued) {
-          const inRaw = this.lexer.state.inRawBlock;
-          const merged = tok.raw + trimBareUrl(glued[1]!);
-          return { type: "text", raw: merged, text: inRaw ? merged : escapeHTMLPreservingEntities(merged), escaped: inRaw };
+        if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(rest)) {
+          suppressBareUrlSpan(this.lexer, rest);
         }
       }
       return tok;
     },
     url(src: string) {
       if (this.lexer.state.inLink) return undefined;
-      // Reject unsupported `ftp://` so `inlineText()` consumes it as plain text.
-      if (/^ftp:\/\//i.test(src)) return undefined;
+      if (isBareUrlSuppressed(this.lexer, src)) return undefined;
+      // Reject unsupported `ftp://` and suppress bare autolinking across the rest of that
+      // non-whitespace candidate without consuming adjacent authored Markdown (#672, #674).
+      if (/^ftp:\/\//i.test(src)) {
+        suppressBareUrlSpan(this.lexer, src);
+        return undefined;
+      }
       // Explicit `http(s)://` bare URLs.
       const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
       if (httpCap) {
@@ -377,27 +398,27 @@ gramMarked.use({
         }
       }
       // Match bare email first so comma-separated `www.` emails (`www.a@x.com,www.b@x.com`) never
-      // scan the rest of the run. Only check a competing `www.` web URL when the immediate char
-      // after a `www.` email could start a URL suffix (`/`, `?`, `#`, `:`) (herdrup#920).
+      // scan the rest of the run. Fall through to the shared `www.` candidate only when a `www.`
+      // email is immediately followed by a potential URL suffix (`/`, `?`, `#`, `:`) (herdrup#920).
+      let emailRaw: string | null = null;
       const emailCap = BARE_EMAIL_RE.exec(src);
       if (emailCap) {
         const raw = emailCap[1]!;
         const next = src[raw.length];
         if (next !== "@") {
-          if (/^www\./i.test(raw) && next !== undefined && "/?#:".includes(next)) {
-            const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
-            const wwwRaw = wwwCap ? trimBareUrl(wwwCap[1]!) : "";
-            if (wwwRaw.length > raw.length && "/?#:".includes(wwwRaw[raw.length]!)) {
-              return { type: "link", raw: wwwRaw, text: wwwRaw, href: `https://${wwwRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
-            }
+          if (!/^www\./i.test(raw) || next === undefined || !"/?#:".includes(next)) {
+            return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
           }
-          return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+          emailRaw = raw;
         }
       }
-      // Bare `www.` web URLs (upgraded to `https://`, case-insensitive).
+      // Shared bare `www.` candidate path (used by both email disambiguation and web autolinking).
       const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
       if (wwwCap) {
         const wwwRaw = trimBareUrl(wwwCap[1]!);
+        if (emailRaw !== null && !(wwwRaw.length > emailRaw.length && "/?#:".includes(wwwRaw[emailRaw.length]!))) {
+          return { type: "link", raw: emailRaw, text: emailRaw, href: `mailto:${emailRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+        }
         if (!/^www\.$/i.test(wwwRaw)) {
           return { type: "link", raw: wwwRaw, text: wwwRaw, href: `https://${wwwRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
         }
