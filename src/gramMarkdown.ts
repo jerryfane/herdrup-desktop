@@ -20,7 +20,9 @@ const escapeHTMLPreservingEntities = (s: string) =>
 const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
 const isEmailLocalChar = (ch: string) => /[A-Za-z0-9._%+-]/.test(ch);
 const BARE_WEB_SCAN = /(?:(?:https?|ftp):\/\/|www\.)/gi;
-const BARE_EMAIL_RE = /^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
+// Leading `.` is excluded so an ellipsis (`...ops@example.test`) stays prose while valid
+// leading `-`, `_` (unformatted), and `+` recipients remain intact (#662, #667).
+const BARE_EMAIL_RE = /^([A-Za-z0-9_%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
  *  without repeated string splits or regex rescans, while preserving terminal semicolons only
@@ -106,12 +108,59 @@ function serializeMarkdownHref(rawDest: string): string {
 }
 
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
+type AnnotatedDefToken = Tokens.Def & { gramSerializedHref?: string };
 type GramAutolinkToken = Tokens.Link & { gramAutolink?: boolean };
 
-// Per-lex table mapping Marked's own `tokens.links` object -> (`def.tag` -> serialized raw href),
-// so reference images reuse Marked's exact Unicode label folding (`Straße` == `STRASSE`) without
-// duplicating label normalization or retaining cross-call state (#658, #661).
+// Matches Marked's exact reference-label folding (`N(label.replace(/\s+/g, " "))`) so padded
+// labels (`[  art  ]`) and Unicode case folds (`STRAẞE` == `STRASSE`) resolve identically (#666).
+const foldRefLabel = (label: string) =>
+  label.replace(/\s+/g, " ").trim().toLowerCase().toUpperCase().toLowerCase();
+
+// Lazily built per-lex map of ONLY accepted `def` tokens (never rejected paragraph continuations
+// like `- intro\n  [art]: ...`) keyed by Marked's `tokens.links` object (#665).
 const rawDefsByLinks = new WeakMap<object, Map<string, string>>();
+
+function collectAcceptedDefs(tokens: Token[], out: Map<string, string>): void {
+  for (const token of tokens) {
+    if (token.type === "def") {
+      const def = token as AnnotatedDefToken;
+      if (def.gramSerializedHref !== undefined && !out.has(def.tag)) {
+        out.set(def.tag, def.gramSerializedHref);
+      }
+    } else if (token.type === "list") {
+      for (const item of (token as Tokens.List).items) collectAcceptedDefs(item.tokens, out);
+    } else if ("tokens" in token && Array.isArray(token.tokens)) {
+      collectAcceptedDefs(token.tokens, out);
+    }
+  }
+}
+
+function acceptedRawDefs(tokens: Token[], links: object): Map<string, string> {
+  let map = rawDefsByLinks.get(links);
+  if (!map) {
+    map = new Map();
+    collectAcceptedDefs(tokens, map);
+    rawDefsByLinks.set(links, map);
+  }
+  return map;
+}
+
+/** Finds the earliest case-insensitive bare web URL start (`http(s)://`, `ftp://`, `www.`) in
+ *  `src` after a non-word character (excluding email local parts like `ops+WWW.alerts@example.com`)
+ *  so `inlineText` clips *before* invoking Marked's native text scan on long paragraphs. */
+function findClippedWebStart(src: string): number {
+  BARE_WEB_SCAN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = BARE_WEB_SCAN.exec(src)) !== null) {
+    if (match.index === 0) continue;
+    if (isWordChar(src[match.index - 1]!)) continue;
+    let end = match.index;
+    while (end < src.length && isEmailLocalChar(src[end]!)) end++;
+    if (src[end] === "@") continue;
+    return match.index;
+  }
+  return -1;
+}
 
 /** Renders Markdown inline tokens as escaped plain text while keeping code spans literal
  *  (so `` `&amp;` `` stays `&amp;` while prose `&amp;` displays as `&`). */
@@ -196,35 +245,36 @@ gramMarked.use({
   //   chunk without rescanning the rest of the message.
   tokenizer: {
     def(src: string) {
-      const cap = this.rules.block.def.exec(src);
       const tok = Tokenizer.prototype.def.call(this, src);
-      if (tok && cap?.[2] !== undefined) {
-        let map = rawDefsByLinks.get(this.lexer.tokens.links);
-        if (!map) {
-          map = new Map();
-          rawDefsByLinks.set(this.lexer.tokens.links, map);
-        }
-        if (!map.has(tok.tag)) {
-          map.set(tok.tag, serializeMarkdownHref(stripAngleBrackets(cap[2])));
+      if (tok) {
+        // Record the raw destination on the `def` token itself; `acceptedRawDefs()` only reads
+        // definitions that `Lexer.blockTokens` actually accepts into `this.lexer.tokens` (#665).
+        const cap = this.rules.block.def.exec(tok.raw);
+        if (cap?.[2] !== undefined) {
+          (tok as AnnotatedDefToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(cap[2].trim()));
         }
       }
       return tok;
     },
     link(src: string) {
-      const cap = this.rules.inline.link.exec(src);
       const tok = Tokenizer.prototype.link.call(this, src);
-      if (tok && tok.type === "image" && cap?.[2] !== undefined) {
-        (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(cap[2]));
+      // Only inspect `tok.raw` AFTER Marked has already accepted an image and resolved its
+      // balanced-parenthesis boundary (zero regex overhead on prose/links; never absorbs `)` #664).
+      if (tok && tok.type === "image") {
+        const cap = this.rules.inline.link.exec(tok.raw);
+        if (cap?.[2] !== undefined) {
+          (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(cap[2].trim()));
+        }
       }
       return tok;
     },
     reflink(src: string, links) {
       const tok = Tokenizer.prototype.reflink.call(this, src, links);
       if (tok && tok.type === "image") {
-        const cap = this.rules.inline.reflink.exec(src) || this.rules.inline.nolink.exec(src);
+        const cap = this.rules.inline.reflink.exec(tok.raw) || this.rules.inline.nolink.exec(tok.raw);
         if (cap) {
-          const key = (cap[2] || cap[1] || "").replace(/\s+/g, " ").toUpperCase().toLowerCase();
-          const serialized = rawDefsByLinks.get(links)?.get(key);
+          const key = foldRefLabel(cap[2] || cap[1] || "");
+          const serialized = acceptedRawDefs(this.lexer.tokens, links).get(key);
           if (serialized !== undefined) {
             (tok as AnnotatedImageToken).gramSerializedHref = serialized;
           }
@@ -233,32 +283,43 @@ gramMarked.use({
       return tok;
     },
     inlineText(src: string) {
-      const tok = Tokenizer.prototype.inlineText.call(this, src);
+      // Unsupported `ftp://` bare URLs stay one typed plain-text token so their host/user suffix
+      // (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
+      const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
+      if (ftpCap) {
+        const raw = trimBareUrl(ftpCap[1]!);
+        if (raw.length > "ftp://".length) {
+          return { type: "text", raw, text: escapeHTML(raw), escaped: true };
+        }
+      }
+      // Leave leading ellipsis dots as prose so `...ops@example.test` links `ops@example.test` (#667).
+      const dotEmail = /^(\.+)([A-Za-z0-9_%+-][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/.exec(src);
+      if (dotEmail) {
+        const dots = dotEmail[1]!;
+        return { type: "text", raw: dots, text: dots };
+      }
+      // Clip before Marked's native text scan so repeated uppercase `WWW.` links never cause
+      // quadratic scanning across the rest of the paragraph.
+      const clip = findClippedWebStart(src);
+      const bounded = clip !== -1 ? src.slice(0, clip) : src;
+      const tok = Tokenizer.prototype.inlineText.call(this, bounded);
       if (!tok) return tok;
-      BARE_WEB_SCAN.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = BARE_WEB_SCAN.exec(tok.raw)) !== null) {
-        if (match.index > 0 && !isWordChar(tok.raw[match.index - 1]!)) {
-          // Do not split inside an email local part such as `ops+WWW.alerts@example.com`.
-          let end = match.index;
-          while (end < src.length && isEmailLocalChar(src[end]!)) end++;
-          if (src[end] === "@") continue;
-          return Tokenizer.prototype.inlineText.call(this, tok.raw.slice(0, match.index));
+      // Enforce the same word-boundary rule when Marked's native text rule splits right before
+      // lowercase `www.` or `https?://` inside a word (e.g. `cowww.example.test`, `cohttps://...`).
+      if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
+        const rest = src.slice(tok.raw.length);
+        const glued = /^((?:(?:https?|ftp):\/\/|www\.)[^\s<>"]*)/i.exec(rest);
+        if (glued) {
+          const merged = tok.raw + trimBareUrl(glued[1]!);
+          return { type: "text", raw: merged, text: escapeHTMLPreservingEntities(merged), escaped: false };
         }
       }
       return tok;
     },
     url(src: string) {
       if (this.lexer.state.inLink) return undefined;
-      // Unsupported `ftp://` bare URLs are consumed as one plain-text token so their host/user
-      // suffix (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
-      const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
-      if (ftpCap) {
-        const raw = trimBareUrl(ftpCap[1]!);
-        if (raw.length > "ftp://".length) {
-          return { type: "text", raw, text: escapeHTML(raw), escaped: true } as unknown as Tokens.Link;
-        }
-      }
+      // Reject unsupported `ftp://` so `inlineText()` consumes it as one typed plain-text span.
+      if (/^ftp:\/\//i.test(src)) return undefined;
       // Explicit `http(s)://` bare URLs.
       const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
       if (httpCap) {
