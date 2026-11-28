@@ -2,7 +2,7 @@
 // tables, blockquotes, rules, code blocks, inline bold/italic/code/strikethrough/links, and bare
 // URLs). Each message is lexed ONCE as a whole document so nested fences inside lists, tilde
 // fences containing backticks, and reference links defined across code blocks parse intact.
-import { Marked, Renderer, type Token, type Tokens } from "marked";
+import { Marked, Renderer, Tokenizer, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
@@ -17,45 +17,10 @@ const escapeHTML = (s: string) =>
 const escapeHTMLPreservingEntities = (s: string) =>
   s.replace(/&(?!#?\w+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// Single word-boundary predicate shared by `bareAutolink.start()` and `bareAutolink.tokenizer()` so
-// `www.`, `WWW.`, `https?://`, `ftp://`, and bare emails follow one consistent boundary rule.
 const isWordChar = (ch: string) => /[A-Za-z0-9]/.test(ch);
 const isEmailLocalChar = (ch: string) => /[A-Za-z0-9._%+-]/.test(ch);
-const isEmailStartChar = (ch: string) => /[A-Za-z0-9+%]/.test(ch);
 const BARE_WEB_SCAN = /(?:(?:https?|ftp):\/\/|www\.)/gi;
-const BARE_EMAIL_DOMAIN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
-const BARE_EMAIL_RE = /^([A-Za-z0-9+%][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
-
-/** Finds the earliest index of a bare email candidate starting before `webIdx` (or anywhere in
- *  `src` when `webIdx === -1`) in O(N) without regex backtracking and without scanning past an
- *  already-settled earlier web URL match. */
-function findEmailStart(src: string, webIdx: number): number {
-  let maxAt = src.length;
-  if (webIdx !== -1) {
-    // An email starting before `webIdx` can only place its `@` at or before the end of the
-    // contiguous email-local run covering `webIdx` (e.g. `ops+www.alerts@example.com`).
-    maxAt = webIdx;
-    while (maxAt < src.length && isEmailLocalChar(src[maxAt]!)) maxAt++;
-  }
-  let pos = 0;
-  while (pos <= maxAt && pos < src.length) {
-    const at = src.indexOf("@", pos);
-    if (at === -1 || at > maxAt) return -1;
-    pos = at + 1;
-    if (at === 0 || !isEmailLocalChar(src[at - 1]!)) continue;
-    if (!BARE_EMAIL_DOMAIN.test(src.slice(at + 1))) continue;
-    let start = at - 1;
-    while (start > 0 && isEmailLocalChar(src[start - 1]!)) start--;
-    // Use the exact same leading character rule (`isEmailStartChar`) as `BARE_EMAIL_RE` so
-    // `+ops@example.test` matches consistently at any position while `_ops@example.test_` leaves
-    // leading `_` for Marked's emphasis parser (#659).
-    while (start < at && !isEmailStartChar(src[start]!)) start++;
-    if (start < at && (start === 0 || !isWordChar(src[start - 1]!))) {
-      return start;
-    }
-  }
-  return -1;
-}
+const BARE_EMAIL_RE = /^([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/;
 
 /** Trims trailing prose punctuation and unmatched closing brackets from a bare URL in O(N)
  *  without repeated string splits or regex rescans, while preserving terminal semicolons only
@@ -112,71 +77,7 @@ function trimBareUrl(raw: string): string {
   return raw.slice(0, end);
 }
 
-/** Reads a raw Markdown destination (angle-bracketed `<...>` or balanced-paren token) from the
- *  start of `tail` (after skipping leading whitespace), preserving backslash escapes. */
-function readRawMarkdownDest(tail: string): string | null {
-  let i = 0;
-  while (i < tail.length && /\s/.test(tail[i]!)) i++;
-  if (i >= tail.length) return null;
-  if (tail[i] === "<") {
-    const start = ++i;
-    while (i < tail.length) {
-      if (tail[i] === "\\") { i += 2; continue; }
-      if (tail[i] === ">") return tail.slice(start, i);
-      i++;
-    }
-    return null;
-  }
-  const start = i;
-  let parens = 0;
-  while (i < tail.length) {
-    const ch = tail[i]!;
-    if (ch === "\\") { i += 2; continue; }
-    if (/\s/.test(ch)) break;
-    if (ch === "(") parens++;
-    else if (ch === ")") {
-      if (parens === 0) break;
-      parens--;
-    }
-    i++;
-  }
-  return tail.slice(start, i);
-}
-
-const normalizeDefKey = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase();
-
-/** Extracts the raw destination from a link reference definition token (`[tag]: dest ...`). */
-function extractDefRawDest(raw: string): string | null {
-  let i = 0;
-  while (i < raw.length && /\s/.test(raw[i]!)) i++;
-  if (raw[i] !== "[") return null;
-  i++;
-  while (i < raw.length) {
-    if (raw[i] === "\\") { i += 2; continue; }
-    if (raw[i] === "]" && raw[i + 1] === ":") return readRawMarkdownDest(raw.slice(i + 2));
-    i++;
-  }
-  return null;
-}
-
-/** Extracts the raw destination from an image token using Marked's already-parsed `token.text`
- *  boundary for inline images (`![<text>](<dest>)`) or the captured raw reference definition
- *  table for reference images (`![alt][ref]`, `![ref][]`, `![ref]`) (#657, #658). */
-function resolveImageRawDest(token: Tokens.Image, rawDefs: Map<string, string>): string | null {
-  const altPrefix = `![${token.text}]`;
-  if (!token.raw.startsWith(altPrefix)) return null;
-  const afterAlt = token.raw.slice(altPrefix.length);
-  if (afterAlt.startsWith("(")) {
-    return readRawMarkdownDest(afterAlt.slice(1));
-  }
-  let refLabel: string;
-  if (afterAlt.startsWith("[") && afterAlt.endsWith("]") && afterAlt.length > 2) {
-    refLabel = afterAlt.slice(1, -1);
-  } else {
-    refLabel = token.text;
-  }
-  return rawDefs.get(normalizeDefKey(refLabel)) ?? null;
-}
+const stripAngleBrackets = (s: string) => (s.startsWith("<") && s.endsWith(">") ? s.slice(1, -1) : s);
 
 /** Serializes a raw Markdown link/image destination into an HTML `href` attribute value:
  *  backslash-escaped punctuation (e.g. `\&amp;`, `\&copy;`) is emitted literally via `escapeHTML`,
@@ -205,43 +106,12 @@ function serializeMarkdownHref(rawDest: string): string {
 }
 
 type AnnotatedImageToken = Tokens.Image & { gramSerializedHref?: string };
+type GramAutolinkToken = Tokens.Link & { gramAutolink?: boolean };
 
-function collectRawDefs(tokens: Token[], out: Map<string, string>): void {
-  for (const token of tokens) {
-    if (token.type === "def") {
-      const def = token as Tokens.Def;
-      const key = normalizeDefKey(def.tag);
-      if (!out.has(key)) {
-        const dest = extractDefRawDest(def.raw);
-        if (dest !== null) out.set(key, dest);
-      }
-    } else if (token.type === "list") {
-      for (const item of (token as Tokens.List).items) collectRawDefs(item.tokens, out);
-    } else if ("tokens" in token && Array.isArray(token.tokens)) {
-      collectRawDefs(token.tokens, out);
-    }
-  }
-}
-
-function annotateImageHrefs(tokens: Token[], rawDefs: Map<string, string>): void {
-  for (const token of tokens) {
-    if (token.type === "image") {
-      const img = token as AnnotatedImageToken;
-      const rawDest = resolveImageRawDest(img, rawDefs);
-      if (rawDest !== null) img.gramSerializedHref = serializeMarkdownHref(rawDest);
-    } else if (token.type === "list") {
-      for (const item of (token as Tokens.List).items) annotateImageHrefs(item.tokens, rawDefs);
-    } else if (token.type === "table") {
-      const table = token as Tokens.Table;
-      for (const cell of table.header) annotateImageHrefs(cell.tokens, rawDefs);
-      for (const row of table.rows) {
-        for (const cell of row) annotateImageHrefs(cell.tokens, rawDefs);
-      }
-    } else if ("tokens" in token && Array.isArray(token.tokens)) {
-      annotateImageHrefs(token.tokens, rawDefs);
-    }
-  }
-}
+// Per-lex table mapping Marked's own `tokens.links` object -> (`def.tag` -> serialized raw href),
+// so reference images reuse Marked's exact Unicode label folding (`Straße` == `STRASSE`) without
+// duplicating label normalization or retaining cross-call state (#658, #661).
+const rawDefsByLinks = new WeakMap<object, Map<string, string>>();
 
 /** Renders Markdown inline tokens as escaped plain text while keeping code spans literal
  *  (so `` `&amp;` `` stays `&amp;` while prose `&amp;` displays as `&`). */
@@ -315,85 +185,111 @@ function flattenLinkImages(tokens: Token[]): Token[] {
 
 const gramMarked = new Marked({ gfm: true, breaks: true });
 gramMarked.use({
-  // Disable Marked's built-in GFM `url` tokenizer so one unified `bareAutolink` extension
-  // classifies bare emails, `http(s)://`, `www.`, and unsupported `ftp://` spans cleanly without
-  // competing boundary rules, truncated email local parts (#653), or rescanned FTP tails.
+  // Use Marked's own tokenizer pipeline (`def`, `link`, `reflink`, `inlineText`, `url`) instead
+  // of a pre-emphasis extension so:
+  // - Raw image destinations are captured directly at Marked's own syntax boundaries (preserving
+  //   escaped brackets in labels, tricky code spans, and Unicode reference folding `#657/#658/#661`).
+  // - Marked's `emStrong` runs BEFORE `url()`, so `_ops@example.test_` becomes emphasized
+  //   `ops@example.test` while unformatted `_ops@example.test` and `-ops@example.test` keep their
+  //   leading characters (`#662`).
+  // - `inlineText` stops before case-insensitive `WWW.` / `HTTP(S)://` / `FTP://` inside each text
+  //   chunk without rescanning the rest of the message.
   tokenizer: {
-    url() {
+    def(src: string) {
+      const cap = this.rules.block.def.exec(src);
+      const tok = Tokenizer.prototype.def.call(this, src);
+      if (tok && cap?.[2] !== undefined) {
+        let map = rawDefsByLinks.get(this.lexer.tokens.links);
+        if (!map) {
+          map = new Map();
+          rawDefsByLinks.set(this.lexer.tokens.links, map);
+        }
+        if (!map.has(tok.tag)) {
+          map.set(tok.tag, serializeMarkdownHref(stripAngleBrackets(cap[2])));
+        }
+      }
+      return tok;
+    },
+    link(src: string) {
+      const cap = this.rules.inline.link.exec(src);
+      const tok = Tokenizer.prototype.link.call(this, src);
+      if (tok && tok.type === "image" && cap?.[2] !== undefined) {
+        (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(cap[2]));
+      }
+      return tok;
+    },
+    reflink(src: string, links) {
+      const tok = Tokenizer.prototype.reflink.call(this, src, links);
+      if (tok && tok.type === "image") {
+        const cap = this.rules.inline.reflink.exec(src) || this.rules.inline.nolink.exec(src);
+        if (cap) {
+          const key = (cap[2] || cap[1] || "").replace(/\s+/g, " ").toUpperCase().toLowerCase();
+          const serialized = rawDefsByLinks.get(links)?.get(key);
+          if (serialized !== undefined) {
+            (tok as AnnotatedImageToken).gramSerializedHref = serialized;
+          }
+        }
+      }
+      return tok;
+    },
+    inlineText(src: string) {
+      const tok = Tokenizer.prototype.inlineText.call(this, src);
+      if (!tok) return tok;
+      BARE_WEB_SCAN.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = BARE_WEB_SCAN.exec(tok.raw)) !== null) {
+        if (match.index > 0 && !isWordChar(tok.raw[match.index - 1]!)) {
+          // Do not split inside an email local part such as `ops+WWW.alerts@example.com`.
+          let end = match.index;
+          while (end < src.length && isEmailLocalChar(src[end]!)) end++;
+          if (src[end] === "@") continue;
+          return Tokenizer.prototype.inlineText.call(this, tok.raw.slice(0, match.index));
+        }
+      }
+      return tok;
+    },
+    url(src: string) {
+      if (this.lexer.state.inLink) return undefined;
+      // Unsupported `ftp://` bare URLs are consumed as one plain-text token so their host/user
+      // suffix (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
+      const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
+      if (ftpCap) {
+        const raw = trimBareUrl(ftpCap[1]!);
+        if (raw.length > "ftp://".length) {
+          return { type: "text", raw, text: escapeHTML(raw), escaped: true } as unknown as Tokens.Link;
+        }
+      }
+      // Explicit `http(s)://` bare URLs.
+      const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
+      if (httpCap) {
+        const raw = trimBareUrl(httpCap[1]!);
+        if (!/^https?:\/\/$/i.test(raw)) {
+          return { type: "link", raw, text: raw, href: raw, tokens: [], gramAutolink: true } as GramAutolinkToken;
+        }
+      }
+      // Complete bare email addresses (including `+ops@`, `-ops@`, `_ops@` when unformatted,
+      // `ops+www.alerts@`, and `www.ops@`). Only reject web-URL suffixes (`/`, `?`, `#`, `:`)
+      // when a competing `www.` candidate owns them (`www.ops@example.com/report`).
+      const emailCap = BARE_EMAIL_RE.exec(src);
+      if (emailCap) {
+        const raw = emailCap[1]!;
+        const next = src[raw.length];
+        const isWwwCandidate = /^www\./i.test(raw);
+        if (next !== "@" && (!isWwwCandidate || next === undefined || !"/?#:".includes(next))) {
+          return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+        }
+      }
+      // Bare `www.` web URLs (upgraded to `https://`, case-insensitive).
+      const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
+      if (wwwCap) {
+        const raw = trimBareUrl(wwwCap[1]!);
+        if (!/^www\.$/i.test(raw)) {
+          return { type: "link", raw, text: raw, href: `https://${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+        }
+      }
       return undefined;
     },
   },
-  extensions: [
-    {
-      name: "bareAutolink",
-      level: "inline",
-      start(src: string) {
-        let best = -1;
-        BARE_WEB_SCAN.lastIndex = 0;
-        let match: RegExpExecArray | null;
-        while ((match = BARE_WEB_SCAN.exec(src)) !== null) {
-          if (match.index === 0 || !isWordChar(src[match.index - 1]!)) {
-            best = match.index;
-            break;
-          }
-        }
-        const emailStart = findEmailStart(src, best);
-        if (emailStart !== -1 && (best === -1 || emailStart < best)) {
-          best = emailStart;
-        }
-        return best === -1 ? undefined : best;
-      },
-      tokenizer(src: string, tokens) {
-        if (this.lexer.state.inLink) return undefined;
-        const prev = tokens.at(-1);
-        if (prev && prev.type === "text" && prev.raw.length > 0 && isWordChar(prev.raw[prev.raw.length - 1]!)) {
-          return undefined;
-        }
-        // Unsupported `ftp://` bare URLs are consumed as one plain-text token so their host/user
-        // suffix (`ftp://www.example.test`, `ftp://ops@example.test`) is never rescanned.
-        const ftpCap = /^(ftp:\/\/[^\s<>"]+)/i.exec(src);
-        if (ftpCap) {
-          const raw = trimBareUrl(ftpCap[1]!);
-          if (raw.length > "ftp://".length) {
-            return { type: "text", raw, text: escapeHTML(raw), escaped: true };
-          }
-        }
-        // Explicit `http(s)://` bare URLs.
-        const httpCap = /^(https?:\/\/[^\s<>"]+)/i.exec(src);
-        if (httpCap) {
-          const raw = trimBareUrl(httpCap[1]!);
-          if (!/^https?:\/\/$/i.test(raw)) {
-            return { type: "bareAutolink", raw, text: raw, href: raw };
-          }
-        }
-        // Complete bare email addresses (including `ops+www.alerts@example.com`, `+ops@example.test`,
-        // and `www.ops@example.com`). Only reject web-URL suffixes (`/`, `?`, `#`, `:`) when a
-        // competing `www.` candidate owns them (`www.ops@example.com/report`), so ordinary emails
-        // followed by prose punctuation (`ops@example.test:`, `docs@example.test?`) still link.
-        const emailCap = BARE_EMAIL_RE.exec(src);
-        if (emailCap) {
-          const raw = emailCap[1]!;
-          const next = src[raw.length];
-          const isWwwCandidate = /^www\./i.test(raw);
-          if (next !== "@" && (!isWwwCandidate || next === undefined || !"/?#:".includes(next))) {
-            return { type: "bareAutolink", raw, text: raw, href: `mailto:${raw}` };
-          }
-        }
-        // Bare `www.` web URLs (upgraded to `https://`, case-insensitive).
-        const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
-        if (wwwCap) {
-          const raw = trimBareUrl(wwwCap[1]!);
-          if (!/^www\.$/i.test(raw)) {
-            return { type: "bareAutolink", raw, text: raw, href: `https://${raw}` };
-          }
-        }
-        return undefined;
-      },
-      renderer(token) {
-        return `<a href="${escapeHTML(String(token.href))}">${escapeHTML(String(token.text))}</a>`;
-      },
-    },
-  ],
   renderer: {
     checkbox({ checked }: Tokens.Checkbox) {
       const state = checked ? "checked" : "unchecked";
@@ -408,15 +304,18 @@ gramMarked.use({
       const trimmed = raw.trimEnd();
       return trimmed ? `<p>${escapeHTML(trimmed)}</p>\n` : "";
     },
-    // Flatten any nested image tokens inside a Markdown link before delegating to Marked's link
-    // renderer so linked image badges open the authored outer link (#647).
+    // Render bare autolinks verbatim (preserving literal query entities) and flatten any nested
+    // image tokens inside authored Markdown links so linked badges open the outer link (#647).
     link(token: Tokens.Link) {
+      if ((token as GramAutolinkToken).gramAutolink) {
+        return `<a href="${escapeHTML(token.href)}">${escapeHTML(token.text)}</a>`;
+      }
       const flattened = flattenLinkImages(token.tokens);
       return Renderer.prototype.link.call(this, flattened === token.tokens ? token : { ...token, tokens: flattened });
     },
     // Keep remote images disabled without turning image-only Markdown messages into empty
     // bubbles: emit an anchor only for openable http(s) destinations, using the raw destination
-    // annotated from the inline syntax or reference definition (#655, #657, #658).
+    // captured at Marked's `link`/`def` tokenizer boundary (#655, #657, #658, #661).
     image(token: Tokens.Image) {
       const label = imageAltLabel(token);
       if (!token.href || !/^https?:\/\//i.test(token.href)) return label;
@@ -482,9 +381,6 @@ export type GramMarkdownBlock =
  *  the shared Copy receipt) and surrounding Markdown runs. Pure; safe without a DOM. */
 export function parseGramMessage(text: string): GramMarkdownBlock[] {
   const tokens = gramMarked.lexer(text);
-  const rawDefs = new Map<string, string>();
-  collectRawDefs(tokens, rawDefs);
-  annotateImageHrefs(tokens, rawDefs);
   const out: GramMarkdownBlock[] = [];
   let run: Token[] = [];
 
