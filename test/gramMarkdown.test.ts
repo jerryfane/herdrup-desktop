@@ -181,16 +181,41 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     expect(ftpBrackets[0]!.html).toContain("cohttps://[www.example.test]");
   }
   // Rejected FTP/glued URLs never swallow adjacent authored Markdown links, code spans, or emphasis (#674),
-  // and suppression never leaks into a following URL or paragraph.
-  const adjacentMarkdown = parseGramMessage('ftp://files.example.test[runbook](https://docs.example.test/runbook) and cohttps://files.example.test[guide](https://docs.example.test/guide) and ftp://files.example.test`code` and cohttps://**docs**.example.test https://ok.example.test\n\nhttps://next.example.test');
+  // preserve literal query entity spellings, stay suppressed across nested emphasis (#677), and never
+  // leak suppression into later paragraphs, list items, or table cells (#676).
+  const adjacentMarkdown = parseGramMessage([
+    'ftp://files.example.test[runbook](https://docs.example.test/runbook) and cohttps://files.example.test[guide](https://docs.example.test/guide) and ftp://files.example.test`code` and cohttps://**docs**.example.test https://ok.example.test',
+    '',
+    'ftp://files.example.test/[**docs**]/report@example.test after and cohttps://files.example.test/[**docs**]/report@example.test after and ftp://files.example.test/**www.example.test** **https://after.example.test**',
+    '',
+    'ftp://files.example.test/get?q=1&amp;mode=2 and &amp;',
+    '',
+    'ftp://www.example.test',
+    '',
+    'www.example.test',
+    '',
+    '- cohttps://example.test',
+    '- https://example.test',
+    '',
+    '| A | B |',
+    '|---|---|',
+    '| ftp://www.example.test | www.example.test |',
+  ].join('\n'));
   expect(adjacentMarkdown).toHaveLength(1);
   expect(adjacentMarkdown[0]!.kind).toBe("markdown");
   if (adjacentMarkdown[0]!.kind === "markdown") {
-    expect(adjacentMarkdown[0]!.html).toContain('ftp://files.example.test<a href="https://docs.example.test/runbook">runbook</a>');
-    expect(adjacentMarkdown[0]!.html).toContain('cohttps://files.example.test<a href="https://docs.example.test/guide">guide</a>');
-    expect(adjacentMarkdown[0]!.html).toContain('ftp://files.example.test<code>code</code>');
-    expect(adjacentMarkdown[0]!.html).toContain('cohttps://<strong>docs</strong>.example.test <a href="https://ok.example.test">https://ok.example.test</a>');
-    expect(adjacentMarkdown[0]!.html).toContain('<p><a href="https://next.example.test">https://next.example.test</a></p>');
+    const html = adjacentMarkdown[0]!.html;
+    expect(html).toContain('ftp://files.example.test<a href="https://docs.example.test/runbook">runbook</a>');
+    expect(html).toContain('cohttps://files.example.test<a href="https://docs.example.test/guide">guide</a>');
+    expect(html).toContain('ftp://files.example.test<code>code</code>');
+    expect(html).toContain('cohttps://<strong>docs</strong>.example.test <a href="https://ok.example.test">https://ok.example.test</a>');
+    expect(html).toContain('ftp://files.example.test/[<strong>docs</strong>]/report@example.test after');
+    expect(html).toContain('cohttps://files.example.test/[<strong>docs</strong>]/report@example.test after');
+    expect(html).toContain('ftp://files.example.test/<strong>www.example.test</strong> <strong><a href="https://after.example.test">https://after.example.test</a></strong>');
+    expect(html).toContain('ftp://files.example.test/get?q=1&amp;amp;mode=2 and &amp;');
+    expect(html).toContain('<p><a href="https://www.example.test">www.example.test</a></p>');
+    expect(html).toContain('<li><a href="https://example.test">https://example.test</a></li>');
+    expect(html).toContain('<td><a href="https://www.example.test">www.example.test</a></td>');
   }
 });
 

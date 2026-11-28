@@ -2,7 +2,7 @@
 // tables, blockquotes, rules, code blocks, inline bold/italic/code/strikethrough/links, and bare
 // URLs). Each message is lexed ONCE as a whole document so nested fences inside lists, tilde
 // fences containing backticks, and reference links defined across code blocks parse intact.
-import { Marked, Renderer, Tokenizer, type Token, type Tokens } from "marked";
+import { Lexer, Marked, Renderer, Tokenizer, type Token, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import { Desk } from "./mygo";
 import { selfCopyingCodeBlock } from "./codeBlock";
@@ -46,27 +46,51 @@ function ensureCaseInsensitiveWwwTextRule(tokenizer: { rules: Tokenizer["rules"]
   };
 }
 
-type SuppressedBareUrl = { startLen: number; rejected: string };
-const suppressedBareUrls = new WeakMap<object, SuppressedBareUrl>();
+/** Lexer subclass that scopes rejected bare-URL suppression (`ftp://...` and word-glued
+ *  `cohttps://...` / `cowww....`) to each `inlineTokens` frame in O(1), so suppression never
+ *  leaks into later paragraphs/list items/table cells (#676) and stays intact across nested
+ *  emphasis/formatting while propagating into nested spans inside the rejected URL (#677). */
+class GramLexer extends Lexer {
+  private suppressStack: number[] = [];
 
-/** Suppresses bare autolinking in `url()` for the current non-whitespace rejected candidate
- *  (`ftp://...` or word-glued `cohttps://...` / `cowww....`) without consuming adjacent authored
- *  Markdown links, code spans, or emphasis in `inlineText()` (#672, #674). */
-function suppressBareUrlSpan(lexer: object, src: string): void {
-  const cap = /^[^\s<>"]+/.exec(src);
-  if (!cap) return;
-  suppressedBareUrls.set(lexer, { startLen: src.length, rejected: cap[0] });
-}
-
-function isBareUrlSuppressed(lexer: object, src: string): boolean {
-  const entry = suppressedBareUrls.get(lexer);
-  if (!entry) return false;
-  const pos = entry.startLen - src.length;
-  if (pos >= 0 && pos < entry.rejected.length && src.startsWith(entry.rejected.slice(pos))) {
-    return true;
+  override inlineTokens(src: string, tokens: Token[] = []): Token[] {
+    const parentEnd = this.suppressStack.length > 0 ? this.suppressStack[this.suppressStack.length - 1]! : -1;
+    this.suppressStack.push(parentEnd >= 0 ? 0 : -1);
+    try {
+      return super.inlineTokens(src, tokens);
+    } finally {
+      this.suppressStack.pop();
+    }
   }
-  if (pos >= entry.rejected.length) suppressedBareUrls.delete(lexer);
-  return false;
+
+  suppressBareUrl(src: string): void {
+    if (this.suppressStack.length === 0) return;
+    const cap = /^[^\s<>"]+/.exec(src);
+    if (!cap) return;
+    const endRemaining = src.length - cap[0].length;
+    const idx = this.suppressStack.length - 1;
+    const cur = this.suppressStack[idx]!;
+    this.suppressStack[idx] = cur >= 0 ? Math.min(cur, endRemaining) : endRemaining;
+  }
+
+  suppressedEndRemaining(): number {
+    return this.suppressStack.length > 0 ? this.suppressStack[this.suppressStack.length - 1]! : -1;
+  }
+
+  isBareUrlSuppressed(remaining: number): boolean {
+    const endRemaining = this.suppressedEndRemaining();
+    if (endRemaining < 0) return false;
+    if (remaining > endRemaining) return true;
+    this.suppressStack[this.suppressStack.length - 1] = -1;
+    return false;
+  }
+
+  advanceTo(remaining: number): void {
+    const endRemaining = this.suppressedEndRemaining();
+    if (endRemaining >= 0 && remaining <= endRemaining) {
+      this.suppressStack[this.suppressStack.length - 1] = -1;
+    }
+  }
 }
 
 /** Matches Marked's `findClosingBracket(str, "()")` so padded inline image destinations keep
@@ -369,24 +393,40 @@ gramMarked.use({
       }
       const tok = Tokenizer.prototype.inlineText.call(this, src);
       if (!tok) return tok;
-      // When native text stops right after a word char before a glued bare URL (`cowww.`,
-      // `coWWW.`, `cohttps://`, `coftp://`), suppress bare autolinking across that rejected
-      // candidate in `url()` while letting authored Markdown parse normally (#672, #674).
-      if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
-        const rest = src.slice(tok.raw.length);
-        if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(rest)) {
-          suppressBareUrlSpan(this.lexer, rest);
+      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
+      if (gramLexer) {
+        // Preserve literal entity spellings (e.g. `&amp;` in `ftp://files.example.test/get?q=1&amp;mode=2`)
+        // within the rejected URL portion of `tok.raw`, while keeping normal decoding after it.
+        const endRemaining = gramLexer.suppressedEndRemaining();
+        if (endRemaining >= 0 && src.length > endRemaining && !this.lexer.state.inRawBlock) {
+          const suppressedChars = Math.min(tok.raw.length, src.length - endRemaining);
+          const literalPart = escapeHTML(tok.raw.slice(0, suppressedChars));
+          const tailPart = tok.raw.slice(suppressedChars);
+          tok.text = tailPart
+            ? literalPart + (Tokenizer.prototype.inlineText.call(this, tailPart)?.text ?? escapeHTMLPreservingEntities(tailPart))
+            : literalPart;
+        }
+        gramLexer.advanceTo(src.length - tok.raw.length);
+        // When native text stops right after a word char before a glued bare URL (`cowww.`,
+        // `coWWW.`, `cohttps://`, `coftp://`), suppress bare autolinking across that rejected
+        // candidate in `url()` while letting authored Markdown parse normally (#672, #674).
+        if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
+          const rest = src.slice(tok.raw.length);
+          if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(rest)) {
+            gramLexer.suppressBareUrl(rest);
+          }
         }
       }
       return tok;
     },
     url(src: string) {
       if (this.lexer.state.inLink) return undefined;
-      if (isBareUrlSuppressed(this.lexer, src)) return undefined;
+      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
+      if (gramLexer?.isBareUrlSuppressed(src.length)) return undefined;
       // Reject unsupported `ftp://` and suppress bare autolinking across the rest of that
       // non-whitespace candidate without consuming adjacent authored Markdown (#672, #674).
       if (/^ftp:\/\//i.test(src)) {
-        suppressBareUrlSpan(this.lexer, src);
+        gramLexer?.suppressBareUrl(src);
         return undefined;
       }
       // Explicit `http(s)://` bare URLs.
@@ -398,30 +438,30 @@ gramMarked.use({
         }
       }
       // Match bare email first so comma-separated `www.` emails (`www.a@x.com,www.b@x.com`) never
-      // scan the rest of the run. Fall through to the shared `www.` candidate only when a `www.`
-      // email is immediately followed by a potential URL suffix (`/`, `?`, `#`, `:`) (herdrup#920).
-      let emailRaw: string | null = null;
+      // scan the rest of the run. Inspect a competing `www.` web span only when a `www.` email
+      // is immediately followed by a potential URL suffix (`/`, `?`, `#`, `:`) (herdrup#920).
       const emailCap = BARE_EMAIL_RE.exec(src);
+      let emailRaw: string | null = null;
+      let checkWww = true;
       if (emailCap) {
         const raw = emailCap[1]!;
         const next = src[raw.length];
         if (next !== "@") {
-          if (!/^www\./i.test(raw) || next === undefined || !"/?#:".includes(next)) {
-            return { type: "link", raw, text: raw, href: `mailto:${raw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
-          }
           emailRaw = raw;
+          checkWww = /^www\./i.test(raw) && next !== undefined && "/?#:".includes(next);
         }
       }
-      // Shared bare `www.` candidate path (used by both email disambiguation and web autolinking).
-      const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
-      if (wwwCap) {
-        const wwwRaw = trimBareUrl(wwwCap[1]!);
-        if (emailRaw !== null && !(wwwRaw.length > emailRaw.length && "/?#:".includes(wwwRaw[emailRaw.length]!))) {
-          return { type: "link", raw: emailRaw, text: emailRaw, href: `mailto:${emailRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+      if (checkWww) {
+        const wwwCap = /^(www\.[^\s<>"]+)/i.exec(src);
+        if (wwwCap) {
+          const wwwRaw = trimBareUrl(wwwCap[1]!);
+          if ((emailRaw === null || wwwRaw.length > emailRaw.length) && !/^www\.$/i.test(wwwRaw)) {
+            return { type: "link", raw: wwwRaw, text: wwwRaw, href: `https://${wwwRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
+          }
         }
-        if (!/^www\.$/i.test(wwwRaw)) {
-          return { type: "link", raw: wwwRaw, text: wwwRaw, href: `https://${wwwRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
-        }
+      }
+      if (emailRaw !== null) {
+        return { type: "link", raw: emailRaw, text: emailRaw, href: `mailto:${emailRaw}`, tokens: [], gramAutolink: true } as GramAutolinkToken;
       }
       return undefined;
     },
@@ -517,7 +557,7 @@ export type GramMarkdownBlock =
 /** Parses a whole Gram message ONCE into top-level code blocks (for the distinct card inset with
  *  the shared Copy receipt) and surrounding Markdown runs. Pure; safe without a DOM. */
 export function parseGramMessage(text: string): GramMarkdownBlock[] {
-  const tokens = gramMarked.lexer(text);
+  const tokens = new GramLexer(gramMarked.defaults).lex(text);
   const out: GramMarkdownBlock[] = [];
   let run: Token[] = [];
 
