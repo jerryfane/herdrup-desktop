@@ -1,8 +1,13 @@
-// Shared table preparation for Chat (chatMarkdown.ts) and Gram (gramMarkdown.ts): wraps every
-// rendered Markdown <table> in a horizontal scroller and rounded frame with column count,
-// numeric tabular styling, and positive-delta gain colour (ChatView.swift ChatStyle.ok).
+// Shared table preparation and HTML sanitization policy for Chat (chatMarkdown.ts) and Gram
+// (gramMarkdown.ts).
 
 export const CHAT_OK_COLOR = "#7fc89a";
+
+export const MESSAGE_SANITIZE_CONFIG = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: ["img", "video", "audio", "iframe", "style", "form", "input"],
+  FORBID_ATTR: ["style"],
+};
 
 export interface MarkdownTableClasses {
   scroller: string;
