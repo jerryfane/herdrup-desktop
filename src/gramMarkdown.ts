@@ -120,6 +120,12 @@ class GramLexer extends Lexer {
       this.suppressStack[this.suppressStack.length - 1] = -1;
     }
   }
+
+  clearSuppression(): void {
+    if (this.suppressStack.length > 0) {
+      this.suppressStack[this.suppressStack.length - 1] = -1;
+    }
+  }
 }
 
 /** Matches Marked's `findClosingBracket(str, "()")` so padded inline image destinations keep
@@ -373,22 +379,27 @@ gramMarked.use({
       // Only extract the raw destination AFTER Marked accepts an image, applying the same
       // balanced-paren slice on `cap[2]` from `src` so leading-whitespace destinations whose
       // `tok.raw` omits `)` still preserve Markdown escapes (#664, #669).
-      if (tok && tok.type === "image") {
-        const cap = this.rules.inline.link.exec(src);
-        if (cap?.[2] !== undefined) {
-          let rawDest = cap[2];
-          if (!rawDest.trim().startsWith("<")) {
-            const end = findClosingParen(rawDest);
-            if (end > -1) rawDest = rawDest.slice(0, end);
+      if (tok) {
+        (this.lexer as GramLexer).clearSuppression();
+        if (tok.type === "image") {
+          const cap = this.rules.inline.link.exec(src);
+          if (cap?.[2] !== undefined) {
+            let rawDest = cap[2];
+            if (!rawDest.trim().startsWith("<")) {
+              const end = findClosingParen(rawDest);
+              if (end > -1) rawDest = rawDest.slice(0, end);
+            }
+            (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(rawDest.trim()));
           }
-          (tok as AnnotatedImageToken).gramSerializedHref = serializeMarkdownHref(stripAngleBrackets(rawDest.trim()));
         }
       }
       return tok;
     },
     reflink(src: string, links) {
       if (!src.startsWith("!")) {
-        return Tokenizer.prototype.reflink.call(this, src, links);
+        const tok = Tokenizer.prototype.reflink.call(this, src, links);
+        if (tok && tok.type !== "text") (this.lexer as GramLexer).clearSuppression();
+        return tok;
       }
       // Let Marked itself parse the reference and fold the label key; observe the exact tag key
       // Marked reads from `links` so reference resolution never diverges (#665, #666).
@@ -400,23 +411,36 @@ gramMarked.use({
         },
       });
       const tok = Tokenizer.prototype.reflink.call(this, src, trackedLinks);
-      if (tok && tok.type === "image" && matchedTag !== undefined) {
-        const serialized = acceptedRawDefs(this.lexer.tokens, links).get(matchedTag);
-        if (serialized !== undefined) {
-          (tok as AnnotatedImageToken).gramSerializedHref = serialized;
+      if (tok && tok.type !== "text") {
+        (this.lexer as GramLexer).clearSuppression();
+        if (tok.type === "image" && matchedTag !== undefined) {
+          const serialized = acceptedRawDefs(this.lexer.tokens, links).get(matchedTag);
+          if (serialized !== undefined) {
+            (tok as AnnotatedImageToken).gramSerializedHref = serialized;
+          }
         }
       }
       return tok;
     },
+    codespan(src: string) {
+      const tok = Tokenizer.prototype.codespan.call(this, src);
+      if (tok) (this.lexer as GramLexer).clearSuppression();
+      return tok;
+    },
+    autolink(src: string) {
+      const tok = Tokenizer.prototype.autolink.call(this, src);
+      if (tok) (this.lexer as GramLexer).clearSuppression();
+      return tok;
+    },
     emStrong(src: string, maskedSrc: string, prevChar?: string) {
-      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
-      if (!gramLexer) return Tokenizer.prototype.emStrong.call(this, src, maskedSrc, prevChar);
-      return gramLexer.withNestedSpan(src, () => Tokenizer.prototype.emStrong.call(this, src, maskedSrc, prevChar));
+      return (this.lexer as GramLexer).withNestedSpan(src, () =>
+        Tokenizer.prototype.emStrong.call(this, src, maskedSrc, prevChar)
+      );
     },
     del(src: string, maskedSrc: string, prevChar?: string) {
-      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
-      if (!gramLexer) return Tokenizer.prototype.del.call(this, src, maskedSrc, prevChar);
-      return gramLexer.withNestedSpan(src, () => Tokenizer.prototype.del.call(this, src, maskedSrc, prevChar));
+      return (this.lexer as GramLexer).withNestedSpan(src, () =>
+        Tokenizer.prototype.del.call(this, src, maskedSrc, prevChar)
+      );
     },
     inlineText(src: string) {
       ensureCaseInsensitiveWwwTextRule(this);
@@ -432,39 +456,37 @@ gramMarked.use({
       }
       const tok = Tokenizer.prototype.inlineText.call(this, src);
       if (!tok) return tok;
-      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
-      if (gramLexer) {
-        // Emit only the literal rejected-URL prefix up to `endRemaining` so literal entity
-        // spellings (`ftp://files.example.test/get?q=1&amp;mode=2`) stay verbatim and Marked's
-        // normal inline pass handles any trailing prose cleanly.
-        const endRemaining = gramLexer.suppressedEndRemaining();
-        if (endRemaining >= 0 && src.length > endRemaining && !this.lexer.state.inRawBlock) {
-          const suppressedChars = Math.min(tok.raw.length, src.length - endRemaining);
-          const literalRaw = tok.raw.slice(0, suppressedChars);
-          gramLexer.advanceTo(src.length - literalRaw.length);
-          return { type: "text", raw: literalRaw, text: escapeHTML(literalRaw), escaped: true };
-        }
-        gramLexer.advanceTo(src.length - tok.raw.length);
-        // When native text stops right after a word char before a glued bare URL (`cowww.`,
-        // `coWWW.`, `cohttps://`, `coftp://`), suppress bare autolinking across that rejected
-        // candidate in `url()` while letting authored Markdown parse normally (#672, #674).
-        if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
-          const rest = src.slice(tok.raw.length);
-          if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(rest)) {
-            gramLexer.suppressBareUrl(rest);
-          }
+      const gramLexer = this.lexer as GramLexer;
+      // Emit only the literal rejected-URL prefix up to `endRemaining` so literal entity
+      // spellings (`ftp://files.example.test/get?q=1&amp;mode=2`) stay verbatim and Marked's
+      // normal inline pass handles any trailing prose cleanly.
+      const endRemaining = gramLexer.suppressedEndRemaining();
+      if (endRemaining >= 0 && src.length > endRemaining && !this.lexer.state.inRawBlock) {
+        const suppressedChars = Math.min(tok.raw.length, src.length - endRemaining);
+        const literalRaw = tok.raw.slice(0, suppressedChars);
+        gramLexer.advanceTo(src.length - literalRaw.length);
+        return { type: "text", raw: literalRaw, text: escapeHTML(literalRaw), escaped: true };
+      }
+      gramLexer.advanceTo(src.length - tok.raw.length);
+      // When native text stops right after a word char before a glued bare URL (`cowww.`,
+      // `coWWW.`, `cohttps://`, `coftp://`), suppress bare autolinking across that rejected
+      // candidate in `url()` while letting authored Markdown parse normally (#672, #674).
+      if (tok.raw.length > 0 && isWordChar(tok.raw[tok.raw.length - 1]!)) {
+        const rest = src.slice(tok.raw.length);
+        if (/^(?:(?:https?|ftp):\/\/|www\.)/i.test(rest)) {
+          gramLexer.suppressBareUrl(rest);
         }
       }
       return tok;
     },
     url(src: string) {
       if (this.lexer.state.inLink) return undefined;
-      const gramLexer = this.lexer instanceof GramLexer ? this.lexer : null;
-      if (gramLexer?.isBareUrlSuppressed(src.length)) return undefined;
+      const gramLexer = this.lexer as GramLexer;
+      if (gramLexer.isBareUrlSuppressed(src.length)) return undefined;
       // Reject unsupported `ftp://` and suppress bare autolinking across the rest of that
       // non-whitespace candidate without consuming adjacent authored Markdown (#672, #674).
       if (/^ftp:\/\//i.test(src)) {
-        gramLexer?.suppressBareUrl(src);
+        gramLexer.suppressBareUrl(src);
         return undefined;
       }
       // Explicit `http(s)://` bare URLs.

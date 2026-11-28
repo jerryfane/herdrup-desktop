@@ -190,6 +190,8 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     '',
     'ftp://host/**note https://example.test** and cohttps://host/**note https://glued.example.test** and ftp://host/`a b`**www.aftercode.test**',
     '',
+    'ftp://host/`logs`https://docs.example.test and ftp://host/[logs](https://logs.example.test)www.afterlink.test and ftp://host/`logs`&copy;',
+    '',
     'ftp://files.example.test/get?q=1&amp;mode=2 and &amp;',
     '',
     'ftp://www.example.test',
@@ -217,6 +219,9 @@ test("bare www autolinks upgrade to https while preserving case, query entities,
     expect(html).toContain('ftp://host/<strong>note <a href="https://example.test">https://example.test</a></strong>');
     expect(html).toContain('cohttps://host/<strong>note <a href="https://glued.example.test">https://glued.example.test</a></strong>');
     expect(html).toContain('ftp://host/<code>a b</code><strong><a href="https://www.aftercode.test">www.aftercode.test</a></strong>');
+    expect(html).toContain('ftp://host/<code>logs</code><a href="https://docs.example.test">https://docs.example.test</a>');
+    expect(html).toContain('ftp://host/<a href="https://logs.example.test">logs</a><a href="https://www.afterlink.test">www.afterlink.test</a>');
+    expect(html).toContain('ftp://host/<code>logs</code>&copy;');
     expect(html).toContain('ftp://files.example.test/get?q=1&amp;amp;mode=2 and &amp;');
     expect(html).toContain('<p><a href="https://www.example.test">www.example.test</a></p>');
     expect(html).toContain('<li><a href="https://example.test">https://example.test</a></li>');
